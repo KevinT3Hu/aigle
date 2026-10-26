@@ -408,7 +408,7 @@ impl Render for MaskPanel {
                     .label(crate::i18n::t("显示叠加"))
                     .small()
                     .selected(overlay)
-                    .tooltip(crate::i18n::t("用红色显示蒙版范围（O）"))
+                    .tooltip(crate::keymap::hint("用红色显示蒙版范围（O）", cx))
                     .on_click({
                         let photo = photo.clone();
                         move |_, _, cx| {

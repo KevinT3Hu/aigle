@@ -7,108 +7,24 @@ use std::sync::Arc;
 use aigle_core::params::Aspect;
 use aigle_engine_api::{Engine, SourceRef};
 use gpui::{
-    App, Context, Entity, FocusHandle, IntoElement, KeyBinding, ParentElement, PathPromptOptions,
-    Render, Styled, Subscription, Task, Window, actions, div, prelude::*, px,
+    App, Context, Entity, FocusHandle, IntoElement, ParentElement, PathPromptOptions, Render,
+    Styled, Subscription, Task, Window, div, prelude::*, px,
 };
 use gpui_component::button::{Button, ButtonGroup};
 use gpui_component::menu::DropdownMenu;
 use gpui_component::{ActiveTheme, Selectable, Sizable, TitleBar, WindowExt, h_flex, v_flex};
 
+use crate::actions::*;
 use crate::canvas::{Canvas, Compare};
 use crate::export::{self, ExportDialog, ExportEvent, Request, Settings};
 use crate::filmstrip::Filmstrip;
 use crate::grid::Grid;
 use crate::history::HistoryPanel;
+use crate::keybinding_editor::{Closed as KeybindingsClosed, KeybindingEditor};
 use crate::library::{LABELS, Library, LibraryEvent};
 use crate::panel::Panel;
 use crate::photo::{Photo, PhotoEvent, Tool};
-
-actions!(
-    aigle,
-    [
-        Open,
-        OpenFolder,
-        ShowGrid,
-        ShowDevelop,
-        OpenSelected,
-        Left,
-        Right,
-        Up,
-        Down,
-        Rate0,
-        Rate1,
-        Rate2,
-        Rate3,
-        Rate4,
-        Rate5,
-        Label1,
-        Label2,
-        Label3,
-        Label4,
-        Undo,
-        Redo,
-        ToggleZoom,
-        ToggleBefore,
-        ToggleSplit,
-        ToggleWbPicker,
-        ToggleInfo,
-        ToggleHistory,
-        LanguageEnglish,
-        LanguageChinese,
-        ToggleCrop,
-        ToggleMask,
-        ToggleOverlay,
-        SwapAspect,
-        Export,
-        Cancel,
-        Quit
-    ]
-);
-
-const CONTEXT: &str = "Workspace";
-
-pub fn bind_keys(cx: &mut App) {
-    let ws = Some(CONTEXT);
-    cx.bind_keys([
-        KeyBinding::new("ctrl-o", Open, ws),
-        KeyBinding::new("ctrl-shift-o", OpenFolder, ws),
-        KeyBinding::new("g", ShowGrid, ws),
-        KeyBinding::new("d", ShowDevelop, ws),
-        KeyBinding::new("enter", OpenSelected, ws),
-        KeyBinding::new("left", Left, ws),
-        KeyBinding::new("right", Right, ws),
-        KeyBinding::new("up", Up, ws),
-        KeyBinding::new("down", Down, ws),
-        KeyBinding::new("0", Rate0, ws),
-        KeyBinding::new("1", Rate1, ws),
-        KeyBinding::new("2", Rate2, ws),
-        KeyBinding::new("3", Rate3, ws),
-        KeyBinding::new("4", Rate4, ws),
-        KeyBinding::new("5", Rate5, ws),
-        KeyBinding::new("6", Label1, ws),
-        KeyBinding::new("7", Label2, ws),
-        KeyBinding::new("8", Label3, ws),
-        KeyBinding::new("9", Label4, ws),
-        KeyBinding::new("ctrl-z", Undo, ws),
-        KeyBinding::new("ctrl-shift-z", Redo, ws),
-        KeyBinding::new("ctrl-y", Redo, ws),
-        KeyBinding::new("z", ToggleZoom, ws),
-        KeyBinding::new("\\", ToggleBefore, ws),
-        KeyBinding::new("y", ToggleSplit, ws),
-        KeyBinding::new("w", ToggleWbPicker, ws),
-        KeyBinding::new("i", ToggleInfo, ws),
-        KeyBinding::new("h", ToggleHistory, ws),
-        KeyBinding::new("r", ToggleCrop, ws),
-        KeyBinding::new("m", ToggleMask, ws),
-        KeyBinding::new("o", ToggleOverlay, ws),
-        KeyBinding::new("x", SwapAspect, ws),
-        KeyBinding::new("ctrl-e", Export, ws),
-        KeyBinding::new("ctrl-shift-e", Export, ws),
-        KeyBinding::new("escape", Cancel, ws),
-        KeyBinding::new("ctrl-q", Quit, None),
-    ]);
-    cx.on_action(|_: &Quit, cx| cx.quit());
-}
+use crate::resources::Resources;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
@@ -126,6 +42,7 @@ struct OpenPhoto {
 
 pub struct Workspace {
     engine: Engine,
+    resources: Entity<Resources>,
     library: Entity<Library>,
     grid: Entity<Grid>,
     filmstrip: Entity<Filmstrip>,
@@ -135,6 +52,7 @@ pub struct Workspace {
     focus: FocusHandle,
     export_settings: Settings,
     export_dialog: Option<(Entity<ExportDialog>, Subscription)>,
+    keybinding_dialog: Option<(Entity<KeybindingEditor>, Subscription)>,
     /// Running exports by file name.
     exports: Vec<(u64, String, Task<()>)>,
     next_export: u64,
@@ -166,8 +84,10 @@ impl Workspace {
                 async {}
             }),
         ];
+        let resources = cx.new(Resources::new);
         let mut ws = Workspace {
             engine,
+            resources,
             library,
             grid,
             filmstrip,
@@ -177,6 +97,7 @@ impl Workspace {
             focus,
             export_settings: Settings::default(),
             export_dialog: None,
+            keybinding_dialog: None,
             exports: Vec::new(),
             next_export: 0,
             _subs: subs,
@@ -238,7 +159,7 @@ impl Workspace {
         self.close_photo(cx);
         let engine = self.engine.clone();
         let photo = cx.new(|cx| Photo::open(&engine, source, edits.unwrap_or_default(), cx));
-        let canvas = cx.new(|cx| Canvas::new(photo.clone(), cx));
+        let canvas = cx.new(|cx| Canvas::new(photo.clone(), window, cx));
         let hist = canvas.read(cx).histogram();
         let panel = cx.new(|cx| Panel::new(photo.clone(), hist, window, cx));
         let history = cx.new(|cx| HistoryPanel::new(photo.clone(), cx));
@@ -473,6 +394,42 @@ impl Workspace {
         })
     }
 
+    fn open_keybindings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((editor, _)) = &self.keybinding_dialog {
+            editor.update(cx, |editor, cx| editor.focus_search(window, cx));
+            return;
+        }
+        self.export_dialog = None;
+        let editor = cx.new(|cx| KeybindingEditor::new(window, cx));
+        let subscription = cx.subscribe_in(
+            &editor,
+            window,
+            |w, _, _: &KeybindingsClosed, window, cx| {
+                window.close_dialog(cx);
+                w.keybinding_dialog = None;
+                window.focus(&w.focus, cx);
+                cx.notify();
+            },
+        );
+        self.keybinding_dialog = Some((editor.clone(), subscription));
+        let initial_focus = std::cell::Cell::new(true);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            if initial_focus.replace(false) {
+                editor.update(cx, |editor, cx| editor.focus_search(window, cx));
+            }
+            dialog
+                .title(crate::i18n::t("快捷键"))
+                .w(px(820.0))
+                .max_w(window.viewport_size().width - px(48.0))
+                .margin_top(px(24.0))
+                .overlay_closable(false)
+                .keyboard(false)
+                .close_button(false)
+                .child(editor.clone())
+        });
+        cx.notify();
+    }
+
     fn open_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(request) = self.export_request(cx) else {
             window.push_notification(crate::i18n::t("没有可导出的照片"), cx);
@@ -570,7 +527,6 @@ impl Workspace {
         let edit_focus = self.focus.clone();
         let view_focus = self.focus.clone();
         let language = crate::i18n::language();
-        let (_, backend) = self.engine.backend();
         let row = h_flex()
             .flex_1()
             .h_full()
@@ -668,6 +624,14 @@ impl Workspace {
                                 tool != Tool::Mask,
                             )
                             .separator()
+                            .submenu(crate::i18n::t("快捷键"), window, cx, |menu, _, _| {
+                                menu.menu(crate::i18n::t("编辑快捷键…"), Box::new(EditKeybindings))
+                                    .menu(
+                                        crate::i18n::t("重新加载快捷键"),
+                                        Box::new(ReloadKeybindings),
+                                    )
+                            })
+                            .separator()
                             .submenu(crate::i18n::t("语言"), window, cx, move |menu, _, _| {
                                 menu.menu_with_check(
                                     "English",
@@ -689,7 +653,7 @@ impl Workspace {
                         Button::new("grid")
                             .label(crate::i18n::t("图库"))
                             .selected(!develop)
-                            .tooltip(crate::i18n::t("缩略图网格（G）"))
+                            .tooltip(crate::keymap::hint("缩略图网格（G）", cx))
                             .on_click(cx.listener(|w, _, window, cx| {
                                 w.set_mode(Mode::Library, window, cx)
                             })),
@@ -698,7 +662,10 @@ impl Workspace {
                         Button::new("develop")
                             .label(crate::i18n::t("修图"))
                             .selected(develop)
-                            .tooltip(crate::i18n::t("修图（D，或在网格中按 Enter / 双击）"))
+                            .tooltip(crate::keymap::hint(
+                                "修图（D，或在网格中按 Enter / 双击）",
+                                cx,
+                            ))
                             .on_click(cx.listener(|w, _, window, cx| {
                                 w.set_mode(Mode::Develop, window, cx)
                             })),
@@ -722,14 +689,7 @@ impl Workspace {
                     .truncate()
                     .child(title),
             )
-            .child(
-                div()
-                    .max_w(px(280.0))
-                    .truncate()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(backend),
-            );
+            .child(self.resources.clone());
         TitleBar::new().child(row)
     }
 
@@ -740,8 +700,9 @@ impl Workspace {
                 .flex_1()
                 .justify_center()
                 .text_color(cx.theme().muted_foreground)
-                .child(crate::i18n::t(
+                .child(crate::keymap::hint(
                     "在图库中选择一张照片，或打开一张照片（Ctrl+O）",
+                    cx,
                 ))
                 .into_any_element();
         };
@@ -866,6 +827,18 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|w, _: &LanguageChinese, window, cx| {
                 w.change_language(crate::i18n::Language::Chinese, window, cx)
+            }))
+            .on_action(
+                cx.listener(|w, _: &EditKeybindings, window, cx| w.open_keybindings(window, cx)),
+            )
+            .on_action(cx.listener(|_, _: &ReloadKeybindings, window, cx| {
+                match crate::keymap::reload(cx) {
+                    Ok(()) => window.push_notification(crate::i18n::t("快捷键已重新加载"), cx),
+                    Err(error) => window.push_notification(
+                        format!("{}: {error:#}", crate::i18n::t("快捷键操作失败")),
+                        cx,
+                    ),
+                };
             }))
             .child(self.toolbar(cx))
             .child(

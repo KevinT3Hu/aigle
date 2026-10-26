@@ -173,8 +173,9 @@ impl Render for Grid {
         };
         if n == 0 {
             let msg = match (folder, loading) {
-                (false, _) => crate::i18n::t(
+                (false, _) => crate::keymap::hint(
                     "打开一个文件夹浏览照片（Ctrl+Shift+O），或打开单张照片（Ctrl+O）",
+                    cx,
                 ),
                 (true, true) => crate::i18n::t("正在读取文件夹…"),
                 (true, false) => crate::i18n::t("此文件夹中没有可打开的照片"),

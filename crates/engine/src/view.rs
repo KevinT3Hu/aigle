@@ -72,6 +72,7 @@ pub(crate) struct ViewShared {
     me: Weak<ViewShared>,
     frames_tx: watch::Sender<Option<Arc<Frame>>>,
     hist_tx: watch::Sender<Option<Arc<Histogram>>>,
+    histogram_cancel: CancelToken,
     state: Mutex<State>,
 }
 
@@ -82,6 +83,7 @@ impl ViewShared {
             me: me.clone(),
             frames_tx: watch::channel(None).0,
             hist_tx: watch::channel(None).0,
+            histogram_cancel: CancelToken::new(),
             state: Mutex::new(State {
                 viewport: spec.viewport,
                 fit_size: spec.fit_size,
@@ -262,10 +264,13 @@ impl ViewShared {
                     data: r.data.into(),
                 },
             };
-            self.frames_tx.send_replace(Some(Arc::new(frame)));
-
             let current = {
                 let mut st = self.state.lock();
+                if st.closed {
+                    st.rendering = false;
+                    return;
+                }
+                self.frames_tx.send_replace(Some(Arc::new(frame)));
                 st.inflight_refined = None;
                 if quality == Quality::Draft {
                     adapt_draft(&mut st, r.elapsed);
@@ -322,6 +327,9 @@ impl ViewShared {
     ) {
         {
             let mut st = self.state.lock();
+            if st.closed {
+                return;
+            }
             let have = st.hist_for.as_ref().is_some_and(|h| {
                 Arc::ptr_eq(&h.src, src) && *h.params == **params && h.long_edge >= long_edge
             });
@@ -342,7 +350,8 @@ impl ViewShared {
         }
         let me = Arc::downgrade(self);
         self.session.engine.scheduler.spawn(
-            TaskSpec::new("view-histogram", Class::Interactive),
+            TaskSpec::new("view-histogram", Class::Interactive)
+                .cancel(self.histogram_cancel.clone()),
             move || {
                 let Some(v) = me.upgrade() else { return };
                 loop {
@@ -362,10 +371,13 @@ impl ViewShared {
                         &req.params,
                         Some(req.long_edge),
                         &DisplayProfileId::Srgb,
-                        None,
+                        Some(&v.histogram_cancel),
                     ) {
-                        v.hist_tx
-                            .send_replace(Some(Arc::new(analysis::histogram(&o.data))));
+                        let histogram = Arc::new(analysis::histogram(&o.data));
+                        let st = v.state.lock();
+                        if !st.closed {
+                            v.hist_tx.send_replace(Some(histogram));
+                        }
                     }
                 }
             },
@@ -382,8 +394,14 @@ impl ViewShared {
         target: &RenderTarget,
     ) {
         let cancel = CancelToken::new();
-        if let Some(old) = self.state.lock().ring.replace(cancel.clone()) {
-            old.cancel();
+        {
+            let mut st = self.state.lock();
+            if st.closed {
+                return;
+            }
+            if let Some(old) = st.ring.replace(cancel.clone()) {
+                old.cancel();
+            }
         }
         let (me, src, params, display, target) = (
             Arc::downgrade(self),
@@ -428,6 +446,12 @@ impl ViewShared {
     pub fn close(&self) {
         let mut st = self.state.lock();
         st.closed = true;
+        st.want = None;
+        st.hist_want = None;
+        st.hist_for = None;
+        self.histogram_cancel.cancel();
+        self.frames_tx.send_replace(None);
+        self.hist_tx.send_replace(None);
         if let Some(c) = st.inflight_refined.take() {
             c.cancel();
         }

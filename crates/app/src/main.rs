@@ -5,6 +5,7 @@
 
 rust_i18n::i18n!("locales", fallback = "en");
 
+mod actions;
 mod canvas;
 mod crop;
 mod curve;
@@ -13,11 +14,14 @@ mod filmstrip;
 mod grid;
 mod history;
 mod i18n;
+mod keybinding_editor;
+mod keymap;
 mod library;
 mod mask_panel;
 mod meta;
 mod panel;
 mod photo;
+mod resources;
 mod tools;
 mod viewport;
 mod workspace;
@@ -60,7 +64,7 @@ fn main() {
             gpui_component::init(cx);
             i18n::init();
             Theme::change(ThemeMode::Dark, None, cx);
-            workspace::bind_keys(cx);
+            let keymap_error = keymap::init(cx);
 
             let engine = aigle_engine::create(EngineConfig::default());
             // GNOME's Wayland compositor has no server-side decorations, so the window draws its
@@ -82,7 +86,14 @@ fn main() {
             };
             let opened = cx.open_window(options, |window, cx| {
                 let ws = cx.new(|cx| Workspace::new(engine, source, window, cx));
-                cx.new(|cx| Root::new(ws, window, cx))
+                let root = cx.new(|cx| Root::new(ws, window, cx));
+                if let Some(error) = keymap_error {
+                    window.defer(cx, move |window, cx| {
+                        use gpui_component::WindowExt;
+                        window.push_notification(error, cx);
+                    });
+                }
+                root
             });
             if let Err(e) = opened {
                 tracing::error!("cannot open the main window: {e:#}");

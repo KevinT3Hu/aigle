@@ -10,7 +10,8 @@
 //!   child of it) changed after the command's `base_rev`; the error carries the current
 //!   values so the writer can retry.
 //! * **Gestures.** Commands that share a [`GestureId`] (one slider drag) coalesce into a
-//!   single history entry.
+//!   single history entry. Consecutive user gestures on the same adjustment also share
+//!   an undo step, until another edit or history navigation interrupts them.
 //! * **Undo/redo** restore whole snapshots and always produce a new revision, so the
 //!   engine's latest-wins ordering by revision keeps working.
 
@@ -147,6 +148,7 @@ struct Entry {
     after: Arc<EditParams>,
     paths: BTreeSet<String>,
     gesture: Option<GestureId>,
+    adjustment: Option<String>,
 }
 
 /// One history entry as shown in the history panel.
@@ -228,13 +230,31 @@ impl PhotoDoc {
             });
         }
 
+        // A control's first op identifies the item (white-balance sliders also write
+        // companion fields). Only interactive scalar/shape edits opt into cross-gesture
+        // grouping; mask insertion/removal and discrete commands remain separate.
+        let adjustment = if cmd.origin == Origin::User && cmd.gesture.is_some() {
+            match cmd.ops.first() {
+                Some(ParamOp::Set { path, .. } | ParamOp::Add { path, .. }) => {
+                    Some(path.as_str().to_owned())
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
         let after = Arc::new(next);
-        let merge = cmd.gesture.is_some()
-            && self.redo.is_empty()
-            && self.undo.last().is_some_and(|e| e.gesture == cmd.gesture);
+        let merge = self.redo.is_empty()
+            && self.undo.last().is_some_and(|e| {
+                e.origin == cmd.origin
+                    && ((cmd.gesture.is_some() && e.gesture == cmd.gesture)
+                        || (adjustment.is_some() && e.adjustment == adjustment && e.paths == paths))
+            });
         if merge {
             let e = self.undo.last_mut().expect("checked above");
             e.after = after.clone();
+            e.label = cmd.label;
+            e.gesture = cmd.gesture;
             e.paths.extend(paths.iter().cloned());
         } else {
             self.undo.push(Entry {
@@ -244,6 +264,7 @@ impl PhotoDoc {
                 after: after.clone(),
                 paths: paths.clone(),
                 gesture: cmd.gesture,
+                adjustment,
             });
             self.redo.clear();
         }
@@ -298,6 +319,7 @@ impl PhotoDoc {
             Interaction::Final,
         );
         e.gesture = None;
+        e.adjustment = None;
         self.undo.push(e);
         Some(label)
     }
@@ -338,7 +360,12 @@ impl PhotoDoc {
             let mut e = self.redo.pop().expect("target is within history");
             paths.extend(e.paths.iter().cloned());
             e.gesture = None;
+            e.adjustment = None;
             self.undo.push(e);
+        }
+        if let Some(e) = self.undo.last_mut() {
+            e.gesture = None;
+            e.adjustment = None;
         }
         let head = match self.undo.last() {
             Some(e) => e.after.clone(),
@@ -723,6 +750,110 @@ mod tests {
         )
         .unwrap();
         assert_eq!((d.rev(), d.history().len()), (r, 2));
+    }
+
+    fn drag(d: &mut PhotoDoc, path: &str, value: f64, gesture: u64) {
+        d.apply(
+            EditCommand::user(d.rev(), path, vec![ParamOp::set(path, value)])
+                .in_gesture(GestureId(gesture)),
+            Interaction::Final,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn consecutive_adjustment_gestures_share_one_undo_step() {
+        let mut d = doc();
+        for (g, value) in [0.1, 0.5, 1.0].into_iter().enumerate() {
+            drag(&mut d, "light.exposure", value, g as u64);
+        }
+        assert_eq!(d.history().len(), 1);
+        assert_eq!(d.head().light.exposure, 1.0);
+        let revision = d.rev();
+        d.undo().unwrap();
+        assert_eq!(d.head().light.exposure, 0.0);
+        assert!(d.rev() > revision);
+        d.redo().unwrap();
+        assert_eq!(d.head().light.exposure, 1.0);
+        // Redo closes the group, even when the same control is edited again.
+        drag(&mut d, "light.exposure", 1.5, 99);
+        assert_eq!(d.history().len(), 2);
+        drag(&mut d, "light.contrast", 5.0, 100);
+        drag(&mut d, "light.exposure", 2.0, 101);
+        assert_eq!(d.history().len(), 4);
+        d.undo();
+        assert_eq!(d.head().light.exposure, 1.5);
+        assert_eq!(d.head().light.contrast, 5.0);
+        // An edit after undo branches instead of absorbing the earlier exposure entry.
+        drag(&mut d, "light.contrast", 10.0, 102);
+        assert_eq!(d.history().len(), 4);
+        assert!(!d.can_redo());
+        d.undo();
+        assert_eq!(d.head().light.contrast, 5.0);
+    }
+
+    #[test]
+    fn grouping_uses_the_primary_item_and_respects_origins_and_navigation() {
+        let mut d = doc();
+        for (g, temp) in [(1, 6000.0), (2, 6500.0)] {
+            d.apply(
+                EditCommand::user(
+                    d.rev(),
+                    "Temperature",
+                    vec![
+                        ParamOp::set("wb.temperature", temp),
+                        ParamOp::set("wb.tint", 0.0),
+                        ParamOp::set("wb.mode", "custom"),
+                    ],
+                )
+                .in_gesture(GestureId(g)),
+                Interaction::Final,
+            )
+            .unwrap();
+        }
+        assert_eq!(d.history().len(), 1);
+        // Tint writes the same set of companion paths, but it is another control.
+        d.apply(
+            EditCommand::user(
+                d.rev(),
+                "Tint",
+                vec![
+                    ParamOp::set("wb.tint", 5.0),
+                    ParamOp::set("wb.temperature", 6500.0),
+                    ParamOp::set("wb.mode", "custom"),
+                ],
+            )
+            .in_gesture(GestureId(3)),
+            Interaction::Final,
+        )
+        .unwrap();
+        assert_eq!(d.history().len(), 2);
+        drag(&mut d, "light.exposure", 1.0, 4);
+        assert!(d.goto(2));
+        drag(&mut d, "wb.tint", 10.0, 5);
+        assert_eq!(d.history().len(), 3);
+        d.undo();
+        assert_eq!(d.head().wb.values.tint, 5.0);
+        d.redo();
+        let mut agent =
+            EditCommand::user(d.rev(), "Agent tint", vec![ParamOp::set("wb.tint", 15.0)])
+                .in_gesture(GestureId(5));
+        agent.origin = Origin::Agent { run_id: 1, step: 1 };
+        d.apply(agent, Interaction::Final).unwrap();
+        assert_eq!(d.history().len(), 4);
+        // Discrete operations such as rotations or resets remain independent.
+        for value in [20.0, 25.0] {
+            d.apply(
+                EditCommand::user(
+                    d.rev(),
+                    "Discrete tint",
+                    vec![ParamOp::set("wb.tint", value)],
+                ),
+                Interaction::Final,
+            )
+            .unwrap();
+        }
+        assert_eq!(d.history().len(), 6);
     }
 
     #[test]

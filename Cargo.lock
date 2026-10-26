@@ -149,6 +149,7 @@ dependencies = [
  "image",
  "rust-i18n",
  "serde_json",
+ "sysinfo",
  "tracing",
  "tracing-subscriber",
 ]

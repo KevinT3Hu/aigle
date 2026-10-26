@@ -25,6 +25,7 @@ gpui-kit-assets = "=0.8.0"
 image = { workspace = true }
 serde_json.workspace = true
 rust-i18n = "4.2.4"
+sysinfo = { version = "0.31.4", default-features = false, features = ["system"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 

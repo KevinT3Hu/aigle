@@ -586,7 +586,7 @@ impl Panel {
                                 .label(crate::i18n::t("吸管"))
                                 .small()
                                 .selected(picking)
-                                .tooltip(crate::i18n::t("点击画面中应为中性灰的位置（W）"))
+                                .tooltip(crate::keymap::hint("点击画面中应为中性灰的位置（W）", cx))
                                 .on_click(cx.listener(move |p, _, _, cx| {
                                     p.photo.update(cx, |ph, cx| ph.set_wb_pick(!picking, cx))
                                 })),
@@ -738,7 +738,7 @@ impl Panel {
                                     Button::new("aspect-swap")
                                         .label(crate::i18n::t("横竖互换"))
                                         .small()
-                                        .tooltip(crate::i18n::t("交换长宽比的方向（X）"))
+                                        .tooltip(crate::keymap::hint("交换长宽比的方向（X）", cx))
                                         .on_click(move |_, _, cx| {
                                             photo.update(cx, |p, cx| {
                                                 p.set_aspect(Aspect::Ratio { w: h, h: w }, cx)

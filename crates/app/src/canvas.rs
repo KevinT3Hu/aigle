@@ -35,6 +35,12 @@ use crate::viewport::{ViewState, reproject};
 
 type Shown = (Arc<Frame>, Arc<RenderImage>);
 
+// UI callbacks may run while their window is temporarily removed from App.windows.
+// Defer eviction until it is back, otherwise drop_image(None) misses that window.
+fn release_image(image: Arc<RenderImage>, cx: &mut App) {
+    cx.defer(move |cx| cx.drop_image(image, None));
+}
+
 /// How the original is compared with the edit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Compare {
@@ -81,6 +87,7 @@ pub struct Canvas {
     view: View,
     state: ViewState,
     frame: Option<Shown>,
+    _frames: Task<anyhow::Result<()>>,
     /// Canvas bounds (logical px) and the window scale factor at the last layout.
     layout: Option<(Bounds<Pixels>, f32)>,
     drag: Option<Point<Pixels>>,
@@ -120,7 +127,7 @@ fn listen(
             };
             this.update(cx, |c, cx| {
                 if let Some((_, old)) = slot(c).replace((f, img)) {
-                    cx.drop_image(old, None);
+                    release_image(old, cx);
                 }
                 cx.notify();
             })?;
@@ -133,9 +140,17 @@ fn listen(
 const DIVIDER_GRAB: f32 = 6.0;
 
 impl Canvas {
-    pub fn new(photo: Entity<Photo>, cx: &mut Context<Self>) -> Canvas {
+    pub fn new(photo: Entity<Photo>, window: &mut Window, cx: &mut Context<Self>) -> Canvas {
         let view = photo.read(cx).session.create_view(ViewSpec::fit(1, 1));
-        listen(view.frames(), |c| &mut c.frame, cx).detach();
+        let frames = listen(view.frames(), |c| &mut c.frame, cx);
+        cx.on_release_in(window, |canvas, window, cx| {
+            for slot in [&mut canvas.frame, &mut canvas.before_frame] {
+                if let Some((_, image)) = slot.take() {
+                    cx.drop_image(image, Some(window));
+                }
+            }
+        })
+        .detach();
         cx.subscribe(&photo, |c, _, ev, cx| match ev {
             PhotoEvent::Loaded => {
                 c.update_viewport(Interaction::Final, true, cx);
@@ -159,6 +174,7 @@ impl Canvas {
             view,
             state: ViewState::default(),
             frame: None,
+            _frames: frames,
             layout: None,
             drag: None,
             show_info: true,
@@ -198,7 +214,7 @@ impl Canvas {
             self.view.set_uncropped(tool == Tool::Crop);
             self.state = ViewState::default();
             if let Some((_, old)) = self.frame.take() {
-                cx.drop_image(old, None);
+                release_image(old, cx);
             }
             self.update_viewport(Interaction::Final, true, cx);
         }
@@ -364,7 +380,7 @@ impl Canvas {
             self.before = None;
             self.split_drag = false;
             if let Some((_, old)) = self.before_frame.take() {
-                cx.drop_image(old, None);
+                release_image(old, cx);
             }
         }
         cx.notify();
@@ -850,16 +866,17 @@ impl Canvas {
             Compare::Split => crate::i18n::t(" · 分屏对比"),
         };
         let hint = if photo.wb_pick {
-            crate::i18n::t(" · 吸管：点击应为中性灰的位置，Esc 取消")
+            crate::keymap::hint(" · 吸管：点击应为中性灰的位置，Esc 取消", cx)
         } else {
             match photo.tool {
-                Tool::Crop => {
-                    crate::i18n::t(" · 裁剪：拖动边角调整，框外拖动旋转，双击框内或 Enter 完成")
-                }
+                Tool::Crop => crate::keymap::hint(
+                    " · 裁剪：拖动边角调整，框外拖动旋转，双击框内或 Enter 完成",
+                    cx,
+                ),
                 Tool::Mask if photo.pending_mask.is_some() => {
                     crate::i18n::t(" · 在画面上拖动以放置蒙版")
                 }
-                Tool::Mask => crate::i18n::t(" · 蒙版：拖动控制点调整，O 显示叠加"),
+                Tool::Mask => crate::keymap::hint(" · 蒙版：拖动控制点调整，O 显示叠加", cx),
                 Tool::None => String::new(),
             }
         };

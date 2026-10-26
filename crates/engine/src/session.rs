@@ -265,7 +265,10 @@ impl SessionShared {
 
     fn when_ready(&self, f: Waiter) {
         let mut st = self.state.lock();
-        if let Some(src) = st.source.clone() {
+        if st.closed {
+            drop(st);
+            f(Err("session closed".into()));
+        } else if let Some(src) = st.source.clone() {
             drop(st);
             f(Ok(src));
         } else if let Some(e) = st.failed.clone() {
@@ -607,17 +610,40 @@ impl SessionImpl for SessionShared {
     }
 
     fn close(&self) {
-        let views = {
+        let (views, waiters, source, pending, snapshots) = {
             let mut st = self.state.lock();
+            if st.closed {
+                return;
+            }
             st.closed = true;
             if let Some((_, c)) = st.loading.take() {
                 c.cancel();
             }
-            std::mem::take(&mut st.views)
+            (
+                std::mem::take(&mut st.views),
+                std::mem::take(&mut st.waiters),
+                st.source.take(),
+                st.pending.take(),
+                std::mem::take(&mut st.snapshots),
+            )
         };
         for v in views.iter().filter_map(Weak::upgrade) {
             v.close();
         }
+        // A waiter may own an Arc back to this session. Complete it outside the lock
+        // so cancellation cannot leave a reference cycle or a job waiting forever.
+        for waiter in waiters {
+            waiter(Err("session closed".into()));
+        }
+        drop((source, pending, snapshots));
+        self.engine.cache.remove_owner(self.id);
+    }
+}
+
+// In-flight work can finish after close and briefly populate the cache again. The
+// last internal view/job reference performs a final sweep once no producer remains.
+impl Drop for SessionShared {
+    fn drop(&mut self) {
         self.engine.cache.remove_owner(self.id);
     }
 }
@@ -651,5 +677,91 @@ impl SessionShared {
         self.me
             .upgrade()
             .expect("session alive while a method is called on it")
+    }
+}
+
+#[cfg(test)]
+mod lifetime_tests {
+    use super::*;
+    use aigle_engine_api::{BackendPreference, EngineConfig, SyntheticPattern};
+    use std::time::{Duration, Instant};
+
+    fn wait(mut ready: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready() {
+            assert!(Instant::now() < deadline, "session cleanup timed out");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn closed_session_releases_source_even_if_closed_view_is_retained() {
+        let engine = EngineInner::new(EngineConfig {
+            backend: BackendPreference::Cpu,
+            worker_threads: Some(2),
+            overview_long_edge: 32,
+            ..Default::default()
+        });
+        let session = SessionShared::open(
+            engine.clone(),
+            SourceRef::Synthetic {
+                pattern: SyntheticPattern::Gradient,
+                width: 64,
+                height: 48,
+            },
+        );
+        wait(|| session.source().is_some());
+        let source = Arc::downgrade(&session.source().unwrap());
+        let view = session.create_view(ViewSpec::fit(32, 24));
+        let frames = view.frames();
+        let histogram = view.histogram();
+        wait(|| frames.borrow().is_some() && histogram.borrow().is_some());
+        session.close();
+        assert!(
+            session.source().is_none(),
+            "closed session retains decoded source"
+        );
+        assert!(
+            frames.borrow().is_none(),
+            "closed view retains full preview frame"
+        );
+        assert!(histogram.borrow().is_none());
+        wait(|| source.upgrade().is_none());
+        wait(|| engine.ledger.used() == 0);
+        // The session/view handles above remain alive throughout the assertions.
+    }
+
+    #[test]
+    fn closing_drains_waiters_that_retain_the_session() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let engine = EngineInner::new(EngineConfig {
+            backend: BackendPreference::Cpu,
+            ..Default::default()
+        });
+        let session = SessionShared::open(
+            engine,
+            SourceRef::Synthetic {
+                pattern: SyntheticPattern::Gradient,
+                width: 16,
+                height: 12,
+            },
+        );
+        wait(|| session.source().is_some());
+        let called = Arc::new(AtomicBool::new(false));
+        let flag = called.clone();
+        let retained = session.clone();
+        session.state.lock().waiters.push(Box::new(move |result| {
+            assert!(result.is_err());
+            drop(retained);
+            flag.store(true, Ordering::Release);
+        }));
+        session.close();
+        assert!(called.load(Ordering::Acquire));
+        assert!(session.state.lock().waiters.is_empty());
+        session.when_ready(Box::new(|result| assert!(result.is_err())));
+        assert!(
+            session.state.lock().waiters.is_empty(),
+            "closed session accepted another waiter"
+        );
     }
 }

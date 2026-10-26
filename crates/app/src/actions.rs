@@ -1,0 +1,48 @@
+//! Named app commands, shared by menus and configurable keyboard bindings.
+use gpui::actions;
+
+actions!(
+    aigle,
+    [
+        Open,
+        OpenFolder,
+        ShowGrid,
+        ShowDevelop,
+        OpenSelected,
+        Left,
+        Right,
+        Up,
+        Down,
+        Rate0,
+        Rate1,
+        Rate2,
+        Rate3,
+        Rate4,
+        Rate5,
+        Label1,
+        Label2,
+        Label3,
+        Label4,
+        Undo,
+        Redo,
+        ToggleZoom,
+        ToggleBefore,
+        ToggleSplit,
+        ToggleWbPicker,
+        ToggleInfo,
+        ToggleHistory,
+        LanguageEnglish,
+        LanguageChinese,
+        ToggleCrop,
+        ToggleMask,
+        ToggleOverlay,
+        SwapAspect,
+        Export,
+        Cancel,
+        EditKeybindings,
+        ReloadKeybindings,
+        Quit
+    ]
+);
+
+pub const CONTEXT: &str = "Workspace";
