@@ -216,7 +216,7 @@ impl ExportDialog {
             .children(options.into_iter().map(|(v, label)| {
                 let selected = v == current;
                 Button::new(SharedString::from(format!("{id}-{label}")))
-                    .label(label)
+                    .label(crate::i18n::t(label))
                     .small()
                     .selected(selected)
                     .on_click(cx.listener(move |d, _, _, cx| {
@@ -251,7 +251,7 @@ impl Render for ExportDialog {
         let s = self.settings.clone();
         let theme = cx.theme();
         let (muted, bg, border) = (theme.muted_foreground, theme.popover, theme.border);
-        let label = |t: &'static str| div().text_xs().text_color(muted).child(t);
+        let label = |t: String| div().text_xs().text_color(muted).child(t);
         let busy = self.prompt.is_some();
         let card = v_flex()
             .id("export-card")
@@ -268,9 +268,9 @@ impl Render for ExportDialog {
                 div()
                     .text_base()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child(format!("导出 {}", self.request.name)),
+                    .child(rust_i18n::t!("导出 {}", arg0 = self.request.name).into_owned()),
             )
-            .child(label("格式"))
+            .child(label(crate::i18n::t("格式")))
             .child(self.choice(
                 "fmt",
                 Format::ALL.to_vec(),
@@ -282,12 +282,12 @@ impl Render for ExportDialog {
                 d.child(
                     h_flex()
                         .justify_between()
-                        .child(label("质量"))
+                        .child(label(crate::i18n::t("质量")))
                         .child(div().text_xs().child(s.quality.to_string())),
                 )
                 .child(Slider::new(&self.quality))
             })
-            .child(label("长边（像素）"))
+            .child(label(crate::i18n::t("长边（像素）")))
             .child(self.choice(
                 "size",
                 SIZES.to_vec(),
@@ -295,7 +295,7 @@ impl Render for ExportDialog {
                 |s, v| s.long_edge = v,
                 cx,
             ))
-            .child(label("色彩空间"))
+            .child(label(crate::i18n::t("色彩空间")))
             .child(self.choice(
                 "cs",
                 vec![
@@ -313,13 +313,17 @@ impl Render for ExportDialog {
                     .justify_end()
                     .child(
                         Button::new("export-cancel")
-                            .label("取消")
+                            .label(crate::i18n::t("取消"))
                             .small()
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(ExportEvent::Done(None)))),
                     )
                     .child(
                         Button::new("export-go")
-                            .label(if busy { "选择位置…" } else { "导出…" })
+                            .label(if busy {
+                                crate::i18n::t("选择位置…")
+                            } else {
+                                crate::i18n::t("导出…")
+                            })
                             .small()
                             .primary()
                             .on_click(cx.listener(|d, _, _, cx| d.choose(cx))),

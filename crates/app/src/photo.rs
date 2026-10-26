@@ -218,13 +218,13 @@ impl Photo {
     /// Commit `ops` as a user command; errors are reported as a notice.
     pub fn command(
         &mut self,
-        label: &str,
+        label: impl AsRef<str>,
         ops: Vec<ParamOp>,
         gesture: Option<GestureId>,
         hint: Interaction,
         cx: &mut Context<Self>,
     ) -> bool {
-        let mut cmd = EditCommand::user(self.doc.rev(), label, ops);
+        let mut cmd = EditCommand::user(self.doc.rev(), label.as_ref(), ops);
         cmd.gesture = gesture;
         match self.edit(cmd, hint, cx) {
             Ok(()) => true,
@@ -262,9 +262,9 @@ impl Photo {
         };
         ops.extend(reorient_ops(&head, r));
         let label = if cw {
-            "向右旋转 90°"
+            crate::i18n::t("向右旋转 90°")
         } else {
-            "向左旋转 90°"
+            crate::i18n::t("向左旋转 90°")
         };
         self.command(label, ops, None, Interaction::Final, cx);
     }
@@ -282,7 +282,13 @@ impl Photo {
         ));
         ops.push(ParamOp::set("geometry.angle", -g.scalars.angle));
         ops.extend(reorient_ops(&head, Reorient::Mirror));
-        self.command("水平翻转", ops, None, Interaction::Final, cx);
+        self.command(
+            crate::i18n::t("水平翻转"),
+            ops,
+            None,
+            Interaction::Final,
+            cx,
+        );
     }
 
     /// Lock the crop to `aspect`, refitting the crop around its centre.
@@ -297,7 +303,13 @@ impl Photo {
             let r = f.with_aspect(f.rect_of(&g.crop), k);
             ops.extend(crop_ops(&f.crop_of(r)));
         }
-        self.command("裁剪 · 长宽比", ops, None, Interaction::Final, cx);
+        self.command(
+            crate::i18n::t("裁剪 · 长宽比"),
+            ops,
+            None,
+            Interaction::Final,
+            cx,
+        );
     }
 
     pub fn reset_crop(&mut self, cx: &mut Context<Self>) {
@@ -305,7 +317,13 @@ impl Photo {
             .iter()
             .map(|p| ParamOp::Reset { path: (*p).into() })
             .collect();
-        self.command("重置裁剪", ops, None, Interaction::Final, cx);
+        self.command(
+            crate::i18n::t("重置裁剪"),
+            ops,
+            None,
+            Interaction::Final,
+            cx,
+        );
     }
 
     /// The selected mask, if it still exists, with its index.
@@ -327,7 +345,7 @@ impl Photo {
 
     pub fn delete_mask(&mut self, id: MaskId, cx: &mut Context<Self>) {
         if self.command(
-            "删除蒙版",
+            crate::i18n::t("删除蒙版"),
             vec![ParamOp::RemoveMask { id }],
             None,
             Interaction::Final,
@@ -447,14 +465,14 @@ impl Photo {
                     Ok(wb) => wb,
                     Err(_) => {
                         cx.emit(PhotoEvent::Notice(
-                            "吸管：所选位置过曝、过暗或不在图像内".into(),
+                            crate::i18n::t("吸管：所选位置过曝、过暗或不在图像内").into(),
                         ));
                         return;
                     }
                 };
                 let cmd = EditCommand::user(
                     p.doc.rev(),
-                    "白平衡 · 吸管",
+                    crate::i18n::t("白平衡 · 吸管"),
                     vec![
                         ParamOp::set("wb.temperature", wb.temperature),
                         ParamOp::set("wb.tint", wb.tint),
@@ -465,7 +483,7 @@ impl Photo {
                     cx.emit(PhotoEvent::Notice(e.to_string()));
                 } else if wb.low_confidence_reason.is_some() {
                     cx.emit(PhotoEvent::Notice(
-                        "吸管：所选颜色超出白平衡范围，已取最接近的值".into(),
+                        crate::i18n::t("吸管：所选颜色超出白平衡范围，已取最接近的值").into(),
                     ));
                 }
             });

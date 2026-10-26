@@ -55,7 +55,7 @@ struct CropDrag {
     pivot: Point<Pixels>,
     from_window: Point<Pixels>,
     gesture: GestureId,
-    last: Option<(&'static str, Vec<ParamOp>)>,
+    last: Option<(String, Vec<ParamOp>)>,
 }
 
 enum MaskMode {
@@ -72,7 +72,7 @@ struct MaskDrag {
     /// Last brush point in Source px.
     last_src: (f64, f64),
     gesture: GestureId,
-    label: &'static str,
+    label: String,
     last: Option<Vec<ParamOp>>,
 }
 
@@ -438,7 +438,7 @@ impl Canvas {
                 let q = m.to_image(p);
                 let k = crop::ratio(photo.head().geometry.aspect, f.w, f.h);
                 let r = crop::drag(&f, d.start, h, q.x - d.from.x, q.y - d.from.y, k);
-                ("裁剪", crop_ops(&f.crop_of(r)))
+                (crate::i18n::t("裁剪"), crop_ops(&f.crop_of(r)))
             }
             None => {
                 let a0 = f32::from(d.from_window.y - d.pivot.y)
@@ -451,13 +451,16 @@ impl Canvas {
                     delta += 360.0;
                 }
                 let angle = (d.start_angle + delta).clamp(-45.0, 45.0);
-                ("拉直", vec![ParamOp::set("geometry.angle", angle)])
+                (
+                    crate::i18n::t("拉直"),
+                    vec![ParamOp::set("geometry.angle", angle)],
+                )
             }
         };
         let gesture = d.gesture;
         self.photo.update(cx, |ph, cx| {
             ph.command(
-                label,
+                &label,
                 ops.clone(),
                 Some(gesture),
                 Interaction::Continuous,
@@ -518,7 +521,7 @@ impl Canvas {
             let ok = self.photo.update(cx, |p, cx| {
                 p.pending_mask = None;
                 let ok = p.command(
-                    "添加蒙版",
+                    crate::i18n::t("添加蒙版"),
                     vec![ParamOp::AddMask { mask: first }],
                     Some(gesture),
                     Interaction::Continuous,
@@ -543,7 +546,7 @@ impl Canvas {
                 from: at,
                 last_src: src,
                 gesture,
-                label: "添加蒙版",
+                label: crate::i18n::t("添加蒙版"),
                 last: None,
             });
             return true;
@@ -561,7 +564,7 @@ impl Canvas {
                 from: at,
                 last_src: src,
                 gesture,
-                label: "调整蒙版",
+                label: crate::i18n::t("调整蒙版"),
                 last: None,
             });
             return true;
@@ -584,7 +587,7 @@ impl Canvas {
             let ops = tools::shape_ops(index, &shape);
             self.photo.update(cx, |p, cx| {
                 p.command(
-                    "画笔",
+                    crate::i18n::t("画笔"),
                     ops.clone(),
                     Some(gesture),
                     Interaction::Continuous,
@@ -598,7 +601,7 @@ impl Canvas {
                 from: at,
                 last_src: src,
                 gesture,
-                label: "画笔",
+                label: crate::i18n::t("画笔"),
                 last: Some(ops),
             });
             return true;
@@ -635,7 +638,7 @@ impl Canvas {
         };
         let ops = tools::shape_ops(d.index, &shape);
         d.last = Some(ops.clone());
-        let (label, gesture) = (d.label, d.gesture);
+        let (label, gesture) = (d.label.clone(), d.gesture);
         self.photo.update(cx, |ph, cx| {
             ph.command(label, ops, Some(gesture), Interaction::Continuous, cx)
         });
@@ -825,8 +828,10 @@ impl Canvas {
     fn status(&self, cx: &App) -> String {
         let photo = self.photo.read(cx);
         match &photo.load {
-            aigle_engine_api::LoadState::Loading => return "正在加载…".into(),
-            aigle_engine_api::LoadState::Failed(e) => return format!("无法打开：{e}"),
+            aigle_engine_api::LoadState::Loading => return crate::i18n::t("正在加载…").into(),
+            aigle_engine_api::LoadState::Failed(e) => {
+                return rust_i18n::t!("无法打开：{e}", e = e).into_owned();
+            }
             aigle_engine_api::LoadState::Ready(_) => {}
         }
         let zoom = self
@@ -834,24 +839,28 @@ impl Canvas {
             .map(|(crop, out, _)| format!("{:.0}%", self.state.scale(crop, out) * 100.0))
             .unwrap_or_default();
         let q = match self.frame.as_ref().map(|(f, _)| f.quality) {
-            Some(Quality::Draft) => "草稿",
-            Some(Quality::Refined) => "精细",
-            Some(Quality::Full) => "1:1",
-            None => "渲染中",
+            Some(Quality::Draft) => crate::i18n::t("草稿"),
+            Some(Quality::Refined) => crate::i18n::t("精细"),
+            Some(Quality::Full) => "1:1".into(),
+            None => crate::i18n::t("渲染中"),
         };
         let before = match self.compare {
-            Compare::Off => "",
-            Compare::Before => " · 原图",
-            Compare::Split => " · 分屏对比",
+            Compare::Off => String::new(),
+            Compare::Before => crate::i18n::t(" · 原图"),
+            Compare::Split => crate::i18n::t(" · 分屏对比"),
         };
         let hint = if photo.wb_pick {
-            " · 吸管：点击应为中性灰的位置，Esc 取消"
+            crate::i18n::t(" · 吸管：点击应为中性灰的位置，Esc 取消")
         } else {
             match photo.tool {
-                Tool::Crop => " · 裁剪：拖动边角调整，框外拖动旋转，双击框内或 Enter 完成",
-                Tool::Mask if photo.pending_mask.is_some() => " · 在画面上拖动以放置蒙版",
-                Tool::Mask => " · 蒙版：拖动控制点调整，O 显示叠加",
-                Tool::None => "",
+                Tool::Crop => {
+                    crate::i18n::t(" · 裁剪：拖动边角调整，框外拖动旋转，双击框内或 Enter 完成")
+                }
+                Tool::Mask if photo.pending_mask.is_some() => {
+                    crate::i18n::t(" · 在画面上拖动以放置蒙版")
+                }
+                Tool::Mask => crate::i18n::t(" · 蒙版：拖动控制点调整，O 显示叠加"),
+                Tool::None => String::new(),
             }
         };
         format!("{zoom} · {q}{before}{hint}")
@@ -1109,7 +1118,7 @@ impl Render for Canvas {
                 .size_full(),
             )
             .when_some(labels, |d, (x, w)| {
-                let tag = |s: &'static str| {
+                let tag = |s: String| {
                     div()
                         .absolute()
                         .top_2()
@@ -1121,8 +1130,8 @@ impl Render for Canvas {
                         .text_color(rgb(0xe8e8e8))
                         .child(s)
                 };
-                d.child(tag("原图").right(px(w - x + 8.0)))
-                    .child(tag("调整后").left(px(x + 8.0)))
+                d.child(tag(crate::i18n::t("原图")).right(px(w - x + 8.0)))
+                    .child(tag(crate::i18n::t("调整后")).left(px(x + 8.0)))
             })
             .child(
                 div()

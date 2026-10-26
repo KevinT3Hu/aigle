@@ -243,23 +243,23 @@ pub enum NewMask {
 }
 
 impl NewMask {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            NewMask::Linear => "线性渐变",
-            NewMask::Radial => "径向渐变",
-            NewMask::Brush => "画笔",
+            NewMask::Linear => crate::i18n::t("线性渐变"),
+            NewMask::Radial => crate::i18n::t("径向渐变"),
+            NewMask::Brush => crate::i18n::t("画笔"),
         }
     }
 }
 
-pub fn kind_label(s: &MaskShape) -> &'static str {
+pub fn kind_label(s: &MaskShape) -> String {
     match s {
-        MaskShape::Linear { .. } => "线性渐变",
-        MaskShape::Radial { .. } => "径向渐变",
-        MaskShape::Brush { .. } => "画笔",
-        MaskShape::Semantic { .. } => "智能",
-        MaskShape::Range { .. } => "范围",
-        MaskShape::Combine { .. } => "组合",
+        MaskShape::Linear { .. } => crate::i18n::t("线性渐变"),
+        MaskShape::Radial { .. } => crate::i18n::t("径向渐变"),
+        MaskShape::Brush { .. } => crate::i18n::t("画笔"),
+        MaskShape::Semantic { .. } => crate::i18n::t("智能"),
+        MaskShape::Range { .. } => crate::i18n::t("范围"),
+        MaskShape::Combine { .. } => crate::i18n::t("组合"),
     }
 }
 
@@ -281,7 +281,7 @@ pub fn new_mask(p: &EditParams, k: NewMask, at: Pt) -> LocalAdjustment {
     };
     LocalAdjustment {
         id,
-        name: format!("蒙版 {n}"),
+        name: rust_i18n::t!("蒙版 {n}", n = n).into_owned(),
         shape,
         invert: false,
         opacity: 1.0,

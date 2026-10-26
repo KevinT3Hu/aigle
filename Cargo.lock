@@ -147,6 +147,7 @@ dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
  "image",
+ "rust-i18n",
  "serde_json",
  "tracing",
  "tracing-subscriber",

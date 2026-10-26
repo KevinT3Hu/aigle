@@ -11,9 +11,8 @@ use gpui::{
     Render, Styled, Subscription, Task, Window, actions, div, prelude::*, px,
 };
 use gpui_component::button::{Button, ButtonGroup};
-use gpui_component::{
-    ActiveTheme, Disableable, Selectable, Sizable, TitleBar, WindowExt, h_flex, v_flex,
-};
+use gpui_component::menu::DropdownMenu;
+use gpui_component::{ActiveTheme, Selectable, Sizable, TitleBar, WindowExt, h_flex, v_flex};
 
 use crate::canvas::{Canvas, Compare};
 use crate::export::{self, ExportDialog, ExportEvent, Request, Settings};
@@ -54,6 +53,8 @@ actions!(
         ToggleWbPicker,
         ToggleInfo,
         ToggleHistory,
+        LanguageEnglish,
+        LanguageChinese,
         ToggleCrop,
         ToggleMask,
         ToggleOverlay,
@@ -318,7 +319,7 @@ impl Workspace {
             files: !folder,
             directories: folder,
             multiple: false,
-            prompt: Some("打开".into()),
+            prompt: Some(crate::i18n::t("打开").into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(paths))) = rx.await
@@ -390,6 +391,22 @@ impl Workspace {
         });
     }
 
+    fn change_language(
+        &mut self,
+        language: crate::i18n::Language,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(error) = crate::i18n::save_language(language) {
+            window.push_notification(
+                format!("{}: {error}", crate::i18n::t("无法保存语言设置")),
+                cx,
+            );
+        }
+        self.update_title(window, cx);
+        cx.refresh_windows();
+    }
+
     fn toggle_history(&mut self, cx: &mut Context<Self>) {
         self.show_history = !self.show_history;
         cx.notify();
@@ -458,7 +475,7 @@ impl Workspace {
 
     fn open_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(request) = self.export_request(cx) else {
-            window.push_notification("没有可导出的照片", cx);
+            window.push_notification(crate::i18n::t("没有可导出的照片"), cx);
             return;
         };
         let settings = self.export_settings.clone();
@@ -498,8 +515,16 @@ impl Workspace {
             let _ = this.update_in(cx, |w, window, cx| {
                 w.exports.retain(|(i, _, _)| *i != id);
                 let msg = match r {
-                    Ok(done) => format!("已导出 {shown}（{}×{}）", done.width, done.height),
-                    Err(e) => format!("导出 {shown} 失败：{e}"),
+                    Ok(done) => rust_i18n::t!(
+                        "已导出 {shown}（{}×{}）",
+                        arg0 = done.width,
+                        arg1 = done.height,
+                        shown = shown
+                    )
+                    .into_owned(),
+                    Err(e) => {
+                        rust_i18n::t!("导出 {shown} 失败：{e}", shown = shown, e = e).into_owned()
+                    }
                 };
                 window.push_notification(msg, cx);
                 cx.notify();
@@ -525,14 +550,26 @@ impl Workspace {
             }
             _ => (false, false, false, Compare::Off, Tool::None),
         };
+        let show_history = self.show_history;
+        let mask_overlay = self
+            .open
+            .as_ref()
+            .is_some_and(|o| o.photo.read(cx).mask_overlay);
         let title = {
             let l = self.library.read(cx);
             match (&self.open, develop) {
                 (Some(o), true) => o.photo.read(cx).name.clone(),
-                _ if l.dir.is_some() => format!("{} · {} 张", l.folder_name(), l.items.len()),
+                _ if l.dir.is_some() => {
+                    rust_i18n::t!("{} · {} 张", arg0 = l.folder_name(), arg1 = l.items.len())
+                        .into_owned()
+                }
                 _ => String::new(),
             }
         };
+        let file_focus = self.focus.clone();
+        let edit_focus = self.focus.clone();
+        let view_focus = self.focus.clone();
+        let language = crate::i18n::language();
         let (_, backend) = self.engine.backend();
         let row = h_flex()
             .flex_1()
@@ -540,122 +577,143 @@ impl Workspace {
             .gap_2()
             .pr_2()
             .child(
-                Button::new("open")
-                    .label("打开…")
+                Button::new("file-menu")
+                    .label(crate::i18n::t("文件"))
                     .small()
-                    .tooltip("打开照片（Ctrl+O）")
-                    .on_click(cx.listener(|w, _, window, cx| w.prompt_open(false, window, cx))),
+                    .dropdown_menu(move |menu, _, _| {
+                        menu.action_context(file_focus.clone())
+                            .menu(crate::i18n::t("打开照片…"), Box::new(Open))
+                            .menu(crate::i18n::t("打开文件夹…"), Box::new(OpenFolder))
+                            .separator()
+                            .menu(crate::i18n::t("导出…"), Box::new(Export))
+                            .separator()
+                            .menu(crate::i18n::t("退出"), Box::new(Quit))
+                    }),
             )
             .child(
-                Button::new("open-folder")
-                    .label("文件夹…")
+                Button::new("edit-menu")
+                    .label(crate::i18n::t("编辑"))
                     .small()
-                    .tooltip("打开文件夹（Ctrl+Shift+O）")
-                    .on_click(cx.listener(|w, _, window, cx| w.prompt_open(true, window, cx))),
+                    .dropdown_menu(move |menu, window, cx| {
+                        menu.action_context(edit_focus.clone())
+                            .menu_with_disabled(crate::i18n::t("撤销"), Box::new(Undo), !can_undo)
+                            .menu_with_disabled(crate::i18n::t("重做"), Box::new(Redo), !can_redo)
+                            .separator()
+                            .submenu(crate::i18n::t("工具"), window, cx, move |menu, _, _| {
+                                menu.menu_with_check_and_disabled(
+                                    crate::i18n::t("裁剪与拉直"),
+                                    tool == Tool::Crop,
+                                    Box::new(ToggleCrop),
+                                    !develop,
+                                )
+                                .menu_with_check_and_disabled(
+                                    crate::i18n::t("蒙版"),
+                                    tool == Tool::Mask,
+                                    Box::new(ToggleMask),
+                                    !develop,
+                                )
+                                .menu_with_disabled(
+                                    crate::i18n::t("白平衡吸管"),
+                                    Box::new(ToggleWbPicker),
+                                    !develop,
+                                )
+                            })
+                    }),
+            )
+            .child(
+                Button::new("view-menu")
+                    .label(crate::i18n::t("视图"))
+                    .small()
+                    .dropdown_menu(move |menu, window, cx| {
+                        menu.action_context(view_focus.clone())
+                            .menu_with_check(crate::i18n::t("图库"), !develop, Box::new(ShowGrid))
+                            .menu_with_check(crate::i18n::t("修图"), develop, Box::new(ShowDevelop))
+                            .separator()
+                            .submenu(crate::i18n::t("对比"), window, cx, move |menu, _, _| {
+                                menu.menu_with_check_and_disabled(
+                                    crate::i18n::t("原图"),
+                                    compare == Compare::Before,
+                                    Box::new(ToggleBefore),
+                                    !develop,
+                                )
+                                .menu_with_check_and_disabled(
+                                    crate::i18n::t("分屏对比"),
+                                    compare == Compare::Split,
+                                    Box::new(ToggleSplit),
+                                    !develop,
+                                )
+                            })
+                            .menu_with_disabled(
+                                crate::i18n::t("缩放 / 适合窗口"),
+                                Box::new(ToggleZoom),
+                                !develop,
+                            )
+                            .separator()
+                            .menu_with_check_and_disabled(
+                                crate::i18n::t("历史记录"),
+                                show_history,
+                                Box::new(ToggleHistory),
+                                !develop,
+                            )
+                            .menu_with_check_and_disabled(
+                                crate::i18n::t("拍摄参数"),
+                                show_info,
+                                Box::new(ToggleInfo),
+                                !develop,
+                            )
+                            .menu_with_check_and_disabled(
+                                crate::i18n::t("蒙版叠加"),
+                                mask_overlay,
+                                Box::new(ToggleOverlay),
+                                tool != Tool::Mask,
+                            )
+                            .separator()
+                            .submenu(crate::i18n::t("语言"), window, cx, move |menu, _, _| {
+                                menu.menu_with_check(
+                                    "English",
+                                    language == crate::i18n::Language::English,
+                                    Box::new(LanguageEnglish),
+                                )
+                                .menu_with_check(
+                                    "简体中文",
+                                    language == crate::i18n::Language::Chinese,
+                                    Box::new(LanguageChinese),
+                                )
+                            })
+                    }),
             )
             .child(
                 ButtonGroup::new("mode")
                     .small()
                     .child(
                         Button::new("grid")
-                            .label("图库")
+                            .label(crate::i18n::t("图库"))
                             .selected(!develop)
-                            .tooltip("缩略图网格（G）")
+                            .tooltip(crate::i18n::t("缩略图网格（G）"))
                             .on_click(cx.listener(|w, _, window, cx| {
                                 w.set_mode(Mode::Library, window, cx)
                             })),
                     )
                     .child(
                         Button::new("develop")
-                            .label("修图")
+                            .label(crate::i18n::t("修图"))
                             .selected(develop)
-                            .tooltip("修图（D，或在网格中按 Enter / 双击）")
+                            .tooltip(crate::i18n::t("修图（D，或在网格中按 Enter / 双击）"))
                             .on_click(cx.listener(|w, _, window, cx| {
                                 w.set_mode(Mode::Develop, window, cx)
                             })),
                     ),
             )
-            .when(develop, |row| {
+            .when(!self.exports.is_empty(), |row| {
                 row.child(
-                    Button::new("history")
-                        .label("历史")
-                        .small()
-                        .selected(self.show_history)
-                        .tooltip("显示历史记录（H）")
-                        .on_click(cx.listener(|w, _, _, cx| w.toggle_history(cx))),
-                )
-                .child(
-                    Button::new("undo")
-                        .label("撤销")
-                        .small()
-                        .disabled(!can_undo)
-                        .on_click(cx.listener(|w, _, _, cx| w.with_photo(cx, Photo::undo))),
-                )
-                .child(
-                    Button::new("redo")
-                        .label("重做")
-                        .small()
-                        .disabled(!can_redo)
-                        .on_click(cx.listener(|w, _, _, cx| w.with_photo(cx, Photo::redo))),
-                )
-                .child(
-                    Button::new("before")
-                        .label("原图")
-                        .small()
-                        .selected(compare == Compare::Before)
-                        .tooltip("整幅显示原图（\\）")
-                        .on_click(
-                            cx.listener(|w, _, _, cx| w.with_canvas(cx, Canvas::toggle_before)),
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(
+                            rust_i18n::t!("正在导出 {} 张", arg0 = self.exports.len()).into_owned(),
                         ),
-                )
-                .child(
-                    Button::new("split")
-                        .label("分屏对比")
-                        .small()
-                        .selected(compare == Compare::Split)
-                        .tooltip("左侧原图、右侧调整后，可拖动分割线（Y）")
-                        .on_click(
-                            cx.listener(|w, _, _, cx| w.with_canvas(cx, Canvas::toggle_split)),
-                        ),
-                )
-                .child(
-                    Button::new("info-overlay")
-                        .label("拍摄参数")
-                        .small()
-                        .selected(show_info)
-                        .tooltip("在画面上显示相机、镜头和曝光参数（I）")
-                        .on_click(
-                            cx.listener(|w, _, _, cx| w.with_canvas(cx, Canvas::toggle_info)),
-                        ),
-                )
-                .child(
-                    Button::new("tool-crop")
-                        .label("裁剪")
-                        .small()
-                        .selected(tool == Tool::Crop)
-                        .tooltip("裁剪与拉直（R）")
-                        .on_click(cx.listener(|w, _, _, cx| w.toggle_tool(Tool::Crop, cx))),
-                )
-                .child(
-                    Button::new("tool-mask")
-                        .label("蒙版")
-                        .small()
-                        .selected(tool == Tool::Mask)
-                        .tooltip("局部调整：线性、径向渐变和画笔（M）")
-                        .on_click(cx.listener(|w, _, _, cx| w.toggle_tool(Tool::Mask, cx))),
                 )
             })
-            .child(
-                Button::new("export")
-                    .label(if self.exports.is_empty() {
-                        "导出…".to_string()
-                    } else {
-                        format!("导出…（{} 个进行中）", self.exports.len())
-                    })
-                    .small()
-                    .tooltip("导出当前照片（Ctrl+E）")
-                    .on_click(cx.listener(|w, _, window, cx| w.open_export(window, cx))),
-            )
             .child(
                 div()
                     .flex_1()
@@ -682,7 +740,9 @@ impl Workspace {
                 .flex_1()
                 .justify_center()
                 .text_color(cx.theme().muted_foreground)
-                .child("在图库中选择一张照片，或打开一张照片（Ctrl+O）")
+                .child(crate::i18n::t(
+                    "在图库中选择一张照片，或打开一张照片（Ctrl+O）",
+                ))
                 .into_any_element();
         };
         let has_strip = !self.library.read(cx).items.is_empty();
@@ -801,6 +861,12 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &SwapAspect, _, cx| w.swap_aspect(cx)))
             .on_action(cx.listener(|w, _: &Export, window, cx| w.open_export(window, cx)))
             .on_action(cx.listener(|w, _: &Cancel, _, cx| w.cancel(cx)))
+            .on_action(cx.listener(|w, _: &LanguageEnglish, window, cx| {
+                w.change_language(crate::i18n::Language::English, window, cx)
+            }))
+            .on_action(cx.listener(|w, _: &LanguageChinese, window, cx| {
+                w.change_language(crate::i18n::Language::Chinese, window, cx)
+            }))
             .child(self.toolbar(cx))
             .child(
                 div()

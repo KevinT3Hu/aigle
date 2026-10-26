@@ -102,11 +102,12 @@ impl Library {
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 let msg = if e.is_read_only() {
-                    format!("文件夹不可写，{name} 的修改未保存")
+                    rust_i18n::t!("文件夹不可写，{name} 的修改未保存", name = name).into_owned()
                 } else if matches!(e, aigle_library::Error::Conflict(_)) {
-                    format!("{name} 的 XMP 已被其他程序修改，未覆盖")
+                    rust_i18n::t!("{name} 的 XMP 已被其他程序修改，未覆盖", name = name)
+                        .into_owned()
                 } else {
-                    format!("{name} 的 XMP 保存失败：{e}")
+                    rust_i18n::t!("{name} 的 XMP 保存失败：{e}", name = name, e = e).into_owned()
                 };
                 if this
                     .update(cx, |_, cx| cx.emit(LibraryEvent::Notice(msg)))
@@ -224,7 +225,7 @@ impl Library {
                 }
                 if let Some(w) = warnings.first() {
                     let more = if warnings.len() > 1 {
-                        format!("（另有 {} 条）", warnings.len() - 1)
+                        rust_i18n::t!("（另有 {} 条）", arg0 = warnings.len() - 1).into_owned()
                     } else {
                         String::new()
                     };
@@ -249,7 +250,9 @@ impl Library {
             Ok(e) => e,
             Err(e) => {
                 self.loading = false;
-                cx.emit(LibraryEvent::Notice(format!("无法读取文件夹：{e}")));
+                cx.emit(LibraryEvent::Notice(
+                    rust_i18n::t!("无法读取文件夹：{e}", e = e).into_owned(),
+                ));
                 cx.notify();
                 return None;
             }

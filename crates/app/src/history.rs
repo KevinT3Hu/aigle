@@ -20,13 +20,13 @@ impl HistoryPanel {
     }
 }
 
-fn origin_tag(o: &Origin) -> Option<&'static str> {
+fn origin_tag(o: &Origin) -> Option<String> {
     match o {
         Origin::User => None,
-        Origin::Agent { .. } => Some("AI"),
-        Origin::Preset => Some("预设"),
-        Origin::Profile => Some("配置"),
-        Origin::ExternalReload => Some("外部"),
+        Origin::Agent { .. } => Some("AI".into()),
+        Origin::Preset => Some(crate::i18n::t("预设")),
+        Origin::Profile => Some(crate::i18n::t("配置")),
+        Origin::ExternalReload => Some(crate::i18n::t("外部")),
     }
 }
 
@@ -39,7 +39,7 @@ impl Render for HistoryPanel {
         let (fg, muted, active) = (theme.foreground, theme.muted_foreground, theme.list_active);
         let photo = self.photo.clone();
 
-        let rows = std::iter::once(("打开照片".to_string(), None))
+        let rows = std::iter::once((crate::i18n::t("打开照片").to_string(), None))
             .chain(
                 items
                     .iter()
@@ -59,7 +59,13 @@ impl Render for HistoryPanel {
                     .when(i == at, |d| d.bg(active))
                     .hover(|d| d.bg(theme.list_hover))
                     .on_click(move |_, _, cx| photo.update(cx, |p, cx| p.goto(i, cx)))
-                    .child(div().flex_1().min_w_0().truncate().child(label))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(crate::i18n::history_label(&label)),
+                    )
                     .when_some(tag, |d, t| d.child(div().text_color(muted).child(t)))
             })
             .collect::<Vec<_>>();
@@ -72,7 +78,7 @@ impl Render for HistoryPanel {
                     .py_2()
                     .text_sm()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child("历史记录"),
+                    .child(crate::i18n::t("历史记录")),
             )
             .child(
                 div()

@@ -3,6 +3,8 @@
 //! `aigle-gui [FOLDER | PHOTO]` opens a folder in the grid or a photo in develop;
 //! `aigle-gui --synthetic` opens a generated test image.
 
+rust_i18n::i18n!("locales", fallback = "en");
+
 mod canvas;
 mod crop;
 mod curve;
@@ -10,6 +12,7 @@ mod export;
 mod filmstrip;
 mod grid;
 mod history;
+mod i18n;
 mod library;
 mod mask_panel;
 mod meta;
@@ -55,6 +58,7 @@ fn main() {
         .with_assets(gpui_kit_assets::Assets)
         .run(move |cx: &mut App| {
             gpui_component::init(cx);
+            i18n::init();
             Theme::change(ThemeMode::Dark, None, cx);
             workspace::bind_keys(cx);
 

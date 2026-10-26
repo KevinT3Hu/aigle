@@ -15,8 +15,8 @@ use aigle_doc::{EditCommand, GestureId, ParamOp};
 use aigle_engine_api::{Histogram, Interaction};
 use gpui::{
     Bounds, Context, Entity, Hsla, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, PathBuilder, Pixels, Point, Render, Rgba, Styled, Window, canvas,
-    div, fill, point, prelude::*, px, rgb, rgba, size,
+    MouseUpEvent, ParentElement, PathBuilder, Pixels, Point, Render, Rgba, SharedString, Styled,
+    Window, canvas, div, fill, point, prelude::*, px, rgb, rgba, size,
 };
 use gpui_component::button::Button;
 use gpui_component::{ActiveTheme, Selectable, Sizable, h_flex, v_flex};
@@ -43,12 +43,12 @@ impl Channel {
         }
     }
 
-    fn label(self) -> &'static str {
+    fn label(self) -> String {
         match self {
-            Channel::Rgb => "RGB",
-            Channel::Red => "红",
-            Channel::Green => "绿",
-            Channel::Blue => "蓝",
+            Channel::Rgb => "RGB".into(),
+            Channel::Red => crate::i18n::t("红"),
+            Channel::Green => crate::i18n::t("绿"),
+            Channel::Blue => crate::i18n::t("蓝"),
         }
     }
 
@@ -232,7 +232,7 @@ impl CurveEditor {
     }
 
     fn label(&self) -> String {
-        format!("点曲线 · {}", self.channel.label())
+        rust_i18n::t!("点曲线 · {}", arg0 = self.channel.label()).into_owned()
     }
 
     fn send(
@@ -328,11 +328,11 @@ impl CurveEditor {
     fn readout(&self, points: &[CurvePoint]) -> Option<String> {
         let i = self.drag.as_ref().map(|d| d.index).or(self.hover)?;
         if self.drag.as_ref().is_some_and(|d| d.removed) {
-            return Some("松开以删除此点".into());
+            return Some(crate::i18n::t("松开以删除此点").into());
         }
         let q = points.get(i)?;
         let v = |t: f32| (t * 255.0).round() as i32;
-        Some(format!("输入 {} · 输出 {}", v(q.x), v(q.y)))
+        Some(rust_i18n::t!("输入 {} · 输出 {}", arg0 = v(q.x), arg1 = v(q.y)).into_owned())
     }
 }
 
@@ -449,7 +449,7 @@ impl Render for CurveEditor {
         let channels = h_flex()
             .gap_1()
             .children(Channel::ALL.map(|ch| {
-                Button::new(ch.label())
+                Button::new(SharedString::from(format!("curve-channel-{ch:?}")))
                     .label(ch.label())
                     .xsmall()
                     .selected(ch == self.channel)
@@ -462,7 +462,7 @@ impl Render for CurveEditor {
             .child(div().flex_1())
             .child(
                 Button::new("curve-reset")
-                    .label("重置")
+                    .label(crate::i18n::t("重置"))
                     .xsmall()
                     .on_click(cx.listener(|c, _, _, cx| c.reset(cx))),
             );
@@ -494,7 +494,8 @@ impl Render for CurveEditor {
                 .size_full(),
             );
 
-        let hint = readout.unwrap_or_else(|| "单击添加点，拖动调整；双击点或拖出图表删除".into());
+        let hint = readout
+            .unwrap_or_else(|| crate::i18n::t("单击添加点，拖动调整；双击点或拖出图表删除").into());
         let mut body = v_flex()
             .gap_2()
             .child(channels)

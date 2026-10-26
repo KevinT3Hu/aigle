@@ -152,7 +152,11 @@ fn cell(
                 })
                 .child(div().text_color(rgb(0xe8c547)).child(stars(item.rating())))
                 .when(item.edited(), |d| {
-                    d.child(div().text_color(theme.muted_foreground).child("已调整"))
+                    d.child(
+                        div()
+                            .text_color(theme.muted_foreground)
+                            .child(crate::i18n::t("已调整")),
+                    )
                 }),
         );
     on_pick(d, lib, index, 2)
@@ -169,9 +173,11 @@ impl Render for Grid {
         };
         if n == 0 {
             let msg = match (folder, loading) {
-                (false, _) => "打开一个文件夹浏览照片（Ctrl+Shift+O），或打开单张照片（Ctrl+O）",
-                (true, true) => "正在读取文件夹…",
-                (true, false) => "此文件夹中没有可打开的照片",
+                (false, _) => crate::i18n::t(
+                    "打开一个文件夹浏览照片（Ctrl+Shift+O），或打开单张照片（Ctrl+O）",
+                ),
+                (true, true) => crate::i18n::t("正在读取文件夹…"),
+                (true, false) => crate::i18n::t("此文件夹中没有可打开的照片"),
             };
             return div()
                 .size_full()
