@@ -1,0 +1,10 @@
+[package]
+name = "aigle-kernels-build"
+description = "Compiles aigle-kernels to SPIR-V with rust-gpu and writes crates/kernels/spv/"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+spirv-builder = "=0.11.0"

@@ -1,0 +1,20 @@
+[package]
+name = "aigle-doc"
+description = "aigle per-photo document: edit state, undo history, engine sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aigle-core.workspace = true
+aigle-engine-api.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+aigle-engine.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,37 @@
+[package]
+name = "aigle-engine"
+description = "aigle image engine: implementation of aigle-engine-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ash = { version = "0.38.0", default-features = false }
+aigle-core.workspace = true
+aigle-engine-api.workspace = true
+aigle-kernels.workspace = true
+aigle-lensfun.workspace = true
+aigle-libraw-sys.workspace = true
+aigle-rtprocess-sys.workspace = true
+aigle-vips-sys.workspace = true
+blake3.workspace = true
+bytemuck = "1.23"
+futures.workspace = true
+half.workspace = true
+memmap2 = "0.9.11"
+libc = "0.2.186"
+parking_lot.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "spirv"] }
+
+[lints]
+workspace = true
+
+
+[dev-dependencies]
+image.workspace = true
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }

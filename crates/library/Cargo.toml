@@ -1,0 +1,19 @@
+[package]
+name = "aigle-library"
+description = "aigle folders and XMP sidecars: scanning, sidecar read/write, debounced saving"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aigle-core.workspace = true
+aigle-engine-api.workspace = true
+aigle-exiv2-sys.workspace = true
+blake3.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

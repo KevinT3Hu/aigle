@@ -1,0 +1,31 @@
+[package]
+name = "aigle-app"
+description = "aigle GPUI application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "aigle-gui"
+path = "src/main.rs"
+
+[dependencies]
+aigle-core.workspace = true
+aigle-doc.workspace = true
+aigle-engine.workspace = true
+aigle-engine-api.workspace = true
+aigle-library.workspace = true
+anyhow = "1.0.98"
+futures.workspace = true
+gpui = { version = "=0.3.9", package = "gpui-pre" }
+gpui_platform = { version = "=0.3.9", package = "gpui-pre-platform", features = ["wayland", "x11", "font-kit"] }
+gpui-component = "=0.8.0"
+gpui-kit-assets = "=0.8.0"
+image = { workspace = true }
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+
+[lints]
+workspace = true

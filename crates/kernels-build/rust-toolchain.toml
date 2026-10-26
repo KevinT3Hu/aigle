@@ -1,0 +1,5 @@
+# Pinned by rust-gpu / spirv-builder 0.11.0 (rustc_codegen_spirv build.rs, commit d453bdd8).
+# Change only together with the spirv-builder version.
+[toolchain]
+channel = "nightly-2026-08-15"
+components = ["rust-src", "rustc-dev", "llvm-tools"]

@@ -1,0 +1,816 @@
+//! Main window: title bar with the toolbar, then either the library grid or the develop view
+//! (history sidebar, canvas, adjustment panel, filmstrip).
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use aigle_core::params::Aspect;
+use aigle_engine_api::{Engine, SourceRef};
+use gpui::{
+    App, Context, Entity, FocusHandle, IntoElement, KeyBinding, ParentElement, PathPromptOptions,
+    Render, Styled, Subscription, Task, Window, actions, div, prelude::*, px,
+};
+use gpui_component::button::{Button, ButtonGroup};
+use gpui_component::{
+    ActiveTheme, Disableable, Selectable, Sizable, TitleBar, WindowExt, h_flex, v_flex,
+};
+
+use crate::canvas::{Canvas, Compare};
+use crate::export::{self, ExportDialog, ExportEvent, Request, Settings};
+use crate::filmstrip::Filmstrip;
+use crate::grid::Grid;
+use crate::history::HistoryPanel;
+use crate::library::{LABELS, Library, LibraryEvent};
+use crate::panel::Panel;
+use crate::photo::{Photo, PhotoEvent, Tool};
+
+actions!(
+    aigle,
+    [
+        Open,
+        OpenFolder,
+        ShowGrid,
+        ShowDevelop,
+        OpenSelected,
+        Left,
+        Right,
+        Up,
+        Down,
+        Rate0,
+        Rate1,
+        Rate2,
+        Rate3,
+        Rate4,
+        Rate5,
+        Label1,
+        Label2,
+        Label3,
+        Label4,
+        Undo,
+        Redo,
+        ToggleZoom,
+        ToggleBefore,
+        ToggleSplit,
+        ToggleWbPicker,
+        ToggleInfo,
+        ToggleHistory,
+        ToggleCrop,
+        ToggleMask,
+        ToggleOverlay,
+        SwapAspect,
+        Export,
+        Cancel,
+        Quit
+    ]
+);
+
+const CONTEXT: &str = "Workspace";
+
+pub fn bind_keys(cx: &mut App) {
+    let ws = Some(CONTEXT);
+    cx.bind_keys([
+        KeyBinding::new("ctrl-o", Open, ws),
+        KeyBinding::new("ctrl-shift-o", OpenFolder, ws),
+        KeyBinding::new("g", ShowGrid, ws),
+        KeyBinding::new("d", ShowDevelop, ws),
+        KeyBinding::new("enter", OpenSelected, ws),
+        KeyBinding::new("left", Left, ws),
+        KeyBinding::new("right", Right, ws),
+        KeyBinding::new("up", Up, ws),
+        KeyBinding::new("down", Down, ws),
+        KeyBinding::new("0", Rate0, ws),
+        KeyBinding::new("1", Rate1, ws),
+        KeyBinding::new("2", Rate2, ws),
+        KeyBinding::new("3", Rate3, ws),
+        KeyBinding::new("4", Rate4, ws),
+        KeyBinding::new("5", Rate5, ws),
+        KeyBinding::new("6", Label1, ws),
+        KeyBinding::new("7", Label2, ws),
+        KeyBinding::new("8", Label3, ws),
+        KeyBinding::new("9", Label4, ws),
+        KeyBinding::new("ctrl-z", Undo, ws),
+        KeyBinding::new("ctrl-shift-z", Redo, ws),
+        KeyBinding::new("ctrl-y", Redo, ws),
+        KeyBinding::new("z", ToggleZoom, ws),
+        KeyBinding::new("\\", ToggleBefore, ws),
+        KeyBinding::new("y", ToggleSplit, ws),
+        KeyBinding::new("w", ToggleWbPicker, ws),
+        KeyBinding::new("i", ToggleInfo, ws),
+        KeyBinding::new("h", ToggleHistory, ws),
+        KeyBinding::new("r", ToggleCrop, ws),
+        KeyBinding::new("m", ToggleMask, ws),
+        KeyBinding::new("o", ToggleOverlay, ws),
+        KeyBinding::new("x", SwapAspect, ws),
+        KeyBinding::new("ctrl-e", Export, ws),
+        KeyBinding::new("ctrl-shift-e", Export, ws),
+        KeyBinding::new("escape", Cancel, ws),
+        KeyBinding::new("ctrl-q", Quit, None),
+    ]);
+    cx.on_action(|_: &Quit, cx| cx.quit());
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    Library,
+    Develop,
+}
+
+struct OpenPhoto {
+    photo: Entity<Photo>,
+    canvas: Entity<Canvas>,
+    panel: Entity<Panel>,
+    history: Entity<HistoryPanel>,
+    _edits: Subscription,
+}
+
+pub struct Workspace {
+    engine: Engine,
+    library: Entity<Library>,
+    grid: Entity<Grid>,
+    filmstrip: Entity<Filmstrip>,
+    mode: Mode,
+    open: Option<OpenPhoto>,
+    show_history: bool,
+    focus: FocusHandle,
+    export_settings: Settings,
+    export_dialog: Option<(Entity<ExportDialog>, Subscription)>,
+    /// Running exports by file name.
+    exports: Vec<(u64, String, Task<()>)>,
+    next_export: u64,
+    _subs: Vec<Subscription>,
+}
+
+impl Workspace {
+    /// `path`: a folder opens in the grid, a photo opens in develop with its folder in the
+    /// filmstrip.
+    pub fn new(
+        engine: Engine,
+        source: Option<SourceRef>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Workspace {
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
+        let library = cx.new(|cx| Library::new(engine.clone(), cx));
+        let grid = cx.new(|cx| Grid::new(library.clone(), cx));
+        let filmstrip = cx.new(|cx| Filmstrip::new(library.clone(), cx));
+        let subs = vec![
+            cx.subscribe_in(&library, window, |w, _, e, window, cx| match e {
+                LibraryEvent::Open(i) => w.open_index(*i, window, cx),
+                LibraryEvent::Notice(m) => window.push_notification(m.clone(), cx),
+            }),
+            cx.observe(&library, |_, _, cx| cx.notify()),
+            cx.on_app_quit(|w, cx| {
+                w.library.read(cx).flush();
+                async {}
+            }),
+        ];
+        let mut ws = Workspace {
+            engine,
+            library,
+            grid,
+            filmstrip,
+            mode: Mode::Library,
+            open: None,
+            show_history: true,
+            focus,
+            export_settings: Settings::default(),
+            export_dialog: None,
+            exports: Vec::new(),
+            next_export: 0,
+            _subs: subs,
+        };
+        match source {
+            Some(SourceRef::File(p)) => ws.open_path(p, window, cx),
+            Some(s) => ws.open_source(s, None, window, cx),
+            None => ws.update_title(window, cx),
+        }
+        ws
+    }
+
+    /// Open a folder in the grid, or a photo in develop together with its folder.
+    pub fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if path.is_dir() {
+            self.library
+                .update(cx, |l, cx| l.open_folder(path, None, cx));
+            self.close_photo(cx);
+            self.mode = Mode::Library;
+            self.update_title(window, cx);
+            cx.notify();
+            return;
+        }
+        let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        let initial = self.library.update(cx, |l, cx| {
+            l.open_folder(dir, Some(path.clone()), cx);
+            l.read_meta(&path)
+        });
+        self.open_source(SourceRef::File(path), initial.edits, window, cx);
+    }
+
+    fn open_index(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let (path, meta) = self.library.update(cx, |l, cx| {
+            l.select(index, cx);
+            let path = l.items.get(index).map(|it| it.entry.path.clone());
+            (path, l.meta_now(index))
+        });
+        let Some(path) = path else { return };
+        let already = self
+            .open
+            .as_ref()
+            .is_some_and(|o| o.photo.read(cx).path.as_deref() == Some(path.as_path()));
+        if already {
+            self.mode = Mode::Develop;
+            self.update_title(window, cx);
+            cx.notify();
+            return;
+        }
+        self.open_source(SourceRef::File(path), meta.edits, window, cx);
+    }
+
+    fn open_source(
+        &mut self,
+        source: SourceRef,
+        edits: Option<aigle_core::EditParams>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_photo(cx);
+        let engine = self.engine.clone();
+        let photo = cx.new(|cx| Photo::open(&engine, source, edits.unwrap_or_default(), cx));
+        let canvas = cx.new(|cx| Canvas::new(photo.clone(), cx));
+        let hist = canvas.read(cx).histogram();
+        let panel = cx.new(|cx| Panel::new(photo.clone(), hist, window, cx));
+        let history = cx.new(|cx| HistoryPanel::new(photo.clone(), cx));
+        let library = self.library.clone();
+        let edits = cx.subscribe(&photo, move |_, photo, e, cx| {
+            if let PhotoEvent::Edited = e {
+                let p = photo.read(cx);
+                if let Some(path) = p.path.clone() {
+                    let head = p.head().clone();
+                    library.update(cx, |l, cx| l.photo_edited(&path, &head, cx));
+                }
+            }
+        });
+        self.open = Some(OpenPhoto {
+            photo,
+            canvas,
+            panel,
+            history,
+            _edits: edits,
+        });
+        self.mode = Mode::Develop;
+        self.update_title(window, cx);
+        cx.notify();
+    }
+
+    fn close_photo(&mut self, cx: &mut Context<Self>) {
+        if self.open.take().is_some() {
+            self.library.read(cx).flush();
+        }
+    }
+
+    fn update_title(&self, window: &mut Window, cx: &App) {
+        let title = match (self.mode, &self.open) {
+            (Mode::Develop, Some(o)) => format!("{} — aigle", o.photo.read(cx).name),
+            _ => match self.library.read(cx).folder_name() {
+                n if n.is_empty() => "aigle".to_string(),
+                n => format!("{n} — aigle"),
+            },
+        };
+        window.set_window_title(&title);
+    }
+
+    fn set_mode(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
+        if mode == Mode::Develop {
+            let selected = self.library.read(cx).selected;
+            let open_path = self
+                .open
+                .as_ref()
+                .and_then(|o| o.photo.read(cx).path.clone());
+            let selected_path = self
+                .library
+                .read(cx)
+                .selected_item()
+                .map(|it| it.entry.path.clone());
+            if let Some(i) = selected
+                && selected_path != open_path
+            {
+                self.open_index(i, window, cx);
+                return;
+            }
+            if self.open.is_none() {
+                return;
+            }
+        }
+        if mode == Mode::Library {
+            let sel = self.library.read(cx).selected;
+            if let Some(i) = sel {
+                self.grid.read(cx).reveal(i);
+            }
+        }
+        self.mode = mode;
+        self.update_title(window, cx);
+        cx.notify();
+    }
+
+    fn prompt_open(&mut self, folder: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: !folder,
+            directories: folder,
+            multiple: false,
+            prompt: Some("打开".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = rx.await
+                && let Some(p) = paths.into_iter().next()
+            {
+                this.update_in(cx, |w, window, cx| w.open_path(p, window, cx))?;
+            }
+            anyhow::Ok(())
+        })
+        .detach();
+    }
+
+    fn with_photo(&self, cx: &mut Context<Self>, f: impl FnOnce(&mut Photo, &mut Context<Photo>)) {
+        if self.mode == Mode::Develop
+            && let Some(o) = &self.open
+        {
+            o.photo.update(cx, f);
+        }
+    }
+
+    fn with_canvas(
+        &self,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut Canvas, &mut Context<Canvas>),
+    ) {
+        if self.mode == Mode::Develop
+            && let Some(o) = &self.open
+        {
+            o.canvas.update(cx, f);
+            cx.notify();
+        }
+    }
+
+    /// Left/right: previous/next photo in develop, selection in the grid.
+    fn step(&mut self, dx: isize, dy: isize, window: &mut Window, cx: &mut Context<Self>) {
+        match self.mode {
+            Mode::Library => self.grid.update(cx, |g, cx| g.move_selection(dx, dy, cx)),
+            Mode::Develop if dy == 0 => {
+                let target = {
+                    let l = self.library.read(cx);
+                    let n = l.items.len() as isize;
+                    l.selected
+                        .map(|s| s as isize + dx)
+                        .filter(|t| (0..n).contains(t))
+                };
+                if let Some(t) = target {
+                    self.open_index(t as usize, window, cx);
+                }
+            }
+            Mode::Develop => {}
+        }
+    }
+
+    /// The photo ratings and labels apply to: the selection, which develop keeps on the
+    /// open photo.
+    fn rate(&mut self, rating: i8, cx: &mut Context<Self>) {
+        self.library.update(cx, |l, cx| {
+            if let Some(i) = l.selected {
+                l.set_rating(i, rating, cx);
+            }
+        });
+    }
+
+    fn label(&mut self, n: usize, cx: &mut Context<Self>) {
+        self.library.update(cx, |l, cx| {
+            if let Some(i) = l.selected {
+                l.toggle_label(i, LABELS[n].0, cx);
+            }
+        });
+    }
+
+    fn toggle_history(&mut self, cx: &mut Context<Self>) {
+        self.show_history = !self.show_history;
+        cx.notify();
+    }
+
+    fn toggle_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
+        self.with_photo(cx, |p, cx| p.toggle_tool(tool, cx));
+        cx.notify();
+    }
+
+    /// Esc: drop a pending mask, else leave the tool, else stop picking.
+    fn cancel(&mut self, cx: &mut Context<Self>) {
+        if self.export_dialog.take().is_some() {
+            cx.notify();
+            return;
+        }
+        self.with_photo(cx, |p, cx| {
+            if p.pending_mask.take().is_some() {
+                cx.notify();
+            } else if p.wb_pick {
+                p.set_wb_pick(false, cx);
+            } else {
+                p.set_tool(Tool::None, cx);
+            }
+        });
+    }
+
+    fn swap_aspect(&mut self, cx: &mut Context<Self>) {
+        self.with_photo(cx, |p, cx| {
+            if p.tool == Tool::Crop
+                && let Aspect::Ratio { w, h } = p.head().geometry.aspect
+            {
+                p.set_aspect(Aspect::Ratio { w: h, h: w }, cx);
+            }
+        });
+    }
+
+    /// What export applies to: the open photo in develop, the selection in the grid.
+    fn export_request(&mut self, cx: &mut Context<Self>) -> Option<Request> {
+        if self.mode == Mode::Develop
+            && let Some(o) = &self.open
+        {
+            let p = o.photo.read(cx);
+            let source = p.source.clone();
+            return Some(Request {
+                source,
+                params: p.head().clone(),
+                name: p.name.clone(),
+                folder: p
+                    .path
+                    .as_ref()
+                    .and_then(|f| f.parent().map(Path::to_path_buf)),
+            });
+        }
+        let index = self.library.read(cx).selected?;
+        let meta = self.library.update(cx, |l, _| l.meta_now(index));
+        let l = self.library.read(cx);
+        let it = l.items.get(index)?;
+        Some(Request {
+            source: SourceRef::File(it.entry.path.clone()),
+            params: Arc::new(meta.edits.unwrap_or_default()),
+            name: it.entry.name.clone(),
+            folder: l.dir.clone(),
+        })
+    }
+
+    fn open_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(request) = self.export_request(cx) else {
+            window.push_notification("没有可导出的照片", cx);
+            return;
+        };
+        let settings = self.export_settings.clone();
+        let dialog = cx.new(|cx| ExportDialog::new(request, settings, window, cx));
+        let sub = cx.subscribe_in(&dialog, window, |w, _, ev, window, cx| {
+            let ExportEvent::Done(chosen) = ev;
+            w.export_dialog = None;
+            if let Some((request, settings, path)) = chosen {
+                w.export_settings = settings.clone();
+                w.start_export(request, settings, path.clone(), window, cx);
+            }
+            window.focus(&w.focus, cx);
+            cx.notify();
+        });
+        self.export_dialog = Some((dialog, sub));
+        cx.notify();
+    }
+
+    fn start_export(
+        &mut self,
+        request: &Request,
+        settings: &Settings,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let job = export::run(&self.engine, request, settings, path);
+        let id = self.next_export;
+        self.next_export += 1;
+        let shown = name.clone();
+        let task = cx.spawn_in(window, async move |this, cx| {
+            let r = job.await;
+            let _ = this.update_in(cx, |w, window, cx| {
+                w.exports.retain(|(i, _, _)| *i != id);
+                let msg = match r {
+                    Ok(done) => format!("已导出 {shown}（{}×{}）", done.width, done.height),
+                    Err(e) => format!("导出 {shown} 失败：{e}"),
+                };
+                window.push_notification(msg, cx);
+                cx.notify();
+            });
+        });
+        self.exports.push((id, name, task));
+        cx.notify();
+    }
+
+    fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let develop = self.mode == Mode::Develop;
+        let (can_undo, can_redo, show_info, compare, tool) = match (&self.open, develop) {
+            (Some(o), true) => {
+                let p = o.photo.read(cx);
+                let c = o.canvas.read(cx);
+                (
+                    p.doc.can_undo(),
+                    p.doc.can_redo(),
+                    c.show_info(),
+                    c.compare(),
+                    p.tool,
+                )
+            }
+            _ => (false, false, false, Compare::Off, Tool::None),
+        };
+        let title = {
+            let l = self.library.read(cx);
+            match (&self.open, develop) {
+                (Some(o), true) => o.photo.read(cx).name.clone(),
+                _ if l.dir.is_some() => format!("{} · {} 张", l.folder_name(), l.items.len()),
+                _ => String::new(),
+            }
+        };
+        let (_, backend) = self.engine.backend();
+        let row = h_flex()
+            .flex_1()
+            .h_full()
+            .gap_2()
+            .pr_2()
+            .child(
+                Button::new("open")
+                    .label("打开…")
+                    .small()
+                    .tooltip("打开照片（Ctrl+O）")
+                    .on_click(cx.listener(|w, _, window, cx| w.prompt_open(false, window, cx))),
+            )
+            .child(
+                Button::new("open-folder")
+                    .label("文件夹…")
+                    .small()
+                    .tooltip("打开文件夹（Ctrl+Shift+O）")
+                    .on_click(cx.listener(|w, _, window, cx| w.prompt_open(true, window, cx))),
+            )
+            .child(
+                ButtonGroup::new("mode")
+                    .small()
+                    .child(
+                        Button::new("grid")
+                            .label("图库")
+                            .selected(!develop)
+                            .tooltip("缩略图网格（G）")
+                            .on_click(cx.listener(|w, _, window, cx| {
+                                w.set_mode(Mode::Library, window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("develop")
+                            .label("修图")
+                            .selected(develop)
+                            .tooltip("修图（D，或在网格中按 Enter / 双击）")
+                            .on_click(cx.listener(|w, _, window, cx| {
+                                w.set_mode(Mode::Develop, window, cx)
+                            })),
+                    ),
+            )
+            .when(develop, |row| {
+                row.child(
+                    Button::new("history")
+                        .label("历史")
+                        .small()
+                        .selected(self.show_history)
+                        .tooltip("显示历史记录（H）")
+                        .on_click(cx.listener(|w, _, _, cx| w.toggle_history(cx))),
+                )
+                .child(
+                    Button::new("undo")
+                        .label("撤销")
+                        .small()
+                        .disabled(!can_undo)
+                        .on_click(cx.listener(|w, _, _, cx| w.with_photo(cx, Photo::undo))),
+                )
+                .child(
+                    Button::new("redo")
+                        .label("重做")
+                        .small()
+                        .disabled(!can_redo)
+                        .on_click(cx.listener(|w, _, _, cx| w.with_photo(cx, Photo::redo))),
+                )
+                .child(
+                    Button::new("before")
+                        .label("原图")
+                        .small()
+                        .selected(compare == Compare::Before)
+                        .tooltip("整幅显示原图（\\）")
+                        .on_click(
+                            cx.listener(|w, _, _, cx| w.with_canvas(cx, Canvas::toggle_before)),
+                        ),
+                )
+                .child(
+                    Button::new("split")
+                        .label("分屏对比")
+                        .small()
+                        .selected(compare == Compare::Split)
+                        .tooltip("左侧原图、右侧调整后，可拖动分割线（Y）")
+                        .on_click(
+                            cx.listener(|w, _, _, cx| w.with_canvas(cx, Canvas::toggle_split)),
+                        ),
+                )
+                .child(
+                    Button::new("info-overlay")
+                        .label("拍摄参数")
+                        .small()
+                        .selected(show_info)
+                        .tooltip("在画面上显示相机、镜头和曝光参数（I）")
+                        .on_click(
+                            cx.listener(|w, _, _, cx| w.with_canvas(cx, Canvas::toggle_info)),
+                        ),
+                )
+                .child(
+                    Button::new("tool-crop")
+                        .label("裁剪")
+                        .small()
+                        .selected(tool == Tool::Crop)
+                        .tooltip("裁剪与拉直（R）")
+                        .on_click(cx.listener(|w, _, _, cx| w.toggle_tool(Tool::Crop, cx))),
+                )
+                .child(
+                    Button::new("tool-mask")
+                        .label("蒙版")
+                        .small()
+                        .selected(tool == Tool::Mask)
+                        .tooltip("局部调整：线性、径向渐变和画笔（M）")
+                        .on_click(cx.listener(|w, _, _, cx| w.toggle_tool(Tool::Mask, cx))),
+                )
+            })
+            .child(
+                Button::new("export")
+                    .label(if self.exports.is_empty() {
+                        "导出…".to_string()
+                    } else {
+                        format!("导出…（{} 个进行中）", self.exports.len())
+                    })
+                    .small()
+                    .tooltip("导出当前照片（Ctrl+E）")
+                    .on_click(cx.listener(|w, _, window, cx| w.open_export(window, cx))),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .text_sm()
+                    .text_center()
+                    .truncate()
+                    .child(title),
+            )
+            .child(
+                div()
+                    .max_w(px(280.0))
+                    .truncate()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(backend),
+            );
+        TitleBar::new().child(row)
+    }
+
+    fn develop(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let border = cx.theme().border;
+        let Some(o) = &self.open else {
+            return h_flex()
+                .flex_1()
+                .justify_center()
+                .text_color(cx.theme().muted_foreground)
+                .child("在图库中选择一张照片，或打开一张照片（Ctrl+O）")
+                .into_any_element();
+        };
+        let has_strip = !self.library.read(cx).items.is_empty();
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .when(self.show_history, |d| {
+                        d.child(
+                            div()
+                                .w(px(200.0))
+                                .h_full()
+                                .flex_none()
+                                .border_r_1()
+                                .border_color(border)
+                                .child(o.history.clone()),
+                        )
+                    })
+                    .child(div().flex_1().h_full().min_w_0().child(o.canvas.clone()))
+                    .child(
+                        div()
+                            .w(px(340.0))
+                            .h_full()
+                            .flex_none()
+                            .border_l_1()
+                            .border_color(border)
+                            .child(o.panel.clone()),
+                    ),
+            )
+            .when(has_strip, |d| d.child(self.filmstrip.clone()))
+            .into_any_element()
+    }
+}
+
+impl Render for Workspace {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let body = match self.mode {
+            Mode::Library => div()
+                .flex_1()
+                .min_h_0()
+                .child(self.grid.clone())
+                .into_any_element(),
+            Mode::Develop => self.develop(cx),
+        };
+        let dialog = self.export_dialog.as_ref().map(|(d, _)| d.clone());
+        v_flex()
+            .size_full()
+            .track_focus(&self.focus)
+            .key_context(CONTEXT)
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .on_action(cx.listener(|w, _: &Open, window, cx| w.prompt_open(false, window, cx)))
+            .on_action(cx.listener(|w, _: &OpenFolder, window, cx| w.prompt_open(true, window, cx)))
+            .on_action(
+                cx.listener(|w, _: &ShowGrid, window, cx| w.set_mode(Mode::Library, window, cx)),
+            )
+            .on_action(
+                cx.listener(|w, _: &ShowDevelop, window, cx| w.set_mode(Mode::Develop, window, cx)),
+            )
+            .on_action(cx.listener(|w, _: &OpenSelected, window, cx| {
+                if w.mode == Mode::Library {
+                    w.set_mode(Mode::Develop, window, cx)
+                } else {
+                    w.with_photo(cx, |p, cx| {
+                        if p.tool == Tool::Crop {
+                            p.set_tool(Tool::None, cx)
+                        }
+                    })
+                }
+            }))
+            .on_action(cx.listener(|w, _: &Left, window, cx| w.step(-1, 0, window, cx)))
+            .on_action(cx.listener(|w, _: &Right, window, cx| w.step(1, 0, window, cx)))
+            .on_action(cx.listener(|w, _: &Up, window, cx| w.step(0, -1, window, cx)))
+            .on_action(cx.listener(|w, _: &Down, window, cx| w.step(0, 1, window, cx)))
+            .on_action(cx.listener(|w, _: &Rate0, _, cx| w.rate(0, cx)))
+            .on_action(cx.listener(|w, _: &Rate1, _, cx| w.rate(1, cx)))
+            .on_action(cx.listener(|w, _: &Rate2, _, cx| w.rate(2, cx)))
+            .on_action(cx.listener(|w, _: &Rate3, _, cx| w.rate(3, cx)))
+            .on_action(cx.listener(|w, _: &Rate4, _, cx| w.rate(4, cx)))
+            .on_action(cx.listener(|w, _: &Rate5, _, cx| w.rate(5, cx)))
+            .on_action(cx.listener(|w, _: &Label1, _, cx| w.label(0, cx)))
+            .on_action(cx.listener(|w, _: &Label2, _, cx| w.label(1, cx)))
+            .on_action(cx.listener(|w, _: &Label3, _, cx| w.label(2, cx)))
+            .on_action(cx.listener(|w, _: &Label4, _, cx| w.label(3, cx)))
+            .on_action(cx.listener(|w, _: &Undo, _, cx| w.with_photo(cx, Photo::undo)))
+            .on_action(cx.listener(|w, _: &Redo, _, cx| w.with_photo(cx, Photo::redo)))
+            .on_action(
+                cx.listener(|w, _: &ToggleZoom, _, cx| w.with_canvas(cx, Canvas::toggle_zoom)),
+            )
+            .on_action(
+                cx.listener(|w, _: &ToggleBefore, _, cx| w.with_canvas(cx, Canvas::toggle_before)),
+            )
+            .on_action(
+                cx.listener(|w, _: &ToggleSplit, _, cx| w.with_canvas(cx, Canvas::toggle_split)),
+            )
+            .on_action(cx.listener(|w, _: &ToggleWbPicker, _, cx| {
+                w.with_photo(cx, |p, cx| p.set_wb_pick(!p.wb_pick, cx))
+            }))
+            .on_action(
+                cx.listener(|w, _: &ToggleInfo, _, cx| w.with_canvas(cx, Canvas::toggle_info)),
+            )
+            .on_action(cx.listener(|w, _: &ToggleHistory, _, cx| w.toggle_history(cx)))
+            .on_action(cx.listener(|w, _: &ToggleCrop, _, cx| w.toggle_tool(Tool::Crop, cx)))
+            .on_action(cx.listener(|w, _: &ToggleMask, _, cx| w.toggle_tool(Tool::Mask, cx)))
+            .on_action(cx.listener(|w, _: &ToggleOverlay, _, cx| {
+                w.with_photo(cx, |p, cx| {
+                    if p.tool == Tool::Mask {
+                        p.mask_overlay = !p.mask_overlay;
+                        cx.notify();
+                    }
+                })
+            }))
+            .on_action(cx.listener(|w, _: &SwapAspect, _, cx| w.swap_aspect(cx)))
+            .on_action(cx.listener(|w, _: &Export, window, cx| w.open_export(window, cx)))
+            .on_action(cx.listener(|w, _: &Cancel, _, cx| w.cancel(cx)))
+            .child(self.toolbar(cx))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .child(body)
+                    .when_some(dialog, |d, e| d.child(e)),
+            )
+    }
+}

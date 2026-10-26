@@ -1,0 +1,18 @@
+[package]
+name = "aigle-exiv2-sys"
+description = "Narrow C shim over the system Exiv2 for aigle's XMP sidecars"
+version.workspace = true
+edition.workspace = true
+# The crate glue is AGPL like the workspace; it links the system Exiv2 (GPL-2.0-or-later)
+# dynamically.
+license = "AGPL-3.0-only"
+rust-version.workspace = true
+links = "aigle_exiv2"
+build = "build.rs"
+
+[dependencies]
+thiserror.workspace = true
+
+[build-dependencies]
+cc = "1.2"
+pkg-config = "0.3.32"

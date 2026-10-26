@@ -1,0 +1,24 @@
+[package]
+name = "aigle-kernels"
+description = "aigle-kernels: no_std image kernels shared by the CPU backend and the SPIR-V build (rust-gpu)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# Host build on stable. The SPIR-V build (`cargo xtask kernels`, doc 04 §3) compiles this
+# crate for `spirv-unknown-vulkan1.2` through crates/kernels-build/shader.
+[target.'cfg(not(target_arch = "spirv"))'.dependencies]
+libm.workspace = true
+
+[target.'cfg(target_arch = "spirv")'.dependencies]
+spirv-std = "0.11.0"
+
+[lints.rust]
+unsafe_code = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_arch, values("spirv"))'] }
+
+[lints.clippy]
+dbg_macro = "warn"
+# `max().min()` is deliberate: maps NaN to 0 and has no panic path in SPIR-V.
+manual_clamp = "allow"

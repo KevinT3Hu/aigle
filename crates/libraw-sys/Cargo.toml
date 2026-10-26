@@ -1,0 +1,16 @@
+[package]
+name = "aigle-libraw-sys"
+description = "Vendored LibRaw 0.22.2 plus a narrow C shim used by the aigle A tier"
+version.workspace = true
+edition.workspace = true
+# The crate glue is AGPL like the workspace; vendored LibRaw is LGPL-2.1 OR CDDL-1.0
+# (vendor/LibRaw/LICENSE.*).
+license = "AGPL-3.0-only AND (LGPL-2.1-only OR CDDL-1.0)"
+rust-version.workspace = true
+links = "aigle_libraw"
+build = "build.rs"
+
+[dependencies]
+
+[build-dependencies]
+cc = { version = "1.2", features = ["parallel"] }

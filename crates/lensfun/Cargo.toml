@@ -1,0 +1,16 @@
+[package]
+name = "aigle-lensfun"
+description = "Runtime loader for the lensfun lens database (XML, version 2) with lens/camera matching for aigle"
+version.workspace = true
+edition.workspace = true
+# The database itself is not shipped in the binary; it is read from disk at runtime.
+# tests/fixtures holds a small CC BY-SA 3.0 excerpt for the tests.
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aigle-core.workspace = true
+roxmltree = "0.21.1"
+
+[lints]
+workspace = true

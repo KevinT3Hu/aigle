@@ -1,0 +1,14 @@
+[package]
+name = "aigle-rtprocess-sys"
+description = "Vendored librtprocess (demosaic, CA correction, highlight reconstruction) for the aigle A tier"
+version.workspace = true
+edition.workspace = true
+license = "AGPL-3.0-only AND GPL-3.0-or-later"
+rust-version.workspace = true
+links = "aigle_rtprocess"
+build = "build.rs"
+
+[dependencies]
+
+[build-dependencies]
+cc = { version = "1.2", features = ["parallel"] }

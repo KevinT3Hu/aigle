@@ -1,0 +1,17 @@
+[package]
+name = "aigle-engine-api"
+description = "aigle engine interface: handles, requests, events, Frame (no implementation)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aigle-core.workspace = true
+futures.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

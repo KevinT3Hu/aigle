@@ -1,0 +1,19 @@
+# Separate workspace for the SPIR-V build of aigle-kernels (doc 04 §3, Q28).
+#
+# It needs the nightly pinned by rust-gpu (rust-toolchain.toml next to this file) and is
+# never built by the main workspace. Run it through `cargo xtask kernels` from the repo root.
+[workspace]
+resolver = "3"
+members = ["builder", "shader"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+
+[profile.release.build-override]
+opt-level = 3
+codegen-units = 16
+
+[profile.dev.build-override]
+opt-level = 3

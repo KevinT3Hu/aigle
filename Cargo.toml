@@ -1,0 +1,69 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/core",
+    "crates/engine-api",
+    "crates/kernels",
+    "crates/engine",
+    "crates/doc",
+    "crates/app",
+    "crates/libraw-sys",
+    "crates/rtprocess-sys",
+    "crates/vips-sys",
+    "crates/exiv2-sys",
+    "crates/library",
+    "crates/lensfun",
+    "xtask",
+]
+# Nightly-only SPIR-V build (doc 04 §3); has its own workspace and toolchain.
+exclude = ["crates/kernels-build"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+repository = "https://example.invalid/aigle"
+rust-version = "1.99"
+
+[workspace.dependencies]
+aigle-core = { path = "crates/core" }
+aigle-engine-api = { path = "crates/engine-api" }
+aigle-kernels = { path = "crates/kernels" }
+aigle-engine = { path = "crates/engine" }
+aigle-doc = { path = "crates/doc" }
+aigle-libraw-sys = { path = "crates/libraw-sys" }
+aigle-rtprocess-sys = { path = "crates/rtprocess-sys" }
+aigle-vips-sys = { path = "crates/vips-sys" }
+aigle-exiv2-sys = { path = "crates/exiv2-sys" }
+aigle-library = { path = "crates/library" }
+aigle-lensfun = { path = "crates/lensfun" }
+
+blake3 = "1.8"
+futures = "0.3.31"
+half = { version = "2.6", features = ["bytemuck"] }
+image = { version = "0.25.6", default-features = false, features = ["png", "jpeg", "tiff"] }
+libm = "0.2.15"
+parking_lot = "0.12.4"
+rayon = "1.11"
+schemars = "1.0"
+serde = { version = "1.0.219", features = ["derive", "rc"] }
+serde_json = "1.0.140"
+thiserror = "2.0.12"
+tokio = { version = "1.47", default-features = false, features = ["sync"] }
+tracing = "0.1.41"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+
+[profile.dev]
+# Pixel loops are unusable unoptimised; keep debug info but optimise deps and our crates a bit.
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.test]
+opt-level = 2

@@ -1,0 +1,8 @@
+# The workspace builds on stable ≥ 1.99: rustc 1.95–1.98 miscompile vectorised loops over
+# wrapped indices with constant offsets (`(x + c) & 63`), which the blue-noise dither uses;
+# see the regression test in crates/kernels/src/dither.rs.
+# The workspace builds on stable. Only the SPIR-V kernel build (crates/kernels-build, not yet
+# scaffolded) uses the nightly pinned by rust-gpu (doc 04 §3, §9).
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
