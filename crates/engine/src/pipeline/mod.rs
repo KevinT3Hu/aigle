@@ -46,6 +46,7 @@ use crate::cache::{CacheKey, KeyBuilder, TileCache};
 use crate::detail::{self, SParams};
 use crate::ledger::MemClass;
 use crate::masks;
+use crate::retouch;
 use crate::source::SourceImage;
 
 /// Output-kernel aux data: the blue-noise dither texture, then the curve tables if any.
@@ -112,6 +113,8 @@ pub struct Prepared {
     /// Curve tables (`3 × CURVE_N`), or a 1-element placeholder.
     lut: Aux,
     s_key: CacheKey,
+    /// Retouching (spots, red-eye) on top of the S tier, if any.
+    r_key: Option<CacheKey>,
     c1_key: CacheKey,
     out_key: CacheKey,
     seed: u32,
@@ -142,6 +145,7 @@ impl Prepared {
             aux.extend_from_slice(l);
         }
         let e1 = crate::output_space::e1_params(display, &mut aux);
+        let s_key = keys::s_key(&src.a_key, params);
         Prepared {
             gm,
             delta,
@@ -170,7 +174,8 @@ impl Prepared {
             d1: D1Params::new(l.contrast, l.whites, l.blacks),
             d2,
             lut: Aux::new(aux),
-            s_key: keys::s_key(&src.a_key, params),
+            r_key: crate::retouch::is_active(params).then(|| keys::r_key(&s_key, params)),
+            s_key,
             e1,
             lens_ok,
             seed: u32::from_le_bytes(src.a_key.0[..4].try_into().expect("4 bytes")),
@@ -305,6 +310,11 @@ impl Prepared {
         }
     }
 
+    /// Whether C1 must read S ROIs instead of the source level.
+    fn s_on(&self) -> bool {
+        !self.s.is_identity() || self.r_key.is_some()
+    }
+
     /// Level → normalised Source map for mask programs.
     pub fn level_map(&self, level: usize) -> masks::LevelMap {
         masks::LevelMap::new(self.stored_size, self.delta, level)
@@ -399,8 +409,7 @@ struct SRoi {
     device: DeviceCell,
 }
 
-/// Source ROIs for C1 tiles, after the S tier (doc 02 §5.2 "source ROIs"). Blocks and ROIs are
-/// both cached; blocks are shared between neighbouring tiles and views.
+/// Source ROIs for C1 tiles, after the S tier and retouching (doc 02 §5.2 "source ROIs").
 fn s_rois(
     ctx: &RenderCtx<'_>,
     src: &SourceImage,
@@ -408,9 +417,159 @@ fn s_rois(
     level: usize,
     rects: &[(u32, u32, u32, u32)],
 ) -> Vec<Arc<SRoi>> {
+    let Some(r_key) = &prep.r_key else {
+        return s_base(ctx, src, prep, level, rects, true);
+    };
+    let full = ctx.full_at(level);
+    let key = |r: &(u32, u32, u32, u32)| {
+        KeyBuilder::new("Rroi")
+            .key(r_key)
+            .u32(level as u32)
+            .u32(full as u32)
+            .u32(r.0)
+            .u32(r.1)
+            .u32(r.2)
+            .u32(r.3)
+            .finish()
+    };
+    let mut out: Vec<Option<Arc<SRoi>>> = rects
+        .iter()
+        .map(|r| ctx.cache.get::<SRoi>(&key(r)))
+        .collect();
+    let miss: Vec<usize> = (0..rects.len()).filter(|&i| out[i].is_none()).collect();
+    if miss.is_empty() {
+        return out.into_iter().map(|o| o.expect("cached")).collect();
+    }
+    let view = ctx.view(src, level);
+    let (lw, lh) = (view.full_w, view.full_h);
+    let rt = retouch::Retouch::new(&prep.edit, &prep.level_map(level), level);
+    let mrects: Vec<_> = miss.iter().map(|&i| rects[i]).collect();
+    let patches: Vec<Arc<retouch::Patch>> = rt
+        .spots
+        .iter()
+        .filter_map(|sp| {
+            let rect = sp.rect(lw, lh)?;
+            mrects
+                .iter()
+                .any(|&r| retouch::intersects(rect, r))
+                .then(|| spot_patch(ctx, src, prep, level, sp, rect))
+        })
+        .collect();
+    let base = s_base(ctx, src, prep, level, &mrects, false);
+    for ((&i, r), b) in miss.iter().zip(&mrects).zip(base) {
+        let mut data = b.data.clone();
+        for p in &patches {
+            p.apply(*r, &mut data);
+        }
+        rt.apply_eyes(*r, &mut data);
+        let roi = Arc::new(SRoi {
+            x0: r.0,
+            y0: r.1,
+            w: r.2,
+            h: r.3,
+            data,
+            device: DeviceCell::default(),
+        });
+        insert_roi(ctx, key(r), &roi);
+        out[i] = Some(roi);
+    }
+    out.into_iter().map(|o| o.expect("filled")).collect()
+}
+
+/// One spot rendered over its whole disc from the un-retouched S pixels, cached per level.
+fn spot_patch(
+    ctx: &RenderCtx<'_>,
+    src: &SourceImage,
+    prep: &Prepared,
+    level: usize,
+    sp: &retouch::LevelSpot,
+    rect: (u32, u32, u32, u32),
+) -> Arc<retouch::Patch> {
+    let full = ctx.full_at(level);
+    let key = KeyBuilder::new("Rpatch")
+        .u32(retouch::RETOUCH_IMPL)
+        .key(&prep.s_key)
+        .u32(level as u32)
+        .u32(full as u32)
+        .str(&format!("{sp:?}"))
+        .finish();
+    if let Some(p) = ctx.cache.get::<retouch::Patch>(&key) {
+        return p;
+    }
+    let t0 = Instant::now();
+    let view = ctx.view(src, level);
+    let (lw, lh) = (view.full_w, view.full_h);
+    let t = sp.target_read(lw, lh).unwrap_or(rect);
+    let s = sp.source_read(lw, lh);
+    let rois = s_base(ctx, src, prep, level, &[t, s], false);
+    let plane = |i: usize| retouch::Plane {
+        rect: (rois[i].x0, rois[i].y0, rois[i].w, rois[i].h),
+        data: rois[i].data.as_px(),
+    };
+    let p = Arc::new(sp.patch(rect, &plane(0), &plane(1)));
+    ctx.cache.insert(
+        key,
+        p.clone(),
+        p.bytes(),
+        MemClass::StageTile,
+        t0.elapsed(),
+        ctx.owner,
+    );
+    p
+}
+
+fn insert_roi(ctx: &RenderCtx<'_>, key: CacheKey, roi: &Arc<SRoi>) {
+    let device_words = (roi.data.len() * roi.data.as_px().gpu_words() * 4) as u64;
+    ctx.cache.insert(
+        key,
+        roi.clone(),
+        // Host pixels, plus their device copy on the GPU (counted in the host pool also on a
+        // discrete GPU: one entry has one pool).
+        roi.data.bytes()
+            + if ctx.backend.kind() == aigle_engine_api::BackendKind::Gpu {
+                device_words
+            } else {
+                0
+            },
+        MemClass::StageTile,
+        std::time::Duration::from_micros(50),
+        ctx.owner,
+    );
+}
+
+/// S-processed pixels of level rectangles. Blocks are cached and shared between neighbouring
+/// tiles and views; the ROIs too when `keep`. Without S ops, the source pixels.
+fn s_base(
+    ctx: &RenderCtx<'_>,
+    src: &SourceImage,
+    prep: &Prepared,
+    level: usize,
+    rects: &[(u32, u32, u32, u32)],
+    keep: bool,
+) -> Vec<Arc<SRoi>> {
     let view = ctx.view(src, level);
     let lvl = (view.full_w, view.full_h);
     let full = ctx.full_at(level);
+    if prep.s.is_identity() {
+        return rects
+            .iter()
+            .map(|&(x0, y0, w, h)| {
+                let mut data = PxVec::zeros(w as usize * h as usize, full);
+                for j in 0..h {
+                    let s0 = ((y0 + j) * view.w + x0) as usize;
+                    data.copy_from_px((j * w) as usize, view.data, s0, w as usize);
+                }
+                Arc::new(SRoi {
+                    x0,
+                    y0,
+                    w,
+                    h,
+                    data,
+                    device: DeviceCell::default(),
+                })
+            })
+            .collect();
+    }
     let bs = prep.s.block_size(level);
     let roi_key = |r: &(u32, u32, u32, u32)| {
         KeyBuilder::new("Sroi")
@@ -565,22 +724,9 @@ fn s_rois(
             data,
             device: DeviceCell::default(),
         });
-        let device_words = (roi.data.len() * roi.data.as_px().gpu_words() * 4) as u64;
-        ctx.cache.insert(
-            roi_key(r),
-            roi.clone(),
-            // Host pixels, plus their device copy on the GPU (counted in the host pool also
-            // on a discrete GPU: one entry has one pool).
-            roi.data.bytes()
-                + if ctx.backend.kind() == aigle_engine_api::BackendKind::Gpu {
-                    device_words
-                } else {
-                    0
-                },
-            MemClass::StageTile,
-            std::time::Duration::from_micros(50),
-            ctx.owner,
-        );
+        if keep {
+            insert_roi(ctx, roi_key(r), &roi);
+        }
         *o = Some(roi);
     }
     out.into_iter().map(|o| o.expect("filled")).collect()
@@ -1032,7 +1178,7 @@ fn compute_tiles(
             .iter()
             .map(|(g, w, h)| g.roi(*w, *h, lvl.0, lvl.1))
             .collect();
-        let s_on = !prep.s.is_identity();
+        let s_on = prep.s_on();
         let rois = if s_on {
             s_rois(ctx, src, prep, level, &rects)
         } else {
@@ -1279,7 +1425,7 @@ pub fn sample_scene(
     let lvl = &src.pyramid.levels[0];
     // With S ops active, read the S-processed level-0 pixels around the taps, so the sample
     // matches what is rendered at 1:1.
-    let roi = (!prep.s.is_identity()).then(|| {
+    let roi = prep.s_on().then(|| {
         let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
         for (ps, _) in &taps {
             for p in ps {

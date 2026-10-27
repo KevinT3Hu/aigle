@@ -13,6 +13,7 @@
 use std::sync::{Arc, Weak};
 
 use aigle_core::geometry::{ImagePoint, ImageRect, Size};
+use aigle_core::masks::Pt;
 use aigle_core::{EditParams, MaskAssetId, Revision};
 use aigle_engine_api::{
     Analysis, AnalysisPrecision, AnalysisSet, CancelToken, DisplayProfileId, EncodedImage,
@@ -517,6 +518,14 @@ impl SessionImpl for SessionShared {
                 crate::awb::neutral(src, cal, region)
                     .ok_or_else(|| JobError::Failed("no usable pixels: clipped or too dark".into()))
             },
+        )
+    }
+
+    fn spot_source(&self, target: Pt, radius: f32) -> Job<Pt> {
+        let (_, params) = self.current();
+        self.self_arc().job(
+            TaskSpec::new("spot_source", Class::Interactive),
+            move |_, src, _| Ok(crate::retouch::find_source(src, &params, target, radius)),
         )
     }
 

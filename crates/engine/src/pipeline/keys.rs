@@ -31,6 +31,18 @@ pub fn s_key(a_key: &CacheKey, p: &EditParams) -> CacheKey {
     k.finish()
 }
 
+/// Retouching on top of the S tier: the S key, the spots and their placement on the stored
+/// pyramid.
+pub fn r_key(s_key: &CacheKey, p: &EditParams) -> CacheKey {
+    KeyBuilder::new("R")
+        .u32(crate::retouch::RETOUCH_IMPL)
+        .key(s_key)
+        .json(&p.spots)
+        .json(&p.red_eye)
+        .json(&p.geometry.orientation_delta)
+        .finish()
+}
+
 pub fn c1_key(a_key: &CacheKey, p: &EditParams) -> CacheKey {
     let mut k = KeyBuilder::new("S-B1-M-C1");
     k.json(&p.process_version)
@@ -43,6 +55,9 @@ pub fn c1_key(a_key: &CacheKey, p: &EditParams) -> CacheKey {
         .json(&p.lens)
         // M (fields consumed by S/C tiers)
         .json(&p.masks)
+        // R
+        .json(&p.spots)
+        .json(&p.red_eye)
         // C1
         .json(&p.profile.camera)
         .json(&p.wb)

@@ -47,6 +47,7 @@ pub mod noise;
 pub mod output_space;
 pub mod pipeline;
 pub mod profile;
+pub mod retouch;
 pub mod scheduler;
 mod session;
 pub mod source;

@@ -35,10 +35,12 @@ pub enum Group {
     Raw,
     Geometry,
     Masks,
+    Spots,
+    RedEye,
 }
 
 impl Group {
-    pub const ALL: [Group; 14] = [
+    pub const ALL: [Group; 16] = [
         Group::Profile,
         Group::WhiteBalance,
         Group::Light,
@@ -53,6 +55,8 @@ impl Group {
         Group::Raw,
         Group::Geometry,
         Group::Masks,
+        Group::Spots,
+        Group::RedEye,
     ];
 
     /// The `EditParams` field the group copies.
@@ -72,6 +76,8 @@ impl Group {
             Group::Raw => "raw",
             Group::Geometry => "geometry",
             Group::Masks => "masks",
+            Group::Spots => "spots",
+            Group::RedEye => "red_eye",
         }
     }
 
@@ -91,14 +97,22 @@ impl Group {
             Group::Raw => "RAW 处理",
             Group::Geometry => "裁剪与变换",
             Group::Masks => "蒙版",
+            Group::Spots => "污点去除",
+            Group::RedEye => "红眼校正",
         }
     }
 
-    /// Crop and masks are placed for one picture, so they are not copied unless asked.
+    /// Crop, masks and retouching are placed for one picture, so they are not copied unless
+    /// asked.
     pub fn defaults() -> BTreeSet<Group> {
         Group::ALL
             .into_iter()
-            .filter(|g| !matches!(g, Group::Geometry | Group::Masks))
+            .filter(|g| {
+                !matches!(
+                    g,
+                    Group::Geometry | Group::Masks | Group::Spots | Group::RedEye
+                )
+            })
             .collect()
     }
 }

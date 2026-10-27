@@ -1592,6 +1592,86 @@ fn white_balance_picker_makes_the_point_neutral() {
 }
 
 #[test]
+fn spot_source_picks_matching_surroundings() {
+    use aigle_core::masks::Pt;
+    let e = engine();
+    let s = chart_session(&e);
+    s.set_edits(
+        Revision(1),
+        Arc::new(EditParams::default()),
+        Interaction::Final,
+    );
+    let target = Pt {
+        x: 300.0 / 1200.0,
+        y: 300.0 / 800.0,
+    };
+    let src = s.spot_source(target, 20.0 / 1200.0).wait().unwrap();
+    let (x, y) = (src.x * 1200.0, src.y * 800.0);
+    assert!(
+        (230.0..370.0).contains(&x) && (230.0..370.0).contains(&y),
+        "{x}, {y}"
+    );
+    assert!((x - 300.0).hypot(y - 300.0) > 40.0, "{x}, {y}");
+}
+
+#[test]
+fn spots_replace_their_target_in_renders_and_samples() {
+    use aigle_core::masks::Pt;
+    use aigle_core::retouch::{Spot, SpotMode};
+    let e = engine();
+    let s = chart_session(&e);
+    for s_off in [false, true] {
+        let mut p = EditParams::default();
+        if s_off {
+            p.detail.sharpen.amount = 0.0;
+            p.detail.noise.luma = 0.0;
+            p.detail.noise.chroma = 0.0;
+            p.presence.texture = 0.0;
+        }
+        let plain = render_rgb(&s, &p, 600);
+        let mut spot = Spot::new(
+            SpotMode::Clone,
+            Pt {
+                x: 100.0 / 1200.0,
+                y: 100.0 / 800.0,
+            },
+            Pt {
+                x: 500.0 / 1200.0,
+                y: 300.0 / 800.0,
+            },
+            80.0 / 1200.0,
+        );
+        spot.feather = 0.0;
+        p.spots.push(spot);
+        let spotted = render_rgb(&s, &p, 600);
+        let (want, got) = (patch(&plain, 2, 1), patch(&spotted, 0, 0));
+        for c in 0..3 {
+            assert!(
+                (want[c] - got[c]).abs() < 2.0,
+                "S off {s_off}: {want:?} vs {got:?}"
+            );
+        }
+        assert_eq!(patch(&plain, 1, 0), patch(&spotted, 1, 0));
+        let sample = |rev: u64, p: &EditParams, x: f64, y: f64| {
+            s.set_edits(Revision(rev), Arc::new(p.clone()), Interaction::Final);
+            s.sample(
+                aigle_core::geometry::Point::new(x, y),
+                0.0,
+                SampleStage::SceneLinear,
+            )
+            .wait()
+            .unwrap()
+            .rgb
+        };
+        let a = sample(10, &p, 100.0, 100.0);
+        let b = sample(11, &p, 500.0, 300.0);
+        for c in 0..3 {
+            assert!((a[c] - b[c]).abs() < 2e-3, "S off {s_off}: {a:?} vs {b:?}");
+        }
+    }
+}
+
+#[test]
 fn scene_sample_includes_the_s_tier() {
     let e = engine();
     let s = e.open(synthetic(1200, 800));

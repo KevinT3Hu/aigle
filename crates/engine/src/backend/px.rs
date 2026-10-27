@@ -123,6 +123,23 @@ impl PxVec {
             _ => panic!("pixel precision mismatch"),
         }
     }
+
+    /// Copy `src[s..s + n]` to `self[d..d + n]` (same precision).
+    pub fn copy_from_px(&mut self, d: usize, src: Px<'_>, s: usize, n: usize) {
+        match (self, src) {
+            (PxVec::H(a), Px::H(b)) => a[d..d + n].copy_from_slice(&b[s..s + n]),
+            (PxVec::F(a), Px::F(b)) => a[d..d + n].copy_from_slice(&b[s..s + n]),
+            _ => panic!("pixel precision mismatch"),
+        }
+    }
+
+    #[inline]
+    pub fn set(&mut self, i: usize, v: Rgb) {
+        match self {
+            PxVec::H(a) => a[i] = v.map(f16::from_f32),
+            PxVec::F(a) => a[i] = v,
+        }
+    }
 }
 
 /// D-tier local fields per pixel (contrast, whites, blacks, saturation, hue).

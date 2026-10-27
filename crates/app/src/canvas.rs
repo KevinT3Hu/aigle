@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use aigle_core::geometry::{Point as ImgPoint, Rect, Size};
 use aigle_core::masks::{MaskShape, Pt, Stroke};
+use aigle_core::retouch::{MAX_RADIUS, MIN_RADIUS, RedEye, Spot};
 use aigle_doc::{GestureId, ParamOp};
 use aigle_engine_api::{
     DisplayProfileId, Frame, Histogram, Interaction, Overlays, ParamsSource, PixelBuffer, Quality,
@@ -30,7 +31,7 @@ use image::{Frame as ImageFrame, RgbaImage};
 use crate::crop::{self, Handle};
 use crate::meta;
 use crate::photo::{Photo, PhotoEvent, Tool, crop_ops};
-use crate::tools::{self, Mapping, MaskSpace, Part};
+use crate::tools::{self, CirclePart, Mapping, MaskSpace, Part};
 use crate::viewport::{ViewState, reproject};
 
 type Shown = (Arc<Frame>, Arc<RenderImage>);
@@ -82,6 +83,31 @@ struct MaskDrag {
     last: Option<Vec<ParamOp>>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RetouchKind {
+    Spot,
+    Eye,
+}
+
+/// A drag of the spot or red-eye tool.
+struct RetouchDrag {
+    kind: RetouchKind,
+    index: usize,
+    /// `None`: creating (a spot with a manual source, or a red-eye circle).
+    part: Option<CirclePart>,
+    from: Pt,
+    from_window: Point<Pixels>,
+    spots: Vec<Spot>,
+    eyes: Vec<RedEye>,
+    gesture: GestureId,
+    last: Option<Vec<ParamOp>>,
+}
+
+/// Pointer travel (logical px) before a press becomes a drag.
+const DRAG_START: f32 = 3.0;
+/// Radius of a red-eye correction placed by a click, fraction of the long edge.
+const EYE_RADIUS: f32 = 0.012;
+
 pub struct Canvas {
     photo: Entity<Photo>,
     view: View,
@@ -111,6 +137,7 @@ pub struct Canvas {
     proof_target: DisplayProfileId,
     crop_drag: Option<CropDrag>,
     mask_drag: Option<MaskDrag>,
+    retouch_drag: Option<RetouchDrag>,
 }
 
 /// Copy the frames of `rx` into the slot `slot` selects, latest wins.
@@ -198,6 +225,7 @@ impl Canvas {
             proof_target: DisplayProfileId::Srgb,
             crop_drag: None,
             mask_drag: None,
+            retouch_drag: None,
         }
     }
 
@@ -215,6 +243,7 @@ impl Canvas {
         self.tool = tool;
         self.crop_drag = None;
         self.mask_drag = None;
+        self.retouch_drag = None;
         if crop_changed {
             if tool == Tool::Crop {
                 self.set_compare(Compare::Off, cx);
@@ -757,6 +786,171 @@ impl Canvas {
     }
 
     // -----------------------------------------------------------------------------------------
+    // Spot and red-eye tools
+
+    /// Start a spot or red-eye drag at `e`; `false` lets the click pan instead.
+    fn start_retouch(&mut self, e: &MouseDownEvent, cx: &mut Context<Self>) -> bool {
+        let (Some(m), Some(sp)) = (self.mapping(cx), self.mask_space(cx)) else {
+            return false;
+        };
+        if e.click_count >= 2 {
+            return false;
+        }
+        let kind = if self.tool == Tool::Spot {
+            RetouchKind::Spot
+        } else {
+            RetouchKind::Eye
+        };
+        let at = sp.norm_of(m.to_image(e.position));
+        let photo = self.photo.read(cx);
+        let head = photo.head().clone();
+        let hit = match kind {
+            RetouchKind::Spot => {
+                tools::spot_hit(&sp, &m, &head.spots, photo.selected_spot, e.position)
+            }
+            RetouchKind::Eye => {
+                tools::eye_hit(&sp, &m, &head.red_eye, photo.selected_eye, e.position)
+            }
+        };
+        let (index, part) = match hit {
+            Some((i, part)) => (i, Some(part)),
+            None => (
+                match kind {
+                    RetouchKind::Spot => head.spots.len(),
+                    RetouchKind::Eye => head.red_eye.len(),
+                },
+                None,
+            ),
+        };
+        let gesture = self.photo.update(cx, |p, cx| {
+            if part.is_some() {
+                match kind {
+                    RetouchKind::Spot => p.selected_spot = Some(index),
+                    RetouchKind::Eye => p.selected_eye = Some(index),
+                }
+                cx.notify();
+            }
+            p.new_gesture()
+        });
+        self.retouch_drag = Some(RetouchDrag {
+            kind,
+            index,
+            part,
+            from: at,
+            from_window: e.position,
+            spots: head.spots.clone(),
+            eyes: head.red_eye.clone(),
+            gesture,
+            last: None,
+        });
+        true
+    }
+
+    fn move_retouch(&mut self, p: Point<Pixels>, cx: &mut Context<Self>) {
+        let (Some(m), Some(sp)) = (self.mapping(cx), self.mask_space(cx)) else {
+            return;
+        };
+        let at = sp.norm_of(m.to_image(p));
+        let b = self.photo.read(cx).spot_brush;
+        let Some(d) = &mut self.retouch_drag else {
+            return;
+        };
+        if d.last.is_none()
+            && f32::from(p.x - d.from_window.x).hypot(f32::from(p.y - d.from_window.y)) < DRAG_START
+        {
+            return;
+        }
+        let delta = Pt {
+            x: at.x - d.from.x,
+            y: at.y - d.from.y,
+        };
+        let (label, op) = match (d.kind, d.part) {
+            (RetouchKind::Spot, part) => {
+                let mut spots = d.spots.clone();
+                match part {
+                    Some(part) => {
+                        spots[d.index] = tools::drag_spot(&sp, &d.spots[d.index], part, at, delta)
+                    }
+                    None => {
+                        let mut s = Spot::new(b.mode, d.from, at, b.size);
+                        s.feather = b.feather;
+                        s.opacity = b.opacity;
+                        spots.push(s);
+                    }
+                }
+                (crate::i18n::t("污点去除"), tools::spots_op(&spots))
+            }
+            (RetouchKind::Eye, part) => {
+                let mut eyes = d.eyes.clone();
+                match part {
+                    Some(part) => {
+                        eyes[d.index] = tools::drag_eye(&sp, &d.eyes[d.index], part, at, delta)
+                    }
+                    None => eyes.push(RedEye::new(
+                        d.from,
+                        tools::radius_to(&sp, d.from, at).clamp(MIN_RADIUS, MAX_RADIUS),
+                    )),
+                }
+                (crate::i18n::t("红眼校正"), tools::eyes_op(&eyes))
+            }
+        };
+        let ops = vec![op];
+        let first = d.last.is_none();
+        d.last = Some(ops.clone());
+        let (kind, index, gesture, creating) = (d.kind, d.index, d.gesture, d.part.is_none());
+        self.photo.update(cx, |ph, cx| {
+            if ph.command(label, ops, Some(gesture), Interaction::Continuous, cx)
+                && first
+                && creating
+            {
+                match kind {
+                    RetouchKind::Spot => ph.selected_spot = Some(index),
+                    RetouchKind::Eye => ph.selected_eye = Some(index),
+                }
+            }
+        });
+    }
+
+    fn end_retouch(&mut self, cx: &mut Context<Self>) {
+        let Some(d) = self.retouch_drag.take() else {
+            return;
+        };
+        let label = match d.kind {
+            RetouchKind::Spot => crate::i18n::t("污点去除"),
+            RetouchKind::Eye => crate::i18n::t("红眼校正"),
+        };
+        match (d.last, d.part, d.kind) {
+            (Some(ops), _, _) => {
+                self.photo.update(cx, |p, cx| {
+                    p.command(label, ops, Some(d.gesture), Interaction::Final, cx)
+                });
+            }
+            // A click on empty image: a spot with an automatic source, or a red-eye
+            // correction of the default size.
+            (None, None, RetouchKind::Spot) => {
+                self.photo.update(cx, |p, cx| p.add_spot(d.from, cx));
+            }
+            (None, None, RetouchKind::Eye) => {
+                let mut eyes = d.eyes;
+                eyes.push(RedEye::new(d.from, EYE_RADIUS));
+                let i = eyes.len() - 1;
+                self.photo.update(cx, |p, cx| {
+                    if p.command(
+                        label,
+                        vec![tools::eyes_op(&eyes)],
+                        Some(d.gesture),
+                        Interaction::Final,
+                        cx,
+                    ) {
+                        p.selected_eye = Some(i);
+                    }
+                });
+            }
+            (None, Some(_), _) => {}
+        }
+    }
+
+    // -----------------------------------------------------------------------------------------
     // Events
 
     fn on_down(&mut self, e: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -775,6 +969,12 @@ impl Canvas {
             }
             Tool::Mask => {
                 if self.start_mask(e, cx) {
+                    cx.notify();
+                    return;
+                }
+            }
+            Tool::Spot | Tool::RedEye => {
+                if self.start_retouch(e, cx) {
                     cx.notify();
                     return;
                 }
@@ -825,6 +1025,15 @@ impl Canvas {
             cx.notify();
             return;
         }
+        if self.retouch_drag.is_some() {
+            if left {
+                self.move_retouch(e.position, cx);
+            } else {
+                self.end_retouch(cx);
+            }
+            cx.notify();
+            return;
+        }
         let near = self.near_divider(e.position);
         if near != self.near_divider {
             self.near_divider = near;
@@ -863,6 +1072,7 @@ impl Canvas {
     fn end_drag(&mut self, cx: &mut Context<Self>) {
         self.end_crop(cx);
         self.end_mask(cx);
+        self.end_retouch(cx);
         self.split_drag = false;
         if self.drag.take().is_some() {
             self.update_viewport(Interaction::Final, true, cx);
@@ -907,6 +1117,20 @@ impl Canvas {
                 Some(tools::crop_cursor(handle))
             }
             Tool::Mask if p.pending_mask.is_some() => Some(CursorStyle::Crosshair),
+            Tool::Spot | Tool::RedEye => {
+                let (m, sp) = (self.mapping(cx)?, self.mask_space(cx)?);
+                let head = p.head();
+                let hit = if p.tool == Tool::Spot {
+                    tools::spot_hit(&sp, &m, &head.spots, p.selected_spot, hover)
+                } else {
+                    tools::eye_hit(&sp, &m, &head.red_eye, p.selected_eye, hover)
+                };
+                Some(match hit {
+                    Some((_, CirclePart::Edge)) => CursorStyle::ResizeLeftRight,
+                    Some(_) => CursorStyle::OpenHand,
+                    None => CursorStyle::Crosshair,
+                })
+            }
             _ => None,
         }
     }
@@ -947,6 +1171,13 @@ impl Canvas {
                     crate::i18n::t(" · 在画面上拖动以放置蒙版")
                 }
                 Tool::Mask => crate::keymap::hint(" · 蒙版：拖动控制点调整，O 显示叠加", cx),
+                Tool::Spot => crate::keymap::hint(
+                    " · 污点去除：点击自动取样，拖动手动选择源，Delete 删除",
+                    cx,
+                ),
+                Tool::RedEye => {
+                    crate::keymap::hint(" · 红眼校正：点击或拖出眼睛范围，Delete 删除", cx)
+                }
                 Tool::None => String::new(),
             }
         };
@@ -1023,6 +1254,18 @@ enum ToolOverlay {
         /// Brush outline radius (outer, inner) in image units.
         brush: Option<(f64, f64)>,
     },
+    Spots {
+        space: Box<MaskSpace>,
+        spots: Vec<Spot>,
+        selected: Option<usize>,
+        /// Outline of a new spot at the cursor, in image units.
+        brush: Option<f64>,
+    },
+    Eyes {
+        space: Box<MaskSpace>,
+        eyes: Vec<RedEye>,
+        selected: Option<usize>,
+    },
 }
 
 impl Render for Canvas {
@@ -1075,6 +1318,34 @@ impl Render for Canvas {
                         brush,
                     }
                 }
+                None => ToolOverlay::None,
+            },
+            Tool::Spot => match self.mask_space(cx) {
+                Some(space) => {
+                    let spots = photo.head().spots.clone();
+                    let over = match (self.hover, self.mapping(cx)) {
+                        (Some(h), Some(m)) => {
+                            tools::spot_hit(&space, &m, &spots, photo.selected_spot, h).is_some()
+                        }
+                        _ => true,
+                    };
+                    let brush = (!over && self.retouch_drag.is_none())
+                        .then(|| photo.spot_brush.size as f64 * space.long_edge());
+                    ToolOverlay::Spots {
+                        space: Box::new(space),
+                        spots,
+                        selected: photo.selected_spot,
+                        brush,
+                    }
+                }
+                None => ToolOverlay::None,
+            },
+            Tool::RedEye => match self.mask_space(cx) {
+                Some(space) => ToolOverlay::Eyes {
+                    space: Box::new(space),
+                    eyes: photo.head().red_eye.clone(),
+                    selected: photo.selected_eye,
+                },
                 None => ToolOverlay::None,
             },
             Tool::None => ToolOverlay::None,
@@ -1195,6 +1466,23 @@ impl Render for Canvas {
                                     );
                                 }
                             }
+                            ToolOverlay::Spots {
+                                space,
+                                spots,
+                                selected,
+                                brush,
+                            } => {
+                                tools::paint_spots(window, space, &m, spots, *selected);
+                                if let (Some(r), Some(h)) = (brush, hover) {
+                                    let r = m.len(*r);
+                                    tools::paint_brush_cursor(window, h, r, r);
+                                }
+                            }
+                            ToolOverlay::Eyes {
+                                space,
+                                eyes,
+                                selected,
+                            } => tools::paint_eyes(window, space, &m, eyes, *selected),
                             ToolOverlay::None => {}
                         }
                         if let Some(c) = ring {

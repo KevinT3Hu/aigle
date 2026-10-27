@@ -251,6 +251,16 @@ fn edited() -> EditParams {
     p.presence.texture = 30.0;
     p.detail.defringe.purple_amount = 60.0;
     p.detail.defringe.green_amount = 40.0;
+    p.spots.push(aigle_core::retouch::Spot::new(
+        aigle_core::retouch::SpotMode::Heal,
+        aigle_core::masks::Pt { x: 0.3, y: 0.4 },
+        aigle_core::masks::Pt { x: 0.6, y: 0.5 },
+        0.05,
+    ));
+    p.red_eye.push(aigle_core::retouch::RedEye::new(
+        aigle_core::masks::Pt { x: 0.1, y: 0.1 },
+        0.04,
+    ));
     // C2
     p.light.highlights = -60.0;
     p.light.shadows = 50.0;

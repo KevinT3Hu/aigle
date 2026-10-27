@@ -3,6 +3,7 @@
 
 use aigle_core::geometry::{GeometryMap, ImagePoint, ImageRect, Point as ImgPoint, Size};
 use aigle_core::masks::{LocalAdjustment, LocalParams, MaskShape, Pt, Stroke};
+use aigle_core::retouch::{MAX_RADIUS, MIN_RADIUS, RedEye, Spot};
 use aigle_core::{EditParams, MaskId};
 use aigle_doc::ParamOp;
 use gpui::{Bounds, PathBuilder, Pixels, Point, Window, fill, point, px, size};
@@ -529,23 +530,25 @@ pub enum Reorient {
     Mirror,
 }
 
+fn reorient_pt(p: &mut Pt, r: Reorient) {
+    *p = match r {
+        Reorient::Cw { .. } => Pt {
+            x: 1.0 - p.y,
+            y: p.x,
+        },
+        Reorient::Ccw { .. } => Pt {
+            x: p.y,
+            y: 1.0 - p.x,
+        },
+        Reorient::Mirror => Pt {
+            x: 1.0 - p.x,
+            y: p.y,
+        },
+    }
+}
+
 fn reorient_shape(s: &mut MaskShape, r: Reorient) {
-    let pt = |p: &mut Pt| {
-        *p = match r {
-            Reorient::Cw { .. } => Pt {
-                x: 1.0 - p.y,
-                y: p.x,
-            },
-            Reorient::Ccw { .. } => Pt {
-                x: p.y,
-                y: 1.0 - p.x,
-            },
-            Reorient::Mirror => Pt {
-                x: 1.0 - p.x,
-                y: p.y,
-            },
-        }
-    };
+    let pt = |p: &mut Pt| reorient_pt(p, r);
     match s {
         MaskShape::Linear { from, to } => {
             pt(from);
@@ -588,19 +591,35 @@ fn reorient_shape(s: &mut MaskShape, r: Reorient) {
     }
 }
 
-/// Ops moving every mask of `p` with the reorientation `r`; `None` without masks.
-pub fn reorient_ops(p: &EditParams, r: Reorient) -> Option<ParamOp> {
-    if p.masks.is_empty() {
-        return None;
+/// Ops moving every mask, spot and red-eye correction of `p` with the reorientation `r`.
+pub fn reorient_ops(p: &EditParams, r: Reorient) -> Vec<ParamOp> {
+    let mut ops = Vec::new();
+    if !p.masks.is_empty() {
+        let mut masks = p.masks.clone();
+        for m in &mut masks {
+            reorient_shape(&mut m.shape, r);
+        }
+        ops.push(ParamOp::set(
+            "masks",
+            serde_json::to_value(masks).expect("serialisable"),
+        ));
     }
-    let mut masks = p.masks.clone();
-    for m in &mut masks {
-        reorient_shape(&mut m.shape, r);
+    if !p.spots.is_empty() {
+        let mut spots = p.spots.clone();
+        for s in &mut spots {
+            reorient_pt(&mut s.target, r);
+            reorient_pt(&mut s.source, r);
+        }
+        ops.push(spots_op(&spots));
     }
-    Some(ParamOp::set(
-        "masks",
-        serde_json::to_value(masks).expect("serialisable"),
-    ))
+    if !p.red_eye.is_empty() {
+        let mut eyes = p.red_eye.clone();
+        for e in &mut eyes {
+            reorient_pt(&mut e.center, r);
+        }
+        ops.push(eyes_op(&eyes));
+    }
+    ops
 }
 
 /// Small dot at each mask's anchor so unselected masks can be picked.
@@ -627,9 +646,241 @@ pub fn paint_anchor(window: &mut Window, c: Point<Pixels>) {
     dot(window, c, 4.0, false);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Retouch: spots and red-eye corrections are circles in Source space.
+
+/// Part of a spot or red-eye circle a drag moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CirclePart {
+    /// The circle itself (a spot's target).
+    Target,
+    /// A spot's source circle.
+    Source,
+    /// The rim: the radius.
+    Edge,
+}
+
+pub fn spots_op(spots: &[Spot]) -> ParamOp {
+    ParamOp::set("spots", serde_json::to_value(spots).expect("serialisable"))
+}
+
+pub fn eyes_op(eyes: &[RedEye]) -> ParamOp {
+    ParamOp::set("red_eye", serde_json::to_value(eyes).expect("serialisable"))
+}
+
+/// Window centre and radius (logical px) of the circle at `c` with `radius` (fraction of the
+/// source long edge).
+fn circle_window(sp: &MaskSpace, m: &Mapping, c: Pt, radius: f32) -> (Point<Pixels>, f32) {
+    let (x, y) = sp.src(c);
+    let r = radius as f64 * sp.long_edge();
+    let w = to_window(sp, m, (x, y));
+    (w, dist(w, to_window(sp, m, (x + r, y))))
+}
+
+fn circle_hit(
+    sp: &MaskSpace,
+    m: &Mapping,
+    c: Pt,
+    radius: f32,
+    p: Point<Pixels>,
+    edge: bool,
+) -> Option<CirclePart> {
+    let (w, r) = circle_window(sp, m, c, radius);
+    let d = dist(w, p);
+    if edge && (d - r).abs() <= GRAB.min(r * 0.5).max(4.0) {
+        Some(CirclePart::Edge)
+    } else if d <= r.max(GRAB) {
+        Some(CirclePart::Target)
+    } else {
+        None
+    }
+}
+
+/// The spot and part under `p`: the selected spot's rim, target and source first, then the
+/// target of any other spot.
+pub fn spot_hit(
+    sp: &MaskSpace,
+    m: &Mapping,
+    spots: &[Spot],
+    selected: Option<usize>,
+    p: Point<Pixels>,
+) -> Option<(usize, CirclePart)> {
+    if let Some(i) = selected
+        && let Some(s) = spots.get(i)
+    {
+        if let Some(h) = circle_hit(sp, m, s.target, s.radius, p, true) {
+            return Some((i, h));
+        }
+        if circle_hit(sp, m, s.source, s.radius, p, false).is_some() {
+            return Some((i, CirclePart::Source));
+        }
+    }
+    spots
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(i, _)| Some(*i) != selected)
+        .find(|(_, s)| circle_hit(sp, m, s.target, s.radius, p, false).is_some())
+        .map(|(i, _)| (i, CirclePart::Target))
+}
+
+/// The red-eye correction and part under `p`, the selected one first.
+pub fn eye_hit(
+    sp: &MaskSpace,
+    m: &Mapping,
+    eyes: &[RedEye],
+    selected: Option<usize>,
+    p: Point<Pixels>,
+) -> Option<(usize, CirclePart)> {
+    if let Some(i) = selected
+        && let Some(e) = eyes.get(i)
+        && let Some(h) = circle_hit(sp, m, e.center, e.radius, p, true)
+    {
+        return Some((i, h));
+    }
+    eyes.iter()
+        .enumerate()
+        .rev()
+        .find(|(_, e)| circle_hit(sp, m, e.center, e.radius, p, false).is_some())
+        .map(|(i, _)| (i, CirclePart::Target))
+}
+
+fn moved(p: Pt, d: Pt) -> Pt {
+    Pt {
+        x: (p.x + d.x).clamp(0.0, 1.0),
+        y: (p.y + d.y).clamp(0.0, 1.0),
+    }
+}
+
+/// Radius (fraction of the long edge) of a circle at `c` reaching `at`.
+pub fn radius_to(sp: &MaskSpace, c: Pt, at: Pt) -> f32 {
+    let (a, b) = (sp.src(c), sp.src(at));
+    ((b.0 - a.0).hypot(b.1 - a.1) / sp.long_edge()) as f32
+}
+
+/// `start` with `part` moved by `delta`, or its rim dragged to `at`.
+pub fn drag_spot(sp: &MaskSpace, start: &Spot, part: CirclePart, at: Pt, delta: Pt) -> Spot {
+    let mut s = start.clone();
+    match part {
+        CirclePart::Target => s.target = moved(s.target, delta),
+        CirclePart::Source => s.source = moved(s.source, delta),
+        CirclePart::Edge => s.radius = radius_to(sp, s.target, at).clamp(MIN_RADIUS, MAX_RADIUS),
+    }
+    s
+}
+
+pub fn drag_eye(sp: &MaskSpace, start: &RedEye, part: CirclePart, at: Pt, delta: Pt) -> RedEye {
+    let mut e = start.clone();
+    match part {
+        CirclePart::Edge => e.radius = radius_to(sp, e.center, at).clamp(MIN_RADIUS, MAX_RADIUS),
+        _ => e.center = moved(e.center, delta),
+    }
+    e
+}
+
+fn circle(window: &mut Window, sp: &MaskSpace, m: &Mapping, c: Pt, radius: f32) {
+    let (x, y) = sp.src(c);
+    let r = radius as f64 * sp.long_edge();
+    let pts: Vec<Point<Pixels>> = (0..=48)
+        .map(|i| {
+            let t = i as f64 / 48.0 * std::f64::consts::TAU;
+            to_window(sp, m, (x + r * t.cos(), y + r * t.sin()))
+        })
+        .collect();
+    polyline(window, &pts);
+}
+
+/// Spot outlines; the selected spot also shows its source, linked to the target, and the
+/// radius handle.
+pub fn paint_spots(
+    window: &mut Window,
+    sp: &MaskSpace,
+    m: &Mapping,
+    spots: &[Spot],
+    selected: Option<usize>,
+) {
+    for (i, s) in spots.iter().enumerate() {
+        circle(window, sp, m, s.target, s.radius);
+        if Some(i) != selected {
+            continue;
+        }
+        circle(window, sp, m, s.source, s.radius);
+        let (t, rt) = circle_window(sp, m, s.target, s.radius);
+        let (src, rs) = circle_window(sp, m, s.source, s.radius);
+        let d = dist(t, src);
+        if d > rt + rs {
+            let u = |k: f32| {
+                point(
+                    px(f32::from(t.x - src.x) * k),
+                    px(f32::from(t.y - src.y) * k),
+                )
+            };
+            outlined(window, src + u(rs / d), t - u(rt / d));
+        }
+        dot(window, src, 3.5, true);
+        dot(window, t + point(px(rt), px(0.0)), 4.5, true);
+    }
+}
+
+pub fn paint_eyes(
+    window: &mut Window,
+    sp: &MaskSpace,
+    m: &Mapping,
+    eyes: &[RedEye],
+    selected: Option<usize>,
+) {
+    for (i, e) in eyes.iter().enumerate() {
+        circle(window, sp, m, e.center, e.radius);
+        if Some(i) == selected {
+            let (c, r) = circle_window(sp, m, e.center, e.radius);
+            dot(window, c, 3.5, true);
+            dot(window, c + point(px(r), px(0.0)), 4.5, true);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spots_follow_a_mirror_and_resize_from_the_rim() {
+        let mut p = EditParams::default();
+        p.spots.push(Spot::new(
+            aigle_core::retouch::SpotMode::Heal,
+            Pt { x: 0.2, y: 0.3 },
+            Pt { x: 0.6, y: 0.3 },
+            0.02,
+        ));
+        p.red_eye.push(RedEye::new(Pt { x: 0.1, y: 0.9 }, 0.01));
+        let ops = reorient_ops(&p, Reorient::Mirror);
+        assert_eq!(ops.len(), 2);
+        let ParamOp::Set { value, .. } = &ops[0] else {
+            panic!()
+        };
+        let spots: Vec<Spot> = serde_json::from_value(value.clone()).unwrap();
+        assert!((spots[0].target.x - 0.8).abs() < 1e-6 && (spots[0].source.x - 0.4).abs() < 1e-6);
+        assert_eq!(spots[0].radius, 0.02);
+
+        let sp = MaskSpace::new(Size::new(600, 400), &p);
+        let s = drag_spot(
+            &sp,
+            &p.spots[0],
+            CirclePart::Edge,
+            Pt { x: 0.25, y: 0.3 },
+            Pt::default(),
+        );
+        // 30 px of a 600 px long edge.
+        assert!((s.radius - 0.05).abs() < 1e-5);
+        let s = drag_spot(
+            &sp,
+            &p.spots[0],
+            CirclePart::Source,
+            Pt::default(),
+            Pt { x: 0.1, y: 0.0 },
+        );
+        assert!((s.source.x - 0.7).abs() < 1e-6 && s.target == p.spots[0].target);
+    }
 
     #[test]
     fn masks_follow_a_quarter_turn() {
@@ -642,7 +893,7 @@ mod tests {
             feather: 50.0,
         };
         p.masks.push(m);
-        let op = reorient_ops(&p, Reorient::Cw { w: 600.0, h: 400.0 }).unwrap();
+        let op = reorient_ops(&p, Reorient::Cw { w: 600.0, h: 400.0 }).remove(0);
         let ParamOp::Set { value, .. } = op else {
             panic!()
         };
@@ -660,7 +911,7 @@ mod tests {
         assert!((center.x - 0.8).abs() < 1e-6 && (center.y - 0.1).abs() < 1e-6);
         assert!((radii[0] * 400.0 - 60.0).abs() < 1e-3 && (radii[1] * 600.0 - 60.0).abs() < 1e-3);
         assert_eq!(angle, 90.0);
-        assert!(reorient_ops(&EditParams::default(), Reorient::Mirror).is_none());
+        assert!(reorient_ops(&EditParams::default(), Reorient::Mirror).is_empty());
     }
 
     #[test]

@@ -4,8 +4,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use aigle_core::geometry::{GeometryMap, ImagePoint, Orientation, Size};
-use aigle_core::masks::LocalAdjustment;
+use aigle_core::masks::{LocalAdjustment, Pt};
 use aigle_core::params::{Aspect, CropRect, GeometryParams};
+use aigle_core::retouch::{RedEye, Spot, SpotMode};
 use aigle_core::{EditParams, MaskId};
 use aigle_doc::{CommandError, EditCommand, GestureId, Origin, ParamOp, PhotoDoc, SavedHistory};
 use aigle_engine_api::{
@@ -17,7 +18,7 @@ use gpui::{Context, EventEmitter, Task};
 use crate::crop::{self, Frame};
 use crate::library::CopyInfo;
 use crate::meta::FileFacts;
-use crate::tools::{NewMask, Reorient, reorient_ops};
+use crate::tools::{self, NewMask, Reorient, reorient_ops};
 
 pub enum PhotoEvent {
     /// Loading finished (successfully or not).
@@ -61,6 +62,12 @@ pub struct Photo {
     /// The next drag on the canvas creates a mask of this kind.
     pub pending_mask: Option<NewMask>,
     pub brush: Brush,
+    /// The spot (index in `spots`) edited with the spot tool.
+    pub selected_spot: Option<usize>,
+    pub spot_brush: SpotBrush,
+    /// The red-eye correction (index in `red_eye`) edited with the red-eye tool.
+    pub selected_eye: Option<usize>,
+    spot_job: Option<Task<()>>,
 }
 
 /// Brush settings of the mask tool.
@@ -90,6 +97,29 @@ pub enum Tool {
     None,
     Crop,
     Mask,
+    Spot,
+    RedEye,
+}
+
+/// Settings of the spot tool for new spots.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpotBrush {
+    pub mode: SpotMode,
+    /// Radius as a fraction of the source long edge.
+    pub size: f32,
+    pub feather: f32,
+    pub opacity: f32,
+}
+
+impl Default for SpotBrush {
+    fn default() -> Self {
+        SpotBrush {
+            mode: SpotMode::Heal,
+            size: 0.015,
+            feather: 50.0,
+            opacity: 1.0,
+        }
+    }
 }
 
 /// Ops setting the crop to `c`.
@@ -193,6 +223,10 @@ impl Photo {
             mask_overlay: false,
             pending_mask: None,
             brush: Brush::default(),
+            selected_spot: None,
+            spot_brush: SpotBrush::default(),
+            selected_eye: None,
+            spot_job: None,
         }
     }
 
@@ -393,6 +427,106 @@ impl Photo {
         if self.selected_mask != id {
             self.selected_mask = id;
             cx.notify();
+        }
+    }
+
+    /// The selected spot, if it still exists.
+    pub fn spot(&self) -> Option<(usize, &Spot)> {
+        let i = self.selected_spot?;
+        self.head().spots.get(i).map(|s| (i, s))
+    }
+
+    pub fn eye(&self) -> Option<(usize, &RedEye)> {
+        let i = self.selected_eye?;
+        self.head().red_eye.get(i).map(|e| (i, e))
+    }
+
+    /// Add a spot at `target` with the spot tool's settings, its source found by the engine.
+    pub fn add_spot(&mut self, target: Pt, cx: &mut Context<Self>) {
+        let b = self.spot_brush;
+        let job = self.session.spot_source(target, b.size);
+        self.spot_job = Some(cx.spawn(async move |this, cx| {
+            let r = job.await;
+            let _ = this.update(cx, |p, cx| {
+                let source = match r {
+                    Ok(s) => s,
+                    Err(e) => {
+                        cx.emit(PhotoEvent::Notice(e.to_string()));
+                        return;
+                    }
+                };
+                let mut s = Spot::new(b.mode, target, source, b.size);
+                s.feather = b.feather;
+                s.opacity = b.opacity;
+                let mut spots = p.head().spots.clone();
+                spots.push(s);
+                let i = spots.len() - 1;
+                if p.command(
+                    crate::i18n::t("污点去除"),
+                    vec![tools::spots_op(&spots)],
+                    None,
+                    Interaction::Final,
+                    cx,
+                ) {
+                    p.selected_spot = Some(i);
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    pub fn delete_spot(&mut self, i: usize, cx: &mut Context<Self>) {
+        let mut spots = self.head().spots.clone();
+        if i >= spots.len() {
+            return;
+        }
+        spots.remove(i);
+        if self.command(
+            crate::i18n::t("删除污点"),
+            vec![tools::spots_op(&spots)],
+            None,
+            Interaction::Final,
+            cx,
+        ) {
+            self.selected_spot = None;
+        }
+    }
+
+    pub fn delete_eye(&mut self, i: usize, cx: &mut Context<Self>) {
+        let mut eyes = self.head().red_eye.clone();
+        if i >= eyes.len() {
+            return;
+        }
+        eyes.remove(i);
+        if self.command(
+            crate::i18n::t("删除红眼校正"),
+            vec![tools::eyes_op(&eyes)],
+            None,
+            Interaction::Final,
+            cx,
+        ) {
+            self.selected_eye = None;
+        }
+    }
+
+    /// Delete the selected spot or red-eye correction of the active tool.
+    pub fn delete_selected_retouch(&mut self, cx: &mut Context<Self>) -> bool {
+        match self.tool {
+            Tool::Spot => match self.spot() {
+                Some((i, _)) => {
+                    self.delete_spot(i, cx);
+                    true
+                }
+                None => false,
+            },
+            Tool::RedEye => match self.eye() {
+                Some((i, _)) => {
+                    self.delete_eye(i, cx);
+                    true
+                }
+                None => false,
+            },
+            _ => false,
         }
     }
 

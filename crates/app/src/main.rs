@@ -26,6 +26,7 @@ mod panel;
 mod photo;
 mod presets;
 mod resources;
+mod retouch_panel;
 mod tools;
 mod viewport;
 mod workspace;

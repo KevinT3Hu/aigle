@@ -24,6 +24,7 @@ use crate::curve::CurveEditor;
 use crate::mask_panel::MaskPanel;
 use crate::meta;
 use crate::photo::{Photo, PhotoEvent, Tool};
+use crate::retouch_panel::RetouchPanel;
 
 const PANEL_TABS: [&str; 4] = ["调整", "修饰", "蒙版", "信息"];
 const MASK_TAB: usize = 2;
@@ -377,6 +378,7 @@ pub struct Panel {
     histogram: Option<Arc<Histogram>>,
     curve: Entity<CurveEditor>,
     masks: Entity<MaskPanel>,
+    retouch: Entity<RetouchPanel>,
     gesture: Option<GestureId>,
     job: Option<Task<()>>,
     import_job: Option<Task<()>>,
@@ -496,6 +498,7 @@ impl Panel {
         .detach();
         let curve = cx.new(|cx| CurveEditor::new(photo.clone(), cx));
         let masks = cx.new(|cx| MaskPanel::new(photo.clone(), window, cx));
+        let retouch = cx.new(|cx| RetouchPanel::new(photo.clone(), window, cx));
         let mut expanded = [false; TOOL_GROUPS.len()];
         expanded[0] = true;
         expanded[4] = true;
@@ -507,6 +510,7 @@ impl Panel {
             histogram: None,
             curve,
             masks,
+            retouch,
             gesture: None,
             job: None,
             import_job: None,
@@ -1420,6 +1424,8 @@ impl Render for Panel {
             }));
         let body = if tool == Tool::Crop {
             self.render_crop(cx).into_any_element()
+        } else if matches!(tool, Tool::Spot | Tool::RedEye) {
+            self.retouch.clone().into_any_element()
         } else {
             match self.tab {
                 0 | 1 => self.render_tab(cx).into_any_element(),

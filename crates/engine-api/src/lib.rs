@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use aigle_core::geometry::ImagePoint;
 use aigle_core::geometry::ImageRect;
+use aigle_core::masks::Pt;
 use aigle_core::{EditParams, MaskAssetId, Revision};
 pub use job::{CancelToken, Job, JobCompleter, JobError, JobResult};
 pub use tokio::sync::{broadcast, watch};
@@ -61,6 +62,9 @@ pub trait SessionImpl: Send + Sync + 'static {
     fn sample(&self, at: ImagePoint, radius: f32, stage: SampleStage) -> Job<PixelSample>;
     fn auto_white_balance(&self, region: Option<ImageRect>) -> Job<WbEstimate>;
     fn neutral_white_balance(&self, at: ImagePoint, radius: f32) -> Job<WbEstimate>;
+    /// A source for a new spot at `target` (normalised Source point, radius as a fraction
+    /// of the long edge) under the current edit.
+    fn spot_source(&self, target: Pt, radius: f32) -> Job<Pt>;
     fn match_lens(&self) -> Job<Vec<LensMatch>>;
     fn compute_mask(&self, req: MaskRequest) -> Job<MaskAssetId>;
     fn render_offscreen(&self, params: Arc<EditParams>, opts: OffscreenOpts) -> Job<EncodedImage>;
@@ -191,6 +195,12 @@ impl Session {
 
     pub fn sample(&self, at: ImagePoint, radius: f32, stage: SampleStage) -> Job<PixelSample> {
         self.imp().sample(at, radius, stage)
+    }
+
+    /// Where a new spot at `target` (radius as a fraction of the long edge) should copy
+    /// from: a nearby area with matching surroundings.
+    pub fn spot_source(&self, target: Pt, radius: f32) -> Job<Pt> {
+        self.imp().spot_source(target, radius)
     }
 
     /// Lens profiles from the lensfun database matching the photo's EXIF lens, best first,

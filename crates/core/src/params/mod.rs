@@ -11,6 +11,7 @@ pub use groups::*;
 pub use spec::{FieldSpec, Scalars, round_to_step};
 
 use crate::masks::{LocalAdjustment, MaskShape, Pt};
+use crate::retouch::{RedEye, Spot};
 use spec::join;
 
 /// Process version (doc 02 §13). Stages pick their implementation from it.
@@ -77,6 +78,9 @@ pub struct EditParams {
     pub detail: DetailParams,
     pub effects: EffectsParams,
     pub masks: Vec<LocalAdjustment>,
+    /// Applied in order; each source reads the image before any spot.
+    pub spots: Vec<Spot>,
+    pub red_eye: Vec<RedEye>,
 }
 
 impl Scalars for EditParams {
@@ -216,6 +220,20 @@ impl EditParams {
             });
         }
 
+        let round = |p: &mut Pt| {
+            p.x = round_to_step(p.x, GEOMETRY_STEP) + 0.0;
+            p.y = round_to_step(p.y, GEOMETRY_STEP) + 0.0;
+        };
+        for s in &mut self.spots {
+            s.clamp();
+            round(&mut s.target);
+            round(&mut s.source);
+        }
+        for r in &mut self.red_eye {
+            r.clamp();
+            round(&mut r.center);
+        }
+
         Ok(reports)
     }
 
@@ -247,6 +265,12 @@ impl EditParams {
             if !ok {
                 return Err(ParamsError::NotFinite(format!("masks[{i}]")));
             }
+        }
+        if let Some(i) = self.spots.iter().position(|s| !s.is_finite()) {
+            return Err(ParamsError::NotFinite(format!("spots[{i}]")));
+        }
+        if let Some(i) = self.red_eye.iter().position(|r| !r.is_finite()) {
+            return Err(ParamsError::NotFinite(format!("red_eye[{i}]")));
         }
         Ok(())
     }

@@ -1141,6 +1141,18 @@ impl Workspace {
                                     Box::new(ToggleMask),
                                     !develop,
                                 )
+                                .menu_with_check_and_disabled(
+                                    crate::i18n::t("污点去除"),
+                                    tool == Tool::Spot,
+                                    Box::new(ToggleSpot),
+                                    !develop,
+                                )
+                                .menu_with_check_and_disabled(
+                                    crate::i18n::t("红眼校正"),
+                                    tool == Tool::RedEye,
+                                    Box::new(ToggleRedEye),
+                                    !develop,
+                                )
                                 .menu_with_disabled(
                                     crate::i18n::t("白平衡吸管"),
                                     Box::new(ToggleWbPicker),
@@ -1515,6 +1527,13 @@ impl Render for Workspace {
                 cx.notify();
             }))
             .on_action(cx.listener(|w, _: &ToggleMask, _, cx| w.toggle_tool(Tool::Mask, cx)))
+            .on_action(cx.listener(|w, _: &ToggleSpot, _, cx| w.toggle_tool(Tool::Spot, cx)))
+            .on_action(cx.listener(|w, _: &ToggleRedEye, _, cx| w.toggle_tool(Tool::RedEye, cx)))
+            .on_action(cx.listener(|w, _: &DeleteRetouch, _, cx| {
+                w.with_photo(cx, |p, cx| {
+                    p.delete_selected_retouch(cx);
+                })
+            }))
             .on_action(cx.listener(|w, _: &ToggleOverlay, _, cx| {
                 w.with_photo(cx, |p, cx| {
                     if p.tool == Tool::Mask {
