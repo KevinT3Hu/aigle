@@ -221,11 +221,10 @@ pub fn sections(info: &ImageInfo, file: &FileFacts) -> Vec<Section> {
     rows.push((
         crate::i18n::t("类型"),
         match info.kind {
-            SourceKind::Raw => "RAW".into(),
+            SourceKind::Raw => "RAW".to_string(),
             SourceKind::Rendered => crate::i18n::t("已渲染图像"),
             SourceKind::Synthetic => crate::i18n::t("合成测试图"),
-        }
-        .into(),
+        },
     ));
     out.push(Section {
         title: crate::i18n::t("文件"),
@@ -298,19 +297,19 @@ pub fn sections(info: &ImageInfo, file: &FileFacts) -> Vec<Section> {
         rows.push((crate::i18n::t("曝光补偿"), bias(b)));
     }
     if let Some(v) = s.exposure_program.and_then(exposure_program) {
-        rows.push((crate::i18n::t("曝光程序"), v.into()));
+        rows.push((crate::i18n::t("曝光程序"), v));
     }
     if let Some(v) = s.exposure_mode.and_then(exposure_mode) {
-        rows.push((crate::i18n::t("曝光模式"), v.into()));
+        rows.push((crate::i18n::t("曝光模式"), v));
     }
     if let Some(v) = s.metering_mode.and_then(metering_mode) {
-        rows.push((crate::i18n::t("测光"), v.into()));
+        rows.push((crate::i18n::t("测光"), v));
     }
     if let Some(f) = s.flash {
-        rows.push((crate::i18n::t("闪光灯"), flash(f).into()));
+        rows.push((crate::i18n::t("闪光灯"), flash(f)));
     }
     if let Some(v) = s.white_balance.and_then(white_balance) {
-        rows.push((crate::i18n::t("机内白平衡"), v.into()));
+        rows.push((crate::i18n::t("机内白平衡"), v));
     }
     rows.push((
         crate::i18n::t("原照白平衡"),

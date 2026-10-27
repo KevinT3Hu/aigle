@@ -589,9 +589,9 @@ impl Photo {
                 let wb = match r {
                     Ok(wb) => wb,
                     Err(_) => {
-                        cx.emit(PhotoEvent::Notice(
-                            crate::i18n::t("吸管：所选位置过曝、过暗或不在图像内").into(),
-                        ));
+                        cx.emit(PhotoEvent::Notice(crate::i18n::t(
+                            "吸管：所选位置过曝、过暗或不在图像内",
+                        )));
                         return;
                     }
                 };
@@ -607,9 +607,9 @@ impl Photo {
                 if let Err(e) = p.edit(cmd, Interaction::Final, cx) {
                     cx.emit(PhotoEvent::Notice(e.to_string()));
                 } else if wb.low_confidence_reason.is_some() {
-                    cx.emit(PhotoEvent::Notice(
-                        crate::i18n::t("吸管：所选颜色超出白平衡范围，已取最接近的值").into(),
-                    ));
+                    cx.emit(PhotoEvent::Notice(crate::i18n::t(
+                        "吸管：所选颜色超出白平衡范围，已取最接近的值",
+                    )));
                 }
             });
         }));

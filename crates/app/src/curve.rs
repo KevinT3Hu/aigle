@@ -328,7 +328,7 @@ impl CurveEditor {
     fn readout(&self, points: &[CurvePoint]) -> Option<String> {
         let i = self.drag.as_ref().map(|d| d.index).or(self.hover)?;
         if self.drag.as_ref().is_some_and(|d| d.removed) {
-            return Some(crate::i18n::t("松开以删除此点").into());
+            return Some(crate::i18n::t("松开以删除此点"));
         }
         let q = points.get(i)?;
         let v = |t: f32| (t * 255.0).round() as i32;
@@ -494,8 +494,8 @@ impl Render for CurveEditor {
                 .size_full(),
             );
 
-        let hint = readout
-            .unwrap_or_else(|| crate::i18n::t("单击添加点，拖动调整；双击点或拖出图表删除").into());
+        let hint =
+            readout.unwrap_or_else(|| crate::i18n::t("单击添加点，拖动调整；双击点或拖出图表删除"));
         let mut body = v_flex()
             .gap_2()
             .child(channels)

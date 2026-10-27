@@ -844,7 +844,7 @@ impl Canvas {
     fn status(&self, cx: &App) -> String {
         let photo = self.photo.read(cx);
         match &photo.load {
-            aigle_engine_api::LoadState::Loading => return crate::i18n::t("正在加载…").into(),
+            aigle_engine_api::LoadState::Loading => return crate::i18n::t("正在加载…"),
             aigle_engine_api::LoadState::Failed(e) => {
                 return rust_i18n::t!("无法打开：{e}", e = e).into_owned();
             }

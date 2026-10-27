@@ -622,7 +622,7 @@ impl Panel {
                             );
                             p.lens_name = Some(format!("{} {}", m.lens_maker, m.lens_model));
                         }
-                        None => p.error = Some(crate::i18n::t("镜头数据库中没有匹配的镜头").into()),
+                        None => p.error = Some(crate::i18n::t("镜头数据库中没有匹配的镜头")),
                     },
                     Err(e) => p.error = Some(e.to_string()),
                 }
