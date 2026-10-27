@@ -194,7 +194,7 @@ pub fn out_tile(
         } else {
             tiles::out_lin_local(px, None, gx, gy, &params, aux)
         };
-        let o = tiles::encode_out16(v, &params.e1);
+        let o = tiles::encode_out16(v, &params.e1, aux);
         out[i * 2] = o[0];
         out[i * 2 + 1] = o[1];
         return;

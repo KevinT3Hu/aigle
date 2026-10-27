@@ -4,8 +4,7 @@
 //! transcendental setup once per render) and a per-pixel function.
 
 use crate::math::{
-    atan2, cbrt, clamp01, cos, exp2, luminance, mat3_mul, output_oetf, powf, sin, smoothstep, sqrt,
-    srgb_eotf, srgb_oetf,
+    atan2, cbrt, clamp01, cos, exp2, mat3_mul, powf, sin, smoothstep, sqrt, srgb_eotf, srgb_oetf,
 };
 use crate::{Mat3f, Rgb};
 
@@ -227,6 +226,10 @@ pub struct D2Params {
     pub mixer_on: u32,
     /// Offset of the look cube in the aux buffer; 0 = none.
     pub look: u32,
+    /// Non-zero: black & white; replaces saturation, vibrance and the mixer by `bw_mix`.
+    pub bw: u32,
+    /// Black & white: per mixer band, lightness EV of colours of that hue.
+    pub bw_mix: [f32; 8],
     /// Chroma gain.
     pub saturation: f32,
     /// Extra chroma gain for low-chroma colours.
@@ -275,8 +278,19 @@ fn curve_ch(lut: &[f32], c: usize, x: f32) -> f32 {
 /// neighbouring bands with a raised-cosine partition of unity.
 #[inline]
 pub fn mixer_at(h: f32, m: &[[f32; 3]; 8]) -> [f32; 3] {
-    let hh = if h < MIXER_HUES[0] { h + 360.0 } else { h };
+    let (i, j, w0) = band_weights(h);
     let mut out = [0.0; 3];
+    for k in 0..3 {
+        out[k] = w0 * m[i][k] + (1.0 - w0) * m[j][k];
+    }
+    out
+}
+
+/// The two mixer bands around OkLab hue `h` (degrees, 0..360) and the weight of the first.
+#[inline]
+fn band_weights(h: f32) -> (usize, usize, f32) {
+    let hh = if h < MIXER_HUES[0] { h + 360.0 } else { h };
+    let mut out = (7, 0, 1.0);
     for i in 0..8 {
         let c0 = MIXER_HUES[i];
         let c1 = if i == 7 {
@@ -287,13 +301,16 @@ pub fn mixer_at(h: f32, m: &[[f32; 3]; 8]) -> [f32; 3] {
         if hh >= c0 && hh < c1 {
             let t = (hh - c0) / (c1 - c0);
             let w0 = 0.5 * (1.0 + cos(core::f32::consts::PI * t));
-            let j = if i == 7 { 0 } else { i + 1 };
-            for k in 0..3 {
-                out[k] = w0 * m[i][k] + (1.0 - w0) * m[j][k];
-            }
+            out = (i, if i == 7 { 0 } else { i + 1 }, w0);
         }
     }
     out
+}
+
+#[inline]
+fn hue_deg(a: f32, b: f32) -> f32 {
+    let h = atan2(b, a) * (180.0 / core::f32::consts::PI);
+    if h < 0.0 { h + 360.0 } else { h }
 }
 
 #[inline]
@@ -302,6 +319,14 @@ fn color_px(v: Rgb, p: &D2Params, dsat: f32, dhue: f32) -> Rgb {
     let lab = mat3_mul(&p.lms_to_lab, [cbrt(lms[0]), cbrt(lms[1]), cbrt(lms[2])]);
     let (mut l, mut a, mut b) = (lab[0], lab[1], lab[2]);
     let c = sqrt(a * a + b * b);
+    if p.bw != 0 {
+        if c > 1e-5 {
+            let (i, j, w0) = band_weights(hue_deg(a, b));
+            let ev = w0 * p.bw_mix[i] + (1.0 - w0) * p.bw_mix[j];
+            l *= exp2(ev * smoothstep(0.0, 0.12, c));
+        }
+        return grade(l, 0.0, 0.0, p);
+    }
     let g = ((p.saturation + dsat) * (1.0 + p.vibrance * (1.0 - smoothstep(0.0, 0.2, c)))).max(0.0);
     a *= g;
     b *= g;
@@ -314,11 +339,7 @@ fn color_px(v: Rgb, p: &D2Params, dsat: f32, dhue: f32) -> Rgb {
         b = nb;
     }
     if p.mixer_on != 0 && c > 1e-5 {
-        let mut h = atan2(b, a) * (180.0 / core::f32::consts::PI);
-        if h < 0.0 {
-            h += 360.0;
-        }
-        let m = mixer_at(h, &p.mixer);
+        let m = mixer_at(hue_deg(a, b), &p.mixer);
         let ang = m[0] * (core::f32::consts::PI / 180.0);
         let (ca, sa) = (cos(ang), sin(ang));
         let s = (1.0 + m[1]).max(0.0);
@@ -327,6 +348,12 @@ fn color_px(v: Rgb, p: &D2Params, dsat: f32, dhue: f32) -> Rgb {
         b = nb * s;
         l *= exp2(m[2] * smoothstep(0.02, 0.12, c));
     }
+    grade(l, a, b, p)
+}
+
+/// Colour grading wheels by lightness, then OkLab → linear RGB.
+#[inline]
+fn grade(mut l: f32, mut a: f32, mut b: f32, p: &D2Params) -> Rgb {
     let wh = smoothstep(p.grade_mid - p.grade_width, p.grade_mid + p.grade_width, l);
     let ws = 1.0 - wh;
     let wm = 4.0 * ws * wh;
@@ -379,22 +406,20 @@ pub struct E1Params {
     pub matrix: Mat3f,
     /// Output transfer function, `math::TRANSFER_*`.
     pub transfer: u32,
-}
-
-/// Bounded linear Rec.2020 → encoded output values in [0, 1].
-#[inline]
-pub fn e1_srgb(px: Rgb, p: &E1Params) -> Rgb {
-    let l = fit_output(mat3_mul(&p.matrix, px), luminance(px));
-    [
-        output_oetf(l[0], p.transfer),
-        output_oetf(l[1], p.transfer),
-        output_oetf(l[2], p.transfer),
-    ]
+    /// [`TRANSFER_TABLE`](crate::math::TRANSFER_TABLE): offset of the tables in the aux
+    /// buffer.
+    pub table: u32,
+    /// Soft proof: offset in the aux buffer of two matrices, linear Rec.2020 → linear proof
+    /// RGB and linear proof RGB → linear output primaries, replacing `matrix` so that colours
+    /// are fitted to the proof gamut; 0 = off. (In the aux buffer rather than here to keep
+    /// the output kernel's register use down.)
+    pub proof: u32,
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::math::luminance;
 
     #[test]
     fn d1_anchors_grey_and_is_bounded_and_monotone() {
@@ -498,6 +523,8 @@ pub(crate) mod tests {
             color: color as u32,
             mixer_on: 0,
             look: 0,
+            bw: 0,
+            bw_mix: [0.0; 8],
             saturation: 1.0,
             vibrance: 0.0,
             mixer: [[0.0; 3]; 8],
@@ -533,6 +560,32 @@ pub(crate) mod tests {
             (g[0] - g[1]).abs() < 1e-4 && (g[2] - g[1]).abs() < 1e-4,
             "{g:?}"
         );
+    }
+
+    #[test]
+    fn bw_is_grey_and_the_mix_moves_lightness_by_hue() {
+        let lut = vec![0.0; CURVE_OFFSET];
+        let mut p = test_d2(true);
+        p.bw = 1;
+        let red = [0.6, 0.1, 0.08];
+        let blue = [0.08, 0.12, 0.6];
+        let grey = |v: Rgb| (v[0] - v[1]).abs() < 1e-4 && (v[2] - v[1]).abs() < 1e-4;
+        let base_r = d2(red, &p, &lut);
+        let base_b = d2(blue, &p, &lut);
+        assert!(grey(base_r) && grey(base_b), "{base_r:?} {base_b:?}");
+        // Neutral input keeps its value.
+        let g = d2([0.4; 3], &p, &lut);
+        assert!((g[0] - 0.4).abs() < 2e-4, "{g:?}");
+        // Brightening reds leaves blues alone.
+        p.bw_mix[0] = 1.0;
+        let r = d2(red, &p, &lut);
+        let b = d2(blue, &p, &lut);
+        assert!(grey(r) && r[0] > base_r[0] * 1.5, "{r:?} {base_r:?}");
+        assert!((b[0] - base_b[0]).abs() < 1e-4, "{b:?} {base_b:?}");
+        // Grading still tints the monochrome image.
+        p.wheels[3] = [0.02, 0.03, 0.0];
+        let t = d2([0.4; 3], &p, &lut);
+        assert!(t[0] > t[2], "{t:?}");
     }
 
     #[test]

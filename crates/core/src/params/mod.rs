@@ -72,6 +72,7 @@ pub struct EditParams {
     pub presence: PresenceParams,
     pub curve: ToneCurve,
     pub mixer: ColorMixer,
+    pub bw: BwParams,
     pub grading: ColorGrading,
     pub detail: DetailParams,
     pub effects: EffectsParams,
@@ -89,6 +90,7 @@ impl Scalars for EditParams {
         self.presence.visit(&join(prefix, "presence"), f);
         self.curve.visit(&join(prefix, "curve"), f);
         self.mixer.visit(&join(prefix, "mixer"), f);
+        self.bw.visit(&join(prefix, "bw"), f);
         self.grading.visit(&join(prefix, "grading"), f);
         self.detail.visit(&join(prefix, "detail"), f);
         self.effects.visit(&join(prefix, "effects"), f);
@@ -104,6 +106,7 @@ impl Scalars for EditParams {
         self.presence.visit_mut(&join(prefix, "presence"), f);
         self.curve.visit_mut(&join(prefix, "curve"), f);
         self.mixer.visit_mut(&join(prefix, "mixer"), f);
+        self.bw.visit_mut(&join(prefix, "bw"), f);
         self.grading.visit_mut(&join(prefix, "grading"), f);
         self.detail.visit_mut(&join(prefix, "detail"), f);
         self.effects.visit_mut(&join(prefix, "effects"), f);

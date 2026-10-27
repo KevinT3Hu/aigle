@@ -207,6 +207,7 @@ fn format_hint(text: &str, bindings: &Bindings) -> String {
         "ToggleOverlay",
         "ToggleWbPicker",
         "SwapAspect",
+        "ToggleMonochrome",
     ] {
         names.push(format!("shortcut_{name}"));
         let action = format!("aigle::{name}");

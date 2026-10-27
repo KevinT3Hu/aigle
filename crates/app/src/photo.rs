@@ -539,6 +539,25 @@ impl Photo {
 
     /// Analyze the image with its tone sliders cleared, then set them to [`auto_tone`]
     /// values as one undoable command.
+    pub fn toggle_monochrome(&mut self, cx: &mut Context<Self>) {
+        if self.info().is_none() {
+            return;
+        }
+        let on = !self.head().bw.monochrome;
+        let label = crate::i18n::t(if on {
+            "处理方式 · 黑白"
+        } else {
+            "处理方式 · 彩色"
+        });
+        self.command(
+            label,
+            vec![ParamOp::set("bw.monochrome", on)],
+            None,
+            Interaction::Final,
+            cx,
+        );
+    }
+
     pub fn auto_tone(&mut self, cx: &mut Context<Self>) {
         if self.info().is_none() {
             return;

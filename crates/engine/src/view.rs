@@ -219,7 +219,8 @@ impl ViewShared {
                 params
             };
             let display = vp.as_ref().map(|v| v.display.clone()).unwrap_or_default();
-            let prep = Prepared::new(&src, &params, &display);
+            let mut prep = Prepared::new(&src, &params, &display);
+            prep.set_proof(&display, overlays.proof.as_ref());
             let viewport = vp.unwrap_or_else(|| Viewport {
                 region: pipeline::fit_region(
                     prep.crop_extent(),
@@ -415,7 +416,8 @@ impl ViewShared {
             TaskSpec::new("view-ring", Class::Background).cancel(cancel),
             move || {
                 let Some(v) = me.upgrade() else { return };
-                let prep = Prepared::new(&src, &params, &display);
+                let mut prep = Prepared::new(&src, &params, &display);
+                prep.set_proof(&display, target.overlays.proof.as_ref());
                 let ctx = RenderCtx {
                     cache: &v.session.engine.cache,
                     backend: &v.session.engine.backend,

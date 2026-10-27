@@ -27,6 +27,7 @@ pub enum Group {
     Presence,
     Curve,
     Mixer,
+    Monochrome,
     Grading,
     Detail,
     Lens,
@@ -37,13 +38,14 @@ pub enum Group {
 }
 
 impl Group {
-    pub const ALL: [Group; 13] = [
+    pub const ALL: [Group; 14] = [
         Group::Profile,
         Group::WhiteBalance,
         Group::Light,
         Group::Presence,
         Group::Curve,
         Group::Mixer,
+        Group::Monochrome,
         Group::Grading,
         Group::Detail,
         Group::Lens,
@@ -62,6 +64,7 @@ impl Group {
             Group::Presence => "presence",
             Group::Curve => "curve",
             Group::Mixer => "mixer",
+            Group::Monochrome => "bw",
             Group::Grading => "grading",
             Group::Detail => "detail",
             Group::Lens => "lens",
@@ -80,6 +83,7 @@ impl Group {
             Group::Presence => "偏好",
             Group::Curve => "曲线",
             Group::Mixer => "颜色",
+            Group::Monochrome => "黑白",
             Group::Grading => "分级",
             Group::Detail => "细节",
             Group::Lens => "镜头校正",

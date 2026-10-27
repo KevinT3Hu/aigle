@@ -107,6 +107,8 @@ pub struct Canvas {
     /// The tool and overlays the view was last set up for.
     tool: Tool,
     overlays: Overlays,
+    /// Soft-proof target used when proofing is turned on.
+    proof_target: DisplayProfileId,
     crop_drag: Option<CropDrag>,
     mask_drag: Option<MaskDrag>,
 }
@@ -169,6 +171,11 @@ impl Canvas {
             cx.notify()
         })
         .detach();
+        cx.observe_global::<crate::display::DisplayColor>(|c, cx| {
+            c.update_viewport(Interaction::Final, false, cx);
+            cx.notify()
+        })
+        .detach();
         Canvas {
             photo,
             view,
@@ -188,6 +195,7 @@ impl Canvas {
             sent: None,
             tool: Tool::None,
             overlays: Overlays::default(),
+            proof_target: DisplayProfileId::Srgb,
             crop_drag: None,
             mask_drag: None,
         }
@@ -289,7 +297,7 @@ impl Canvas {
         let vp = Viewport {
             region: self.state.region(crop, out),
             output_size: (out.w, out.h),
-            display: DisplayProfileId::Srgb,
+            display: crate::display::profile(cx),
         };
         if self.sent.as_ref() != Some(&vp) || force {
             self.view.set_viewport(vp.clone(), hint);
@@ -335,6 +343,63 @@ impl Canvas {
         self.compare
     }
 
+    /// Soft-proof target, if proofing.
+    pub fn proof(&self) -> Option<&DisplayProfileId> {
+        self.overlays.proof.as_ref()
+    }
+
+    pub fn gamut_warning(&self) -> bool {
+        self.overlays.gamut_warning
+    }
+
+    pub fn proof_target(&self) -> &DisplayProfileId {
+        &self.proof_target
+    }
+
+    /// Turn soft proofing on or off (to the last chosen target).
+    pub fn toggle_proof(&mut self, cx: &mut Context<Self>) {
+        let next = match self.overlays.proof {
+            Some(_) => None,
+            None => Some(self.proof_target.clone()),
+        };
+        self.set_proof_overlays(next, self.overlays.gamut_warning, cx);
+    }
+
+    /// Proof to `target` (turning proofing on).
+    pub fn set_proof_target(&mut self, target: DisplayProfileId, cx: &mut Context<Self>) {
+        self.proof_target = target.clone();
+        self.set_proof_overlays(Some(target), self.overlays.gamut_warning, cx);
+    }
+
+    /// The gamut warning implies proofing.
+    pub fn toggle_gamut_warning(&mut self, cx: &mut Context<Self>) {
+        let on = !self.overlays.gamut_warning;
+        let proof = match (&self.overlays.proof, on) {
+            (None, true) => Some(self.proof_target.clone()),
+            (p, _) => p.clone(),
+        };
+        self.set_proof_overlays(proof, on, cx);
+    }
+
+    fn set_proof_overlays(
+        &mut self,
+        proof: Option<DisplayProfileId>,
+        gamut_warning: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.overlays.gamut_warning = gamut_warning && proof.is_some();
+        self.overlays.proof = proof;
+        self.view.set_overlays(self.overlays.clone());
+        if let Some((v, _)) = &self.before {
+            v.set_overlays(Overlays {
+                proof: self.overlays.proof.clone(),
+                gamut_warning: self.overlays.gamut_warning,
+                ..Default::default()
+            });
+        }
+        cx.notify();
+    }
+
     pub fn toggle_before(&mut self, cx: &mut Context<Self>) {
         let next = if self.compare == Compare::Before {
             Compare::Off
@@ -371,6 +436,11 @@ impl Canvas {
         if mode == Compare::Split {
             let v = self.photo.read(cx).session.create_view(ViewSpec::fit(1, 1));
             v.set_params_source(ParamsSource::Original);
+            v.set_overlays(Overlays {
+                proof: self.overlays.proof.clone(),
+                gamut_warning: self.overlays.gamut_warning,
+                ..Default::default()
+            });
             if let Some(vp) = &self.sent {
                 v.set_viewport(vp.clone(), Interaction::Final);
             }

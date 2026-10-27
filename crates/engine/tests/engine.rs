@@ -1038,6 +1038,84 @@ fn clipping_overlay_and_display_p3() {
     assert!(flagged(&p3) < flagged(&over), "P3 is wider than sRGB");
 }
 
+#[test]
+fn soft_proof_fits_to_the_proof_gamut_and_warns() {
+    use aigle_engine_api::{DisplayProfileId, Overlays};
+    let e = engine();
+    let s = chart_session(&e);
+    let mut p = EditParams::default();
+    p.presence.saturation = 100.0;
+    p.presence.vibrance = 100.0;
+    s.set_edits(Revision(1), Arc::new(p), Interaction::Final);
+    let render = |display: DisplayProfileId, overlays: Overlays| {
+        let view = s.create_view(ViewSpec::fit(1, 1));
+        let mut frames = view.frames();
+        view.set_overlays(overlays);
+        view.set_viewport(
+            Viewport {
+                region: ImageRect::new(0.0, 0.0, 1200.0, 800.0),
+                output_size: (300, 200),
+                display,
+            },
+            Interaction::Final,
+        );
+        wait_frame(&mut frames, |f| {
+            f.rev == Revision(1) && f.pixels.width == 300 && f.quality != Quality::Draft
+        })
+    };
+    let proof = |gamut_warning| Overlays {
+        proof: Some(DisplayProfileId::Srgb),
+        gamut_warning,
+        ..Default::default()
+    };
+    let srgb = render(DisplayProfileId::Srgb, Overlays::default());
+    let wide = render(DisplayProfileId::Rec2020, Overlays::default());
+    let proofed = render(DisplayProfileId::Rec2020, proof(false));
+    let warned = render(DisplayProfileId::Rec2020, proof(true));
+    let magenta = |f: &Frame| {
+        f.pixels
+            .data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| **p == [255, 0, 255, 255])
+            .count()
+    };
+    // Proofing sRGB on an sRGB display changes nothing (up to rounding).
+    let same = render(DisplayProfileId::Srgb, proof(false));
+    let max_diff = |a: &Frame, b: &Frame| {
+        a.pixels
+            .data
+            .iter()
+            .zip(b.pixels.data.iter())
+            .map(|(x, y)| x.abs_diff(*y))
+            .max()
+            .unwrap_or(0)
+    };
+    assert!(max_diff(&same, &srgb) <= 1, "{}", max_diff(&same, &srgb));
+    // On a Rec.2020 display the proof differs from the plain wide render, and saturated
+    // patches outside sRGB are flagged.
+    assert!(max_diff(&proofed, &wide) > 4);
+    assert!(magenta(&warned) > 100, "{}", magenta(&warned));
+    assert_eq!(magenta(&proofed), 0);
+    // The proof shows sRGB colours: decoding both to XYZ gives about the same colour.
+    let to_xyz = |f: &Frame, d: &DisplayProfileId, i: usize| {
+        let px = &f.pixels.data[i * 4..i * 4 + 3];
+        let t = aigle_engine::output_space::transfer(d);
+        let lin: [f64; 3] = std::array::from_fn(|c| {
+            aigle_kernels::math::output_eotf(px[2 - c] as f32 / 255.0, t) as f64
+        });
+        aigle_core::color::mul_vec(&aigle_engine::output_space::rgb_to_xyz(d), lin)
+    };
+    let mut worst = 0f64;
+    for i in (0..300 * 200).step_by(97) {
+        let a = to_xyz(&srgb, &DisplayProfileId::Srgb, i);
+        let b = to_xyz(&proofed, &DisplayProfileId::Rec2020, i);
+        worst = worst.max((0..3).map(|c| (a[c] - b[c]).abs()).fold(0.0, f64::max));
+    }
+    assert!(worst < 0.02, "{worst}");
+}
+
 // ---------------------------------------------------------------------------------------------
 // Local adjustments (M).
 

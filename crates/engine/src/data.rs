@@ -154,6 +154,7 @@ pub fn lens(r: &DataRef) -> Option<Arc<LensProfileData>> {
 pub enum FileKind {
     Dcp,
     Look,
+    DisplayIcc,
 }
 
 impl FileKind {
@@ -161,12 +162,14 @@ impl FileKind {
         match self {
             FileKind::Dcp => "dcp",
             FileKind::Look => "look",
+            FileKind::DisplayIcc => "display",
         }
     }
     fn ext(self) -> &'static str {
         match self {
             FileKind::Dcp => "dcp",
             FileKind::Look => "cube",
+            FileKind::DisplayIcc => "icc",
         }
     }
 }
@@ -269,6 +272,16 @@ pub fn import(
             let l = crate::look::parse(text)?;
             let name = l.title.clone();
             let r = pin_file(FileKind::Look, bytes, l)?;
+            Ok(Imported {
+                data_ref: r,
+                name,
+                camera_model: None,
+            })
+        }
+        ImportKind::DisplayProfile => {
+            let p = crate::icc::parse(bytes)?;
+            let name = p.name.clone();
+            let r = pin_file(FileKind::DisplayIcc, bytes, p)?;
             Ok(Imported {
                 data_ref: r,
                 name,

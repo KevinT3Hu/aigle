@@ -44,6 +44,11 @@ use crate::source::Level;
 /// Implementation version of the S block product (doc 02 §13).
 pub const S_IMPL: u32 = 3;
 const RL_ITER: u32 = 4;
+/// Defringe hue window centres (degrees of `atan2(Cb, Cr)` in camera opponent space) and
+/// the reach of the hue sliders.
+const PURPLE_HUE: f32 = 55.0;
+const GREEN_HUE: f32 = 225.0;
+const DEFRINGE_HUE_SHIFT: f32 = 35.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SParams {
@@ -57,6 +62,9 @@ pub struct SParams {
     pub sharpen_detail: f32,
     pub masking: f32,
     pub texture: f32,
+    /// Defringe: purple and green amounts (0..1) and hue window centres (degrees of
+    /// `atan2(Cb, Cr)`).
+    pub defringe: [f32; 4],
     /// Largest local deltas any pixel can receive from masks: positive noise, |sharpness|,
     /// |texture| (doc 02 §9.2: `noise`/`sharpness` fields live on the Source grid).
     pub local: [f32; 3],
@@ -77,6 +85,15 @@ impl SParams {
             sharpen_detail: s.detail,
             masking: s.masking,
             texture: p.presence.texture,
+            defringe: {
+                let d = &p.detail.defringe;
+                [
+                    d.purple_amount / 100.0,
+                    PURPLE_HUE + d.purple_hue / 100.0 * DEFRINGE_HUE_SHIFT,
+                    d.green_amount / 100.0,
+                    GREEN_HUE + d.green_hue / 100.0 * DEFRINGE_HUE_SHIFT,
+                ]
+            },
             local: {
                 let mut l = [0f32; 3];
                 for m in crate::masks::relevant(p, crate::masks::Tier::S) {
@@ -91,11 +108,24 @@ impl SParams {
     }
 
     pub fn is_identity(&self) -> bool {
-        !self.run_luma() && self.chroma == 0.0 && !self.run_sharpen() && !self.run_texture()
+        !self.run_luma()
+            && self.chroma == 0.0
+            && !self.run_sharpen()
+            && !self.run_texture()
+            && !self.run_defringe()
     }
 
     pub fn has_locals(&self) -> bool {
         self.local.iter().any(|v| *v != 0.0)
+    }
+
+    fn run_defringe(&self) -> bool {
+        self.defringe[0] > 0.0 || self.defringe[2] > 0.0
+    }
+
+    /// Reach of the defringe edge search, in level px.
+    fn defringe_radius(level: usize) -> u32 {
+        ((4.0 * Self::scale(level)).round() as u32).max(1)
     }
 
     fn run_luma(&self) -> bool {
@@ -133,6 +163,9 @@ impl SParams {
         let mut m = 1;
         if self.run_luma() {
             m += 2;
+        }
+        if self.run_defringe() {
+            m += Self::defringe_radius(level) + 1;
         }
         if self.chroma > 0.0 {
             m += 2 * self.chroma_radius(level);
@@ -393,6 +426,23 @@ pub fn plan(
         (z0, y)
     };
     b.release(field[S_NOISE]);
+
+    // Defringe: desaturate purple/green near luma edges, before chroma NR smooths them in.
+    if sp.run_defringe() {
+        let g = b.alloc();
+        b.pass(OP_GRAD, &[z], &[g], [0; 3], Vec::new());
+        let gm = b.box_means(&[g], SParams::defringe_radius(l));
+        b.release(g);
+        let d = &sp.defringe;
+        b.pass(
+            OP_DEFRINGE,
+            &[gm[0], cr, cb],
+            &[cr, cb],
+            [0; 3],
+            vec![d[0], d[1], d[2], d[3], (1.5 * sz).max(0.006)],
+        );
+        b.release(gm[0]);
+    }
 
     // Chroma NR: guided filter of Cr, Cb with z as guide.
     if sp.chroma > 0.0 {
@@ -675,6 +725,48 @@ mod tests {
     }
 
     #[test]
+    fn defringe_removes_purple_at_edges_only() {
+        // Left: white | dark, with a 2 px purple fringe on the dark side; right: a flat
+        // purple patch far from any edge.
+        let (w, h) = (96u32, 32u32);
+        let purple = [0.25, 0.08, 0.3];
+        let rgb: Vec<[f32; 3]> = (0..w * h)
+            .map(|i| match i % w {
+                0..20 => [0.9; 3],
+                20..22 => purple,
+                22..48 => [0.05; 3],
+                _ => purple,
+            })
+            .collect();
+        let lvl = Level::from_f32(w, h, &rgb);
+        let mut sp = params();
+        sp.chroma = 0.0;
+        sp.sharpen = 0.0;
+        sp.defringe = SParams::of(&{
+            let mut p = EditParams::default();
+            p.detail.defringe.purple_amount = 100.0;
+            p
+        })
+        .defringe;
+        let noise = NoiseLevel {
+            sigma: 0.001,
+            offset: 1e-3,
+        };
+        let out = process_block(&lvl, 0, &sp, noise, 0, 0, w, h, None);
+        let px = |x: usize| out[16 * w as usize + x].map(f32::from);
+        let chroma = |p: [f32; 3]| (p[0] - p[1]).abs() + (p[2] - p[1]).abs();
+        assert!(chroma(px(21)) < 0.02, "fringe kept: {:?}", px(21));
+        assert!(
+            (chroma(px(80)) - chroma(purple)).abs() < 0.01,
+            "{:?}",
+            px(80)
+        );
+        // The luma of the fringe is kept.
+        let y = |p: [f32; 3]| (p[0] + 2.0 * p[1] + p[2]) / 4.0;
+        assert!((y(px(21)) - y(purple)).abs() < 0.01, "{:?}", px(21));
+    }
+
+    #[test]
     fn noise_estimate_tracks_noise() {
         let quiet = estimate_noise(&noisy_level(256, 256, 0.002)).sigma;
         let loud = estimate_noise(&noisy_level(256, 256, 0.02)).sigma;
@@ -689,6 +781,7 @@ mod tests {
         sp.luma = 60.0;
         sp.texture = 40.0;
         sp.masking = 20.0;
+        sp.defringe = [0.8, 55.0, 0.5, 225.0];
         let sigma = estimate_noise(&lvl);
         let whole = process_block(&lvl, 0, &sp, sigma, 0, 0, 200, 120, None);
         let left = process_block(&lvl, 0, &sp, sigma, 0, 0, 100, 120, None);

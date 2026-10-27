@@ -146,6 +146,21 @@ pub const TRANSFER_ADOBE: u32 = 1;
 pub const TRANSFER_PROPHOTO: u32 = 2;
 /// ITU-R BT.709 / BT.2020 camera curve.
 pub const TRANSFER_REC709: u32 = 3;
+/// Per-channel linear → encoded tables in the output aux buffer (`E1Params::table`): a
+/// display ICC profile. [`TABLE_N`] entries per channel, sampled at `(i / (TABLE_N − 1))²`.
+pub const TRANSFER_TABLE: u32 = 4;
+pub const TABLE_N: usize = 1024;
+
+/// [`TRANSFER_TABLE`] for channel `c` at linear `v`.
+#[inline]
+pub fn table_oetf(aux: &[f32], offset: usize, c: usize, v: f32) -> f32 {
+    let f = sqrt(clamp01(v)) * (TABLE_N - 1) as f32;
+    let i = f as usize;
+    let i = if i >= TABLE_N - 1 { TABLE_N - 2 } else { i };
+    let t = f - i as f32;
+    let o = offset + c * TABLE_N + i;
+    aux[o] + (aux[o + 1] - aux[o]) * t
+}
 
 /// Linear → encoded for output transfer `t`, `v` in [0, 1].
 #[inline]

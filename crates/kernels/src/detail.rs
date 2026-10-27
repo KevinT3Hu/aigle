@@ -11,7 +11,7 @@
 //! interleaved RGB into three consecutive planes starting at `out[0]`.
 
 use crate::masks;
-use crate::math::{exp2, log2, smoothstep, sqrt};
+use crate::math::{atan2, exp2, log2, smoothstep, sqrt};
 use crate::pointwise::{C1Params, c1_color};
 use crate::resample::{Rgb2D, mirror};
 
@@ -78,6 +78,14 @@ pub const OP_LOG: u32 = 12;
 pub const OP_TEXTURE: u32 = 13;
 /// RGB from in = `[y before, y after sharpening/texture, Cr, Cb]`; margin `a`.
 pub const OP_REBUILD: u32 = 14;
+/// Gradient magnitude (central differences, clamp-to-edge) of in0.
+pub const OP_GRAD: u32 = 15;
+/// Defringe: in = `[mean gradient of z, Cr, Cb]` → `[Cr, Cb]`.
+/// fp: `[purple amount, purple hue, green amount, green hue, edge threshold]` (amounts in
+/// 0..1, hues in degrees of `atan2(Cb, Cr)`).
+pub const OP_DEFRINGE: u32 = 16;
+/// Half width (degrees) of the defringe hue windows.
+pub const DEFRINGE_WIDTH: f32 = 40.0;
 
 pub const POST_NONE: u32 = 0;
 /// `(max(in1, 0) + E) / (v + E)`.
@@ -385,6 +393,20 @@ pub fn point_px(w: &[f32], fp: &[f32], up: &[u32], x: u32, y: u32) -> [f32; 4] {
     if op == OP_LOG {
         return [log2(fmax(rd(w, up, 0, x, y), 0.0) + E), 0.0, 0.0, 0.0];
     }
+    if op == OP_GRAD {
+        let xl = clampi(x as i32 - 1, rw - 1);
+        let xr = clampi(x as i32 + 1, rw - 1);
+        let yu = clampi(y as i32 - 1, rh - 1);
+        let yd = clampi(y as i32 + 1, rh - 1);
+        let gx = (rd(w, up, 0, xr, y) - rd(w, up, 0, xl, y)) * 0.5;
+        let gy = (rd(w, up, 0, x, yd) - rd(w, up, 0, x, yu)) * 0.5;
+        return [sqrt(gx * gx + gy * gy), 0.0, 0.0, 0.0];
+    }
+    if op == OP_DEFRINGE {
+        let (cr, cb) = (rd(w, up, 1, x, y), rd(w, up, 2, x, y));
+        let k = defringe_gain(rd(w, up, 0, x, y), cr, cb, fp);
+        return [cr * k, cb * k, 0.0, 0.0];
+    }
     if op == OP_TEXTURE {
         let ly = rd(w, up, 0, x, y);
         let low = rd(w, up, 1, x, y);
@@ -404,4 +426,54 @@ pub fn point_px(w: &[f32], fp: &[f32], up: &[u32], x: u32, y: u32) -> [f32; 4] {
         return [crk + g, g, cbk + g, 0.0];
     }
     [0.0; 4]
+}
+
+/// Weight of hue `h` in the window centred on `c` (degrees, wrapping).
+#[inline]
+fn hue_window(h: f32, c: f32) -> f32 {
+    let mut d = h - c;
+    if d > 180.0 {
+        d -= 360.0;
+    } else if d < -180.0 {
+        d += 360.0;
+    }
+    let d = if d < 0.0 { -d } else { d };
+    1.0 - smoothstep(0.5 * DEFRINGE_WIDTH, DEFRINGE_WIDTH, d)
+}
+
+/// [`OP_DEFRINGE`] chroma gain at mean gradient `g` and chroma (`cr`, `cb`).
+#[inline]
+pub fn defringe_gain(g: f32, cr: f32, cb: f32, fp: &[f32]) -> f32 {
+    if cr * cr + cb * cb < E * E {
+        return 1.0;
+    }
+    let t = fp[4];
+    let edge = smoothstep(t, 3.0 * t, g);
+    let mut h = atan2(cb, cr) * (180.0 / core::f32::consts::PI);
+    if h < 0.0 {
+        h += 360.0;
+    }
+    let k = fp[0] * hue_window(h, fp[1]) + fp[2] * hue_window(h, fp[3]);
+    1.0 - clampf(k, 0.0, 1.0) * edge
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defringe_only_touches_its_hues_near_edges() {
+        let fp = [1.0, 45.0, 0.5, 225.0, 0.01];
+        // Purple (R, B > G) at an edge is removed; away from edges it stays.
+        assert!(defringe_gain(0.1, 0.2, 0.2, &fp) < 1e-6);
+        assert_eq!(defringe_gain(0.001, 0.2, 0.2, &fp), 1.0);
+        // Green at half amount.
+        assert!((defringe_gain(0.1, -0.2, -0.2, &fp) - 0.5).abs() < 1e-6);
+        // Red / yellow / blue are untouched.
+        for (cr, cb) in [(0.3, -0.05), (0.05, -0.3), (-0.2, 0.3)] {
+            assert_eq!(defringe_gain(0.1, cr, cb, &fp), 1.0, "{cr} {cb}");
+        }
+        // Neutral stays neutral.
+        assert_eq!(defringe_gain(0.1, 0.0, 0.0, &fp), 1.0);
+    }
 }

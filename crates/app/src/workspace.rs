@@ -8,7 +8,7 @@ use std::sync::Arc;
 use aigle_core::EditParams;
 use aigle_core::params::Aspect;
 use aigle_doc::Origin;
-use aigle_engine_api::{Engine, SourceRef};
+use aigle_engine_api::{DisplayProfileId, Engine, SourceRef};
 use aigle_library::{Catalog, PhotoKey, PhotoMeta};
 use gpui::{
     App, Context, Entity, FocusHandle, IntoElement, ParentElement, PathPromptOptions, Render,
@@ -49,6 +49,15 @@ struct OpenPhoto {
 }
 
 const HISTORY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+
+fn set_display(mode: crate::display::Mode, window: &mut Window, cx: &mut App) {
+    if let Err(error) = crate::display::set_mode(mode, cx) {
+        window.push_notification(
+            format!("{}: {error}", crate::i18n::t("无法保存显示器设置")),
+            cx,
+        );
+    }
+}
 
 struct ExportJob {
     id: u64,
@@ -990,7 +999,8 @@ impl Workspace {
 
     fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let develop = self.mode == Mode::Develop;
-        let (can_undo, can_redo, show_info, compare, tool) = match (&self.open, develop) {
+        let (can_undo, can_redo, show_info, compare, tool, monochrome) = match (&self.open, develop)
+        {
             (Some(o), true) => {
                 let p = o.photo.read(cx);
                 let c = o.canvas.read(cx);
@@ -1000,9 +1010,10 @@ impl Workspace {
                     c.show_info(),
                     c.compare(),
                     p.tool,
+                    p.head().bw.monochrome,
                 )
             }
-            _ => (false, false, false, Compare::Off, Tool::None),
+            _ => (false, false, false, Compare::Off, Tool::None, false),
         };
         let show_history = self.show_history;
         let can_paste = self.clipboard.is_some();
@@ -1018,6 +1029,17 @@ impl Workspace {
             .open
             .as_ref()
             .is_some_and(|o| o.photo.read(cx).mask_overlay);
+        let (proof, proof_target, gamut_warning) = match &self.open {
+            Some(o) => {
+                let c = o.canvas.read(cx);
+                (
+                    c.proof().cloned(),
+                    c.proof_target().clone(),
+                    c.gamut_warning(),
+                )
+            }
+            None => (None, DisplayProfileId::Srgb, false),
+        };
         let title = {
             let l = self.library.read(cx);
             match (&self.open, develop) {
@@ -1033,6 +1055,7 @@ impl Workspace {
         let edit_focus = self.focus.clone();
         let view_focus = self.focus.clone();
         let language = crate::i18n::language();
+        let display = cx.global::<crate::display::DisplayColor>().clone();
         let row = h_flex()
             .flex_1()
             .h_full()
@@ -1098,6 +1121,12 @@ impl Workspace {
                                 Box::new(AutoTone),
                                 !develop,
                             )
+                            .menu_with_check_and_disabled(
+                                crate::i18n::t("黑白"),
+                                monochrome,
+                                Box::new(ToggleMonochrome),
+                                !develop,
+                            )
                             .separator()
                             .submenu(crate::i18n::t("工具"), window, cx, move |menu, _, _| {
                                 menu.menu_with_check_and_disabled(
@@ -1143,6 +1172,49 @@ impl Workspace {
                                     !develop,
                                 )
                             })
+                            .submenu(crate::i18n::t("软打样"), window, cx, {
+                                let (proof, target) = (proof.clone(), proof_target.clone());
+                                move |menu, _, _| {
+                                    let menu = menu.menu_with_check_and_disabled(
+                                        crate::i18n::t("软打样"),
+                                        proof.is_some(),
+                                        Box::new(ToggleSoftProof),
+                                        !develop,
+                                    );
+                                    let menu = [
+                                        (DisplayProfileId::Srgb, "sRGB"),
+                                        (DisplayProfileId::DisplayP3, "Display P3"),
+                                        (DisplayProfileId::AdobeRgb, "Adobe RGB"),
+                                    ]
+                                    .into_iter()
+                                    .fold(
+                                        menu.separator(),
+                                        |menu, (d, label)| {
+                                            let action: Box<dyn gpui::Action> = match d {
+                                                DisplayProfileId::DisplayP3 => {
+                                                    Box::new(ProofDisplayP3)
+                                                }
+                                                DisplayProfileId::AdobeRgb => {
+                                                    Box::new(ProofAdobeRgb)
+                                                }
+                                                _ => Box::new(ProofSrgb),
+                                            };
+                                            menu.menu_with_check_and_disabled(
+                                                label,
+                                                target == d,
+                                                action,
+                                                !develop,
+                                            )
+                                        },
+                                    );
+                                    menu.separator().menu_with_check_and_disabled(
+                                        crate::i18n::t("色域警告"),
+                                        gamut_warning,
+                                        Box::new(ToggleGamutWarning),
+                                        !develop,
+                                    )
+                                }
+                            })
                             .menu_with_disabled(
                                 crate::i18n::t("缩放 / 适合窗口"),
                                 Box::new(ToggleZoom),
@@ -1167,6 +1239,35 @@ impl Workspace {
                                 Box::new(ToggleOverlay),
                                 tool != Tool::Mask,
                             )
+                            .separator()
+                            .submenu(crate::i18n::t("显示器配置文件"), window, cx, {
+                                let display = display.clone();
+                                move |menu, _, _| {
+                                    let display = display.clone();
+                                    let menu = menu
+                                        .menu_with_check(
+                                            crate::i18n::t("自动（系统配置文件）"),
+                                            display.mode == crate::display::Mode::Auto,
+                                            Box::new(DisplayAuto),
+                                        )
+                                        .menu_with_check(
+                                            "sRGB",
+                                            display.mode == crate::display::Mode::Srgb,
+                                            Box::new(DisplaySrgb),
+                                        )
+                                        .separator();
+                                    match (&display.detected, &display.problem) {
+                                        (Some(d), _) => menu.label(
+                                            rust_i18n::t!("检测到：{name}", name = d.name)
+                                                .into_owned(),
+                                        ),
+                                        (None, Some(_)) => {
+                                            menu.label(crate::i18n::t("未检测到显示器配置文件"))
+                                        }
+                                        (None, None) => menu.label(crate::i18n::t("正在检测…")),
+                                    }
+                                }
+                            })
                             .separator()
                             .submenu(crate::i18n::t("快捷键"), window, cx, |menu, _, _| {
                                 menu.menu(crate::i18n::t("编辑快捷键…"), Box::new(EditKeybindings))
@@ -1376,6 +1477,27 @@ impl Render for Workspace {
             .on_action(
                 cx.listener(|w, _: &ToggleSplit, _, cx| w.with_canvas(cx, Canvas::toggle_split)),
             )
+            .on_action(
+                cx.listener(|w, _: &ToggleSoftProof, _, cx| {
+                    w.with_canvas(cx, Canvas::toggle_proof)
+                }),
+            )
+            .on_action(cx.listener(|w, _: &ToggleGamutWarning, _, cx| {
+                w.with_canvas(cx, Canvas::toggle_gamut_warning)
+            }))
+            .on_action(cx.listener(|w, _: &ProofSrgb, _, cx| {
+                w.with_canvas(cx, |c, cx| c.set_proof_target(DisplayProfileId::Srgb, cx))
+            }))
+            .on_action(cx.listener(|w, _: &ProofDisplayP3, _, cx| {
+                w.with_canvas(cx, |c, cx| {
+                    c.set_proof_target(DisplayProfileId::DisplayP3, cx)
+                })
+            }))
+            .on_action(cx.listener(|w, _: &ProofAdobeRgb, _, cx| {
+                w.with_canvas(cx, |c, cx| {
+                    c.set_proof_target(DisplayProfileId::AdobeRgb, cx)
+                })
+            }))
             .on_action(cx.listener(|w, _: &ToggleWbPicker, _, cx| {
                 w.with_photo(cx, |p, cx| p.set_wb_pick(!p.wb_pick, cx))
             }))
@@ -1386,6 +1508,10 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &ToggleCrop, _, cx| w.toggle_tool(Tool::Crop, cx)))
             .on_action(cx.listener(|w, _: &AutoTone, _, cx| {
                 w.with_photo(cx, |p, cx| p.auto_tone(cx));
+                cx.notify();
+            }))
+            .on_action(cx.listener(|w, _: &ToggleMonochrome, _, cx| {
+                w.with_photo(cx, |p, cx| p.toggle_monochrome(cx));
                 cx.notify();
             }))
             .on_action(cx.listener(|w, _: &ToggleMask, _, cx| w.toggle_tool(Tool::Mask, cx)))
@@ -1405,6 +1531,12 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|w, _: &LanguageChinese, window, cx| {
                 w.change_language(crate::i18n::Language::Chinese, window, cx)
+            }))
+            .on_action(cx.listener(|_, _: &DisplayAuto, window, cx| {
+                set_display(crate::display::Mode::Auto, window, cx)
+            }))
+            .on_action(cx.listener(|_, _: &DisplaySrgb, window, cx| {
+                set_display(crate::display::Mode::Srgb, window, cx)
             }))
             .on_action(
                 cx.listener(|w, _: &EditKeybindings, window, cx| w.open_keybindings(window, cx)),

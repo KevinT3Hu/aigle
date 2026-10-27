@@ -38,6 +38,7 @@ pub mod detail;
 pub mod disk_cache;
 pub mod encode;
 mod engine;
+pub mod icc;
 pub mod ledger;
 mod lens;
 pub mod look;

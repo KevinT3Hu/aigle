@@ -237,7 +237,9 @@ pub fn d2_params(p: &EditParams, curve: bool) -> D2Params {
         wheel(&g.global),
     ];
     let pr = &p.presence;
-    let color = pr.saturation != 0.0
+    let bw = p.bw.monochrome;
+    let color = bw
+        || pr.saturation != 0.0
         || pr.vibrance != 0.0
         || mixer_on
         || wheels.iter().flatten().any(|v| *v != 0.0);
@@ -246,6 +248,8 @@ pub fn d2_params(p: &EditParams, curve: bool) -> D2Params {
         color: color as u32,
         mixer_on: mixer_on as u32,
         look: 0,
+        bw: bw as u32,
+        bw_mix: p.bw.mix.bands().map(|v| v / 100.0),
         saturation: 1.0 + pr.saturation / 100.0,
         vibrance: pr.vibrance / 100.0,
         mixer,

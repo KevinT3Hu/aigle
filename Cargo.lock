@@ -153,6 +153,7 @@ dependencies = [
  "sysinfo",
  "tracing",
  "tracing-subscriber",
+ "zbus",
 ]
 
 [[package]]

@@ -387,6 +387,54 @@ nested_group! {
 }
 
 scalar_group! {
+    /// Black & white mix: lightness of colours of each hue in the monochrome conversion.
+    pub struct BwMix {
+        red: 0.0, [-100.0, 100.0], step 1.0, "";
+        orange: 0.0, [-100.0, 100.0], step 1.0, "";
+        yellow: 0.0, [-100.0, 100.0], step 1.0, "";
+        green: 0.0, [-100.0, 100.0], step 1.0, "";
+        aqua: 0.0, [-100.0, 100.0], step 1.0, "";
+        blue: 0.0, [-100.0, 100.0], step 1.0, "";
+        purple: 0.0, [-100.0, 100.0], step 1.0, "";
+        magenta: 0.0, [-100.0, 100.0], step 1.0, "";
+    }
+}
+
+impl BwMix {
+    pub fn bands(&self) -> [f32; 8] {
+        [
+            self.red,
+            self.orange,
+            self.yellow,
+            self.green,
+            self.aqua,
+            self.blue,
+            self.purple,
+            self.magenta,
+        ]
+    }
+}
+
+/// Black & white mode. When on, saturation, vibrance and the colour mixer are replaced by
+/// the black & white mix; colour grading still applies (split toning).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct BwParams {
+    pub monochrome: bool,
+    #[serde(flatten)]
+    pub mix: BwMix,
+}
+
+impl Scalars for BwParams {
+    fn visit(&self, prefix: &str, f: &mut dyn FnMut(&str, &FieldSpec, f32)) {
+        self.mix.visit(prefix, f);
+    }
+    fn visit_mut(&mut self, prefix: &str, f: &mut dyn FnMut(&str, &FieldSpec, &mut f32)) {
+        self.mix.visit_mut(prefix, f);
+    }
+}
+
+scalar_group! {
     pub struct Wheel {
         hue: 0.0, [0.0, 360.0], step 1.0, "deg";
         saturation: 0.0, [0.0, 100.0], step 1.0, "";
@@ -452,10 +500,24 @@ scalar_group! {
     }
 }
 
+scalar_group! {
+    /// Removal of purple and green fringes (axial chromatic aberration) along high-contrast
+    /// edges.
+    pub struct Defringe {
+        purple_amount: 0.0, [0.0, 100.0], step 1.0, "";
+        /// Shift of the purple hue window, from magenta (−) to violet (+).
+        purple_hue: 0.0, [-100.0, 100.0], step 1.0, "";
+        green_amount: 0.0, [0.0, 100.0], step 1.0, "";
+        /// Shift of the green hue window, from yellow-green (−) to cyan-green (+).
+        green_hue: 0.0, [-100.0, 100.0], step 1.0, "";
+    }
+}
+
 nested_group! {
     pub struct DetailParams {
         sharpen: Sharpen,
         noise: NoiseReduction,
+        defringe: Defringe,
     }
 }
 

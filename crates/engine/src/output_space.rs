@@ -12,13 +12,29 @@ use aigle_core::color::{
     xy_to_xyz,
 };
 use aigle_engine_api::DisplayProfileId;
-use aigle_kernels::math::{TRANSFER_ADOBE, TRANSFER_PROPHOTO, TRANSFER_REC709, TRANSFER_SRGB};
+use aigle_kernels::math::{
+    TRANSFER_ADOBE, TRANSFER_PROPHOTO, TRANSFER_REC709, TRANSFER_SRGB, TRANSFER_TABLE,
+};
 use aigle_kernels::pointwise::E1Params;
 
-/// Linear output RGB → XYZ (D65) of `d`. Registered display profiles render as sRGB.
+/// The registered display profile `d` refers to, if it is one and can be found.
+pub fn display_icc(d: &DisplayProfileId) -> Option<Arc<crate::icc::DisplayIcc>> {
+    let DisplayProfileId::Icc(hash) = d else {
+        return None;
+    };
+    let r = aigle_core::DataRef(hash.clone());
+    let p = crate::data::file(crate::data::FileKind::DisplayIcc, &r, crate::icc::parse);
+    if p.is_none() {
+        tracing::warn!(profile = %hash, "display profile not found; rendering as sRGB");
+    }
+    p
+}
+
+/// Linear output RGB → XYZ (D65) of `d`. Unresolved display profiles render as sRGB.
 pub fn rgb_to_xyz(d: &DisplayProfileId) -> Mat3 {
     match d {
-        DisplayProfileId::Srgb | DisplayProfileId::Icc(_) => color::SRGB_TO_XYZ,
+        DisplayProfileId::Srgb => color::SRGB_TO_XYZ,
+        DisplayProfileId::Icc(_) => display_icc(d).map_or(color::SRGB_TO_XYZ, |p| p.rgb_to_xyz),
         DisplayProfileId::DisplayP3 => color::DISPLAY_P3_TO_XYZ,
         DisplayProfileId::AdobeRgb => adobe_rgb_to_xyz(),
         DisplayProfileId::ProPhoto => prophoto_to_xyz(),
@@ -29,8 +45,13 @@ pub fn rgb_to_xyz(d: &DisplayProfileId) -> Mat3 {
 /// `math::TRANSFER_*` of `d`.
 pub fn transfer(d: &DisplayProfileId) -> u32 {
     match d {
-        DisplayProfileId::Srgb | DisplayProfileId::DisplayP3 | DisplayProfileId::Icc(_) => {
-            TRANSFER_SRGB
+        DisplayProfileId::Srgb | DisplayProfileId::DisplayP3 => TRANSFER_SRGB,
+        DisplayProfileId::Icc(_) => {
+            if display_icc(d).is_some() {
+                TRANSFER_TABLE
+            } else {
+                TRANSFER_SRGB
+            }
         }
         DisplayProfileId::AdobeRgb => TRANSFER_ADOBE,
         DisplayProfileId::ProPhoto => TRANSFER_PROPHOTO,
@@ -46,11 +67,36 @@ pub fn e1_matrix(d: &DisplayProfileId) -> Mat3 {
     )
 }
 
-pub fn e1_params(d: &DisplayProfileId) -> E1Params {
-    E1Params {
+/// E1 for `d`; a display profile's curve tables are appended to the output `aux` buffer.
+pub fn e1_params(d: &DisplayProfileId, aux: &mut Vec<f32>) -> E1Params {
+    let mut e1 = E1Params {
         matrix: color::to_f32(&e1_matrix(d)),
         transfer: transfer(d),
+        table: 0,
+        proof: 0,
+    };
+    if e1.transfer == TRANSFER_TABLE
+        && let Some(p) = display_icc(d)
+    {
+        e1.table = aux.len() as u32;
+        aux.extend(p.inverse_trc());
     }
+    e1
+}
+
+/// Soft proof for `proof` on `display` (`E1Params::proof`): linear Rec.2020 → linear proof
+/// RGB, then linear proof RGB → linear display primaries, row-major.
+pub fn proof_matrices(display: &DisplayProfileId, proof: &DisplayProfileId) -> Vec<f32> {
+    let back = color::mul(
+        &color::invert(&rgb_to_xyz(display)).expect("invertible"),
+        &rgb_to_xyz(proof),
+    );
+    [e1_matrix(proof), back]
+        .iter()
+        .flatten()
+        .flatten()
+        .map(|v| *v as f32)
+        .collect()
 }
 
 /// Power that approximately linearises the output curve for resizing, `None` for the sRGB

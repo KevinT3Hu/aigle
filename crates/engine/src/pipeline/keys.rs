@@ -67,6 +67,7 @@ pub fn out_key(p: &EditParams, display: &DisplayProfileId) -> CacheKey {
         // D2
         .json(&p.curve)
         .json(&p.mixer)
+        .json(&p.bw)
         .json(&p.grading)
         .f32(p.presence.vibrance)
         .f32(p.presence.saturation)

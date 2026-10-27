@@ -833,6 +833,12 @@ fn self_test(g: &gpu::Gpu) -> Result<(), String> {
         let mut aux = crate::pipeline::output_aux(Some(&curves));
         out_params.d2.look = aux.len() as u32;
         aux.extend_from_slice(&self_test_look());
+        // Soft proof (Display P3 display, sRGB proof): the output kernel's proof branch.
+        out_params.e1.proof = aux.len() as u32;
+        aux.extend(crate::output_space::proof_matrices(
+            &aigle_engine_api::DisplayProfileId::DisplayP3,
+            &aigle_engine_api::DisplayProfileId::Srgb,
+        ));
         let lut = Aux::new(aux);
         let host = C1Data::Host(cpu.clone());
         let device = c1_gpu(
@@ -944,6 +950,7 @@ fn self_test_s(g: &gpu::Gpu, level: &Level) -> Result<(), String> {
         sharpen_detail: 50.0,
         masking: 20.0,
         texture: 30.0,
+        defringe: [0.8, 55.0, 0.5, 225.0],
         local: [20.0, 30.0, 20.0],
     };
     let noise = crate::noise::NoiseLevel {
@@ -1023,7 +1030,7 @@ fn self_test_out_params() -> OutParams {
     OutParams {
         d1: D1Params::new(25.0, -10.0, 5.0),
         d2,
-        e1: crate::output_space::e1_params(&Default::default()),
+        e1: crate::output_space::e1_params(&Default::default(), &mut Vec::new()),
         d3: aigle_kernels::d3::D3Params::new(
             -40.0, 30.0, 20.0, 50.0, 40.0, 30.0, 60.0, 1.0, 600.0, 400.0,
         ),
@@ -1338,7 +1345,7 @@ fn out_cpu(job: &OutJob<'_>, c1: &HostC1, lut: &[f32]) -> Vec<u8> {
                 let (gx, gy) = (job.gx0 + x as u32, job.gy0 + y as u32);
                 if full {
                     let lin = tiles::out_lin_local(v, d, gx, gy, &job.params, lut);
-                    let w = tiles::encode_out16(lin, &job.params.e1);
+                    let w = tiles::encode_out16(lin, &job.params.e1, lut);
                     o[..4].copy_from_slice(&w[0].to_le_bytes());
                     o[4..].copy_from_slice(&w[1].to_le_bytes());
                 } else {

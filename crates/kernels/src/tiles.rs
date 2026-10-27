@@ -26,7 +26,7 @@ use crate::d3::{D3Params, d3};
 use crate::dither::{blue, quantize8};
 use crate::masks;
 use crate::math::exp2;
-use crate::math::{luminance, mat3_mul, output_oetf};
+use crate::math::{TRANSFER_TABLE, clamp01, luminance, mat3_mul, output_oetf, table_oetf};
 use crate::pointwise::{
     C1Params, D1Params, D2Params, E1Params, c1_color, d1, d2_local, fit_output,
 };
@@ -367,41 +367,77 @@ pub fn out_lin_base(px: Rgb, gx: u32, gy: u32, d1p: &D1Params, d3p: &D3Params, s
 /// gamut before clamping. E2 reads the flags for the clipping overlay and restores 255.
 pub const CLIP_HIGH: u32 = 1;
 pub const CLIP_LOW: u32 = 2;
+/// Soft proof: the colour is outside the proof gamut.
+pub const CLIP_GAMUT: u32 = 4;
+/// Tolerance of the proof gamut test, in linear proof RGB.
+const GAMUT_EPS: f32 = 1e-3;
 
 #[inline]
 fn encode_out(v: Rgb, gx: u32, gy: u32, e1p: &E1Params, seed: u32, tex: &[f32]) -> u32 {
-    let (e, a) = encode_target(v, e1p);
+    let (e, a) = encode_target(v, e1p, tex);
     let b = quantize8(e[2], blue(tex, gx, gy, seed, 2));
     let g = quantize8(e[1], blue(tex, gx, gy, seed, 1));
     let r = quantize8(e[0], blue(tex, gx, gy, seed, 0));
     b | (g << 8) | (r << 16) | ((255 - a) << 24)
 }
 
+/// Row-major 3×3 matrix at `aux[o..o + 9]` times `v`.
+#[inline]
+fn mat3_aux(aux: &[f32], o: usize, v: Rgb) -> Rgb {
+    [
+        aux[o] * v[0] + aux[o + 1] * v[1] + aux[o + 2] * v[2],
+        aux[o + 3] * v[0] + aux[o + 4] * v[1] + aux[o + 5] * v[2],
+        aux[o + 6] * v[0] + aux[o + 7] * v[1] + aux[o + 8] * v[2],
+    ]
+}
+
 /// E1 to the encoded target values in [0, 1] and the clip flags.
 #[inline]
-fn encode_target(v: Rgb, e1p: &E1Params) -> (Rgb, u32) {
-    let l = mat3_mul(&e1p.matrix, v);
+fn encode_target(v: Rgb, e1p: &E1Params, aux: &[f32]) -> (Rgb, u32) {
+    let y = luminance(v);
+    let mut gamut = 0;
+    // `pre`: the target (or proof) gamut values before fitting, for the clip flags.
+    let (pre, l) = if e1p.proof != 0 {
+        let o = e1p.proof as usize;
+        let q = mat3_aux(aux, o, v);
+        if q[0].min(q[1]).min(q[2]) < -GAMUT_EPS || q[0].max(q[1]).max(q[2]) > 1.0 + GAMUT_EPS {
+            gamut = CLIP_GAMUT;
+        }
+        let d = mat3_aux(aux, o + 9, fit_output(q, y));
+        (q, [clamp01(d[0]), clamp01(d[1]), clamp01(d[2])])
+    } else {
+        let m = mat3_mul(&e1p.matrix, v);
+        (m, fit_output(m, y))
+    };
     // Clip flags describe the target gamut before fitting (doc 02 §6.5).
-    let hi = l[0].max(l[1]).max(l[2]) >= 1.0;
-    let lo = l[0].min(l[1]).min(l[2]) <= 0.0;
-    let l = fit_output(l, luminance(v));
+    let hi = pre[0].max(pre[1]).max(pre[2]) >= 1.0;
+    let lo = pre[0].min(pre[1]).min(pre[2]) <= 0.0;
     let t = e1p.transfer;
-    let e = [
-        output_oetf(l[0], t),
-        output_oetf(l[1], t),
-        output_oetf(l[2], t),
-    ];
+    let e = if t == TRANSFER_TABLE {
+        let o = e1p.table as usize;
+        [
+            table_oetf(aux, o, 0, l[0]),
+            table_oetf(aux, o, 1, l[1]),
+            table_oetf(aux, o, 2, l[2]),
+        ]
+    } else {
+        [
+            output_oetf(l[0], t),
+            output_oetf(l[1], t),
+            output_oetf(l[2], t),
+        ]
+    };
     (
         e,
-        if hi { CLIP_HIGH } else { 0 } + if lo { CLIP_LOW } else { 0 },
+        if hi { CLIP_HIGH } else { 0 } + if lo { CLIP_LOW } else { 0 } + gamut,
     )
 }
 
 /// 16-bit output (doc 03 §9): RGBA16 as two words, `R | G << 16`, `B | A << 16`, with
 /// `A = 65535 − clip flags`. Rounded, not dithered: one 16-bit step is far below visibility.
 #[inline]
-pub fn encode_out16(v: Rgb, e1p: &E1Params) -> [u32; 2] {
-    let (e, a) = encode_target(v, e1p);
+pub fn encode_out16(v: Rgb, e1p: &E1Params, aux: &[f32]) -> [u32; 2] {
+    let (e, a) = encode_target(v, e1p, aux);
     let q = |x: f32| (x * 65535.0 + 0.5).max(0.0).min(65535.0) as u32;
     [q(e[0]) | (q(e[1]) << 16), q(e[2]) | ((65535 - a) << 16)]
 }
@@ -602,11 +638,11 @@ pub const C1_F32: usize = 6 + 9 + 8;
 /// grid as `[cell, nodes…]` starting at `warp_offset`, then the C1 colour block at
 /// `color_offset` (its table offsets are relative to the block).
 pub const C1_U32: usize = 18;
-pub const OUT_F32: usize = 4 + 9 + 10 + 3 + 2 + 24 + 12 + 2 + 36;
+pub const OUT_F32: usize = 4 + 9 + 10 + 3 + 2 + 24 + 12 + 2 + 36 + 8;
 /// `[tile_w, tile_h, grid_x0, grid_y0, seed, curve, color, mixer_on, d3_active, d_fields,
-/// look_offset, full, transfer]`; `full`: f32 input and 16-bit output ([`encode_out16`],
-/// 2 words); `transfer`: `E1Params::transfer`.
-pub const OUT_U32: usize = 13;
+/// look_offset, full, transfer, bw, table, proof]`; `full`: f32 input and 16-bit output
+/// ([`encode_out16`], 2 words); `transfer`, `table`, `proof`: `E1Params`.
+pub const OUT_U32: usize = 16;
 
 /// Sequential writer/reader so that pack and unpack share one field order.
 struct W<'a> {
@@ -727,6 +763,9 @@ pub fn pack_out(p: &OutParams) -> [f32; OUT_F32] {
     for m in [&d.to_lms, &d.lms_to_lab, &d.lab_to_lms, &d.lms_to_rgb] {
         w.mat(m);
     }
+    for v in d.bw_mix {
+        w.put(v);
+    }
     debug_assert_eq!(w.i, OUT_F32);
     f
 }
@@ -754,6 +793,9 @@ pub fn pack_out_u32(
         p.d2.look,
         full as u32,
         p.e1.transfer,
+        p.d2.bw,
+        p.e1.table,
+        p.e1.proof,
     ]
 }
 
@@ -768,6 +810,8 @@ fn read_head(r: &mut R<'_>, up: &[u32]) -> (D1Params, E1Params, D3Params) {
     let e1 = E1Params {
         matrix: r.mat(),
         transfer: up[12],
+        table: up[14],
+        proof: up[15],
     };
     let d3 = D3Params {
         active: up[8],
@@ -813,21 +857,37 @@ pub fn unpack_out(f: &[f32], up: &[u32]) -> OutParams {
     let wheels = [r.v3(), r.v3(), r.v3(), r.v3()];
     let grade_mid = r.get();
     let grade_width = r.get();
+    let to_lms = r.mat();
+    let lms_to_lab = r.mat();
+    let lab_to_lms = r.mat();
+    let lms_to_rgb = r.mat();
+    let bw_mix = [
+        r.get(),
+        r.get(),
+        r.get(),
+        r.get(),
+        r.get(),
+        r.get(),
+        r.get(),
+        r.get(),
+    ];
     let d2 = D2Params {
         curve: up[5],
         color: up[6],
         mixer_on: up[7],
         look: up[10],
+        bw: up[13],
+        bw_mix,
         saturation,
         vibrance,
         mixer,
         wheels,
         grade_mid,
         grade_width,
-        to_lms: r.mat(),
-        lms_to_lab: r.mat(),
-        lab_to_lms: r.mat(),
-        lms_to_rgb: r.mat(),
+        to_lms,
+        lms_to_lab,
+        lab_to_lms,
+        lms_to_rgb,
     };
     OutParams {
         d1,
@@ -872,12 +932,16 @@ mod tests {
         d2.mixer_on = 1;
         d2.mixer[3] = [5.0, 0.1, -0.2];
         d2.wheels[2] = [0.01, 0.02, 0.03];
+        d2.bw = 1;
+        d2.bw_mix[6] = -0.4;
         let p = OutParams {
             d1: D1Params::new(10.0, -5.0, 3.0),
             d2,
             e1: E1Params {
                 matrix: [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]],
                 transfer: crate::math::TRANSFER_PROPHOTO,
+                table: 77,
+                proof: 99,
             },
             d3: D3Params::new(-30.0, 40.0, 20.0, 60.0, 30.0, 50.0, 40.0, 0.5, 800.0, 600.0),
             d1_sliders: [10.0, -5.0, 3.0],

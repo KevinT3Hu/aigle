@@ -29,6 +29,7 @@ serde_json.workspace = true
 sysinfo = { version = "0.31.4", default-features = false, features = ["system"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+zbus = { version = "=5.19.0", default-features = false, features = ["async-io"] }
 
 [lints]
 workspace = true

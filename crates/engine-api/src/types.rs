@@ -203,6 +203,8 @@ pub enum ImportKind {
     Dcp,
     /// A `.cube` look LUT: set `profile.look = Some(data_ref)`.
     LookLut,
+    /// A display ICC profile (matrix/TRC): render to `DisplayProfileId::Icc(data_ref)`.
+    DisplayProfile,
 }
 
 /// Imported data, validated and pinned under the aigle data dir.
@@ -307,6 +309,12 @@ pub struct Overlays {
     pub clipping: bool,
     pub mask_overlay: Option<MaskId>,
     pub focus_peaking: bool,
+    /// Soft proof: show colours as this output space would hold them (fitted to its gamut).
+    #[serde(default)]
+    pub proof: Option<DisplayProfileId>,
+    /// With `proof`: mark colours outside the proof gamut.
+    #[serde(default)]
+    pub gamut_warning: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

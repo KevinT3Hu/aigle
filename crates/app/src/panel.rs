@@ -38,6 +38,7 @@ pub enum Extra {
     PointCurve,
     CameraProfile,
     RawSettings,
+    Treatment,
 }
 
 impl Extra {
@@ -48,6 +49,7 @@ impl Extra {
             Extra::WhiteBalance => &["wb.mode"],
             Extra::PointCurve => &["curve.point"],
             Extra::CameraProfile => &["profile.camera", "profile.look"],
+            Extra::Treatment => &["bw.monochrome"],
             Extra::RawSettings => &[
                 "raw.demosaic",
                 "raw.highlight_recon",
@@ -65,6 +67,16 @@ impl Section {
             .iter()
             .map(|(p, _)| *p)
             .chain(self.extra.reset_paths().iter().copied())
+    }
+
+    /// The colour mixer is replaced by the black & white mix in monochrome.
+    fn hidden(&self, p: &EditParams) -> bool {
+        let first = self.rows.first().map(|(path, _)| *path).unwrap_or("");
+        if p.bw.monochrome {
+            first.starts_with("mixer.")
+        } else {
+            first.starts_with("bw.")
+        }
     }
 }
 
@@ -147,6 +159,24 @@ pub const TOOL_GROUPS: &[GroupDef] = &[
     GroupDef {
         title: "颜色",
         sections: &[
+            Section {
+                title: "处理方式",
+                extra: Extra::Treatment,
+                rows: &[],
+            },
+            section(
+                "黑白混合",
+                &[
+                    ("bw.red", "红色"),
+                    ("bw.orange", "橙色"),
+                    ("bw.yellow", "黄色"),
+                    ("bw.green", "绿色"),
+                    ("bw.aqua", "浅绿色"),
+                    ("bw.blue", "蓝色"),
+                    ("bw.purple", "紫色"),
+                    ("bw.magenta", "洋红"),
+                ],
+            ),
             section(
                 "色相",
                 &[
@@ -249,6 +279,15 @@ pub const TOOL_GROUPS: &[GroupDef] = &[
                     ("detail.noise.contrast", "明亮度对比"),
                     ("detail.noise.chroma", "颜色"),
                     ("detail.noise.chroma_detail", "颜色细节"),
+                ],
+            ),
+            section(
+                "去边",
+                &[
+                    ("detail.defringe.purple_amount", "紫色数量"),
+                    ("detail.defringe.purple_hue", "紫色色相"),
+                    ("detail.defringe.green_amount", "绿色数量"),
+                    ("detail.defringe.green_hue", "绿色色相"),
                 ],
             ),
         ],
@@ -733,6 +772,7 @@ impl Panel {
                         );
                         p.look_name = Some(imported.name);
                     }
+                    ImportKind::DisplayProfile => {}
                 }
                 cx.notify();
             });
@@ -942,6 +982,30 @@ impl Panel {
             Extra::None => None,
             Extra::RawSettings => Some(self.render_raw_settings(cx)),
             Extra::CameraProfile => Some(self.render_camera_profile(cx)),
+            Extra::Treatment => {
+                let mono = self.photo.read(cx).head().bw.monochrome;
+                let button = |id: &'static str, label: &'static str, on: bool| {
+                    Button::new(id)
+                        .label(crate::i18n::t(label))
+                        .small()
+                        .selected(mono == on)
+                        .on_click(cx.listener(move |p, _, _, cx| {
+                            if mono != on {
+                                p.photo.update(cx, |ph, cx| ph.toggle_monochrome(cx))
+                            }
+                        }))
+                };
+                Some(
+                    h_flex()
+                        .gap_1()
+                        .child(button("treatment-color", "彩色", false))
+                        .child(
+                            button("treatment-bw", "黑白", true)
+                                .tooltip(crate::keymap::hint("转换为黑白（V）", cx)),
+                        )
+                        .into_any_element(),
+                )
+            }
             Extra::PointCurve => Some(self.curve.clone().into_any_element()),
             Extra::WhiteBalance => {
                 let picking = self.photo.read(cx).wb_pick;
@@ -1214,6 +1278,10 @@ impl Panel {
                 .map(|s| s.rows.len())
                 .sum();
             for (j, s) in TOOL_GROUPS[group].sections.iter().enumerate() {
+                if s.hidden(self.photo.read(cx).head()) {
+                    i += s.rows.len();
+                    continue;
+                }
                 let modified = self.section_modified(s, cx);
                 let mut sec = v_flex().gap_2().child(
                     h_flex()

@@ -249,6 +249,8 @@ fn edited() -> EditParams {
     p.detail.sharpen.amount = 80.0;
     p.detail.sharpen.masking = 20.0;
     p.presence.texture = 30.0;
+    p.detail.defringe.purple_amount = 60.0;
+    p.detail.defringe.green_amount = 40.0;
     // C2
     p.light.highlights = -60.0;
     p.light.shadows = 50.0;
@@ -401,6 +403,15 @@ fn with_lens() -> EditParams {
     p
 }
 
+fn monochrome() -> EditParams {
+    let mut p = edited();
+    p.bw.monochrome = true;
+    p.bw.mix.red = 40.0;
+    p.bw.mix.blue = -60.0;
+    p.bw.mix.green = 25.0;
+    p
+}
+
 #[test]
 fn gpu_matches_cpu_reference() {
     let Some(gpu) = gpu_engine() else { return };
@@ -433,6 +444,7 @@ fn gpu_matches_cpu_reference() {
             ("default", EditParams::default()),
             ("edited", edited()),
             ("lens", with_lens()),
+            ("bw", monochrome()),
         ] {
             // Fit (pyramid level > 0) and a 1:1 region (level 0, several tiles).
             for (view, region, size) in [
@@ -489,6 +501,47 @@ fn gpu_matches_cpu_in_every_output_space() {
         // A different space renders different code values (the transfer and matrix are used).
         let srgb = render(&cpu, &src, &edited(), region, (600, 400));
         assert!(compare(&a, &srgb).0 > 4, "{display:?} looks like sRGB");
+    }
+}
+
+/// A registered display profile renders like the built-in space it describes, on the CPU
+/// and on the GPU (matrix from the colorants, curve through the `TRANSFER_TABLE` tables).
+#[test]
+fn display_profile_matches_its_builtin_space() {
+    let cpu = engine(BackendPreference::Cpu);
+    let bytes = aigle_engine::output_space::icc_profile(&DisplayProfileId::AdobeRgb);
+    let imported = cpu
+        .import(aigle_engine_api::ImportKind::DisplayProfile, bytes)
+        .wait()
+        .unwrap();
+    let icc = DisplayProfileId::Icc(imported.data_ref.as_str().to_string());
+    let src = SourceRef::Synthetic {
+        pattern: SyntheticPattern::ColorChart,
+        width: 1200,
+        height: 800,
+    };
+    let region = Some(ImageRect::new(250.0, 150.0, 600.0, 400.0));
+    let want = render_in(
+        &cpu,
+        &src,
+        &edited(),
+        region,
+        (600, 400),
+        DisplayProfileId::AdobeRgb,
+    );
+    let got = render_in(&cpu, &src, &edited(), region, (600, 400), icc.clone());
+    let (max, over, ..) = compare(&want, &got);
+    assert!(
+        max <= 1 && over <= 1e-5,
+        "CPU: up to {max} ({over:.1e} > 1)"
+    );
+    if let Some(gpu) = gpu_engine() {
+        let g = render_in(&gpu, &src, &edited(), region, (600, 400), icc);
+        let (max, over, ..) = compare(&want, &g);
+        assert!(
+            max <= 2 && over <= 1e-5,
+            "GPU: up to {max} ({over:.1e} > 1)"
+        );
     }
 }
 

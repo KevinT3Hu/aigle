@@ -35,7 +35,7 @@ use aigle_kernels::c2::C2Params;
 use aigle_kernels::d3::D3Params;
 use aigle_kernels::pointwise::{D1Params, D2Params, E1Params};
 use aigle_kernels::resample::bilinear;
-use aigle_kernels::tiles::{self, Affine, CLIP_HIGH, CLIP_LOW, OutParams};
+use aigle_kernels::tiles::{self, Affine, CLIP_GAMUT, CLIP_HIGH, CLIP_LOW, OutParams};
 use rayon::prelude::*;
 
 use crate::backend::{
@@ -141,6 +141,7 @@ impl Prepared {
             d2.look = aux.len() as u32;
             aux.extend_from_slice(l);
         }
+        let e1 = crate::output_space::e1_params(display, &mut aux);
         Prepared {
             gm,
             delta,
@@ -170,7 +171,7 @@ impl Prepared {
             d2,
             lut: Aux::new(aux),
             s_key: keys::s_key(&src.a_key, params),
-            e1: crate::output_space::e1_params(display),
+            e1,
             lens_ok,
             seed: u32::from_le_bytes(src.a_key.0[..4].try_into().expect("4 bytes")),
         }
@@ -179,6 +180,19 @@ impl Prepared {
     /// Crop-space extent in level-0 source px.
     pub fn crop_extent(&self) -> (f64, f64) {
         self.gm.crop_extent()
+    }
+
+    /// Soft-proof the output for `proof` (the view renders to `display`).
+    pub fn set_proof(&mut self, display: &DisplayProfileId, proof: Option<&DisplayProfileId>) {
+        let Some(proof) = proof else { return };
+        let mut aux = std::mem::take(&mut self.lut.data);
+        self.e1.proof = aux.len() as u32;
+        aux.extend(crate::output_space::proof_matrices(display, proof));
+        self.lut = Aux::new(aux);
+        self.out_key = KeyBuilder::new("PROOF")
+            .key(&self.out_key)
+            .str(&format!("{proof:?}"))
+            .finish();
     }
 
     /// Stable key describing the full render state (for `Analysis::rev_key`).
@@ -789,6 +803,9 @@ pub fn render(
                     } else if flags & CLIP_LOW != 0 {
                         px = [255, 0, 0, 255];
                     }
+                }
+                if target.overlays.gamut_warning && flags & CLIP_GAMUT != 0 {
+                    px = [255, 0, 255, 255];
                 }
                 if let Some(prog) = &overlay {
                     let p = prep.crop_to_stored(Point::new(qx, qy));

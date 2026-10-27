@@ -11,6 +11,7 @@ mod canvas;
 mod copy_settings;
 mod crop;
 mod curve;
+mod display;
 mod export;
 mod filmstrip;
 mod grid;
@@ -88,6 +89,7 @@ fn main() {
             let keymap_error = keymap::init(cx);
 
             let engine = aigle_engine::create(EngineConfig::default());
+            display::init(engine.clone(), cx);
             // GNOME's Wayland compositor has no server-side decorations, so the window draws its
             // own title bar (`TitleBar` in the workspace) and frame (`Root`). Where the window
             // manager does decorate, gpui falls back to that and the title bar hides its controls.
