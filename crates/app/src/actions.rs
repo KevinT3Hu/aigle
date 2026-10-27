@@ -41,6 +41,7 @@ actions!(
         LanguageEnglish,
         LanguageChinese,
         ToggleCrop,
+        AutoTone,
         ToggleMask,
         ToggleOverlay,
         SwapAspect,

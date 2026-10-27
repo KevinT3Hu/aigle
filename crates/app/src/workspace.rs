@@ -1093,6 +1093,12 @@ impl Workspace {
                                 }
                             })
                             .separator()
+                            .menu_with_disabled(
+                                crate::i18n::t("自动色调"),
+                                Box::new(AutoTone),
+                                !develop,
+                            )
+                            .separator()
                             .submenu(crate::i18n::t("工具"), window, cx, move |menu, _, _| {
                                 menu.menu_with_check_and_disabled(
                                     crate::i18n::t("裁剪与拉直"),
@@ -1378,6 +1384,10 @@ impl Render for Workspace {
             )
             .on_action(cx.listener(|w, _: &ToggleHistory, _, cx| w.toggle_history(cx)))
             .on_action(cx.listener(|w, _: &ToggleCrop, _, cx| w.toggle_tool(Tool::Crop, cx)))
+            .on_action(cx.listener(|w, _: &AutoTone, _, cx| {
+                w.with_photo(cx, |p, cx| p.auto_tone(cx));
+                cx.notify();
+            }))
             .on_action(cx.listener(|w, _: &ToggleMask, _, cx| w.toggle_tool(Tool::Mask, cx)))
             .on_action(cx.listener(|w, _: &ToggleOverlay, _, cx| {
                 w.with_photo(cx, |p, cx| {

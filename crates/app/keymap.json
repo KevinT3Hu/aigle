@@ -26,6 +26,7 @@
   "ctrl-shift-s": "aigle::SyncSettings",
   "ctrl-shift-n": "aigle::NewPreset",
   "ctrl-'": "aigle::CreateVirtualCopy",
+  "ctrl-u": "aigle::AutoTone",
   "ctrl-a": "aigle::SelectAll",
   "z": "aigle::ToggleZoom",
   "\\": "aigle::ToggleBefore",

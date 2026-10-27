@@ -120,6 +120,7 @@ fn description(action: &str) -> (String, String) {
         "RemoveVirtualCopy" => ("删除虚拟副本…", "编辑"),
         "SelectAll" => ("全选", "导航"),
         "ToggleCrop" => ("裁剪与拉直", "编辑"),
+        "AutoTone" => ("自动色调", "编辑"),
         "ToggleMask" => ("蒙版", "编辑"),
         "ToggleWbPicker" => ("白平衡吸管", "编辑"),
         "SwapAspect" => ("横竖互换", "编辑"),

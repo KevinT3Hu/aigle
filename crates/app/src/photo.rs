@@ -8,7 +8,9 @@ use aigle_core::masks::LocalAdjustment;
 use aigle_core::params::{Aspect, CropRect, GeometryParams};
 use aigle_core::{EditParams, MaskId};
 use aigle_doc::{CommandError, EditCommand, GestureId, Origin, ParamOp, PhotoDoc, SavedHistory};
-use aigle_engine_api::{Engine, ImageInfo, Interaction, LoadState, Session, SourceRef};
+use aigle_engine_api::{
+    AnalysisSet, DisplayProfileId, Engine, ImageInfo, Interaction, LoadState, Session, SourceRef,
+};
 use aigle_library::{PhotoKey, Snapshot};
 use gpui::{Context, EventEmitter, Task};
 
@@ -533,6 +535,47 @@ impl Photo {
             self.wb_pick = on;
             cx.notify();
         }
+    }
+
+    /// Analyze the image with its tone sliders cleared, then set them to [`auto_tone`]
+    /// values as one undoable command.
+    pub fn auto_tone(&mut self, cx: &mut Context<Self>) {
+        if self.info().is_none() {
+            return;
+        }
+        let params = Arc::new(crate::auto_tone::neutral(self.head()));
+        let job = self.session.analyze(
+            params,
+            AnalysisSet {
+                histogram: true,
+                clipping: true,
+                wb: false,
+                noise: false,
+                exact: false,
+                output: DisplayProfileId::Srgb,
+            },
+        );
+        self.pick_job = Some(cx.spawn(async move |this, cx| {
+            let r = job.await;
+            let _ = this.update(cx, |p, cx| match r {
+                Ok(a) => match (a.histogram, a.clipping) {
+                    (Some(hist), Some(clip)) => {
+                        let ops = crate::auto_tone::ops(&hist, &clip);
+                        p.command(
+                            crate::i18n::t("自动色调"),
+                            ops,
+                            None,
+                            Interaction::Final,
+                            cx,
+                        );
+                    }
+                    _ => cx.emit(PhotoEvent::Notice(crate::i18n::t("自动色调：分析失败"))),
+                },
+                Err(e) => cx.emit(PhotoEvent::Notice(
+                    rust_i18n::t!("自动色调：分析失败：{e}", e = e).into_owned(),
+                )),
+            });
+        }));
     }
 
     /// Set the white balance so that the disc of `radius` around `at` (Crop space) becomes

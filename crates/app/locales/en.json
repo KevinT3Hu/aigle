@@ -393,5 +393,8 @@
   "虚拟副本保存失败：{e}": "Cannot save the virtual copy: %{e}",
   "无法创建虚拟副本：{e}": "Cannot create the virtual copy: %{e}",
   "无法删除虚拟副本：{e}": "Cannot delete the virtual copy: %{e}",
-  "无法打开目录数据库，历史记录和虚拟副本不会保存：{e}": "Cannot open the catalog; history and virtual copies will not be saved: %{e}"
+  "无法打开目录数据库，历史记录和虚拟副本不会保存：{e}": "Cannot open the catalog; history and virtual copies will not be saved: %{e}",
+  "自动色调": "Auto Tone",
+  "自动色调：分析失败": "Auto tone: analysis failed",
+  "自动色调：分析失败：{e}": "Auto tone: analysis failed: %{e}"
 }
