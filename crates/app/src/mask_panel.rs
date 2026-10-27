@@ -127,7 +127,7 @@ impl MaskPanel {
                 p.error = Some(m.clone());
                 cx.notify();
             }
-            PhotoEvent::Loaded => {}
+            PhotoEvent::Loaded | PhotoEvent::SnapshotsChanged => {}
         })
         .detach();
         cx.observe_in(&photo, window, |p, _, window, cx| p.sync(window, cx))

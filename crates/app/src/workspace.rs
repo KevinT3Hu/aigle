@@ -1,9 +1,11 @@
 //! Main window: title bar with the toolbar, then either the library grid or the develop view
 //! (history sidebar, canvas, adjustment panel, filmstrip).
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use aigle_core::EditParams;
 use aigle_core::params::Aspect;
 use aigle_engine_api::{Engine, SourceRef};
 use gpui::{
@@ -16,6 +18,7 @@ use gpui_component::{ActiveTheme, Selectable, Sizable, TitleBar, WindowExt, h_fl
 
 use crate::actions::*;
 use crate::canvas::{Canvas, Compare};
+use crate::copy_settings::{Clipboard, CopyDialog, CopyEvent, Group};
 use crate::export::{self, ExportDialog, ExportEvent, Request, Settings};
 use crate::filmstrip::Filmstrip;
 use crate::grid::Grid;
@@ -53,6 +56,10 @@ pub struct Workspace {
     export_settings: Settings,
     export_dialog: Option<(Entity<ExportDialog>, Subscription)>,
     keybinding_dialog: Option<(Entity<KeybindingEditor>, Subscription)>,
+    copy_dialog: Option<(Entity<CopyDialog>, Subscription)>,
+    /// Groups chosen the last time settings were copied.
+    copy_groups: BTreeSet<Group>,
+    clipboard: Option<Clipboard>,
     /// Running exports by file name.
     exports: Vec<(u64, String, Task<()>)>,
     next_export: u64,
@@ -98,13 +105,16 @@ impl Workspace {
             export_settings: Settings::default(),
             export_dialog: None,
             keybinding_dialog: None,
+            copy_dialog: None,
+            copy_groups: Group::defaults(),
+            clipboard: None,
             exports: Vec::new(),
             next_export: 0,
             _subs: subs,
         };
         match source {
             Some(SourceRef::File(p)) => ws.open_path(p, window, cx),
-            Some(s) => ws.open_source(s, None, window, cx),
+            Some(s) => ws.open_source(s, None, Vec::new(), window, cx),
             None => ws.update_title(window, cx),
         }
         ws
@@ -126,7 +136,13 @@ impl Workspace {
             l.open_folder(dir, Some(path.clone()), cx);
             l.read_meta(&path)
         });
-        self.open_source(SourceRef::File(path), initial.edits, window, cx);
+        self.open_source(
+            SourceRef::File(path),
+            initial.edits,
+            initial.snapshots,
+            window,
+            cx,
+        );
     }
 
     fn open_index(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -146,32 +162,48 @@ impl Workspace {
             cx.notify();
             return;
         }
-        self.open_source(SourceRef::File(path), meta.edits, window, cx);
+        self.open_source(
+            SourceRef::File(path),
+            meta.edits,
+            meta.snapshots,
+            window,
+            cx,
+        );
     }
 
     fn open_source(
         &mut self,
         source: SourceRef,
         edits: Option<aigle_core::EditParams>,
+        snapshots: Vec<aigle_library::Snapshot>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.close_photo(cx);
         let engine = self.engine.clone();
-        let photo = cx.new(|cx| Photo::open(&engine, source, edits.unwrap_or_default(), cx));
+        let photo =
+            cx.new(|cx| Photo::open(&engine, source, edits.unwrap_or_default(), snapshots, cx));
         let canvas = cx.new(|cx| Canvas::new(photo.clone(), window, cx));
         let hist = canvas.read(cx).histogram();
         let panel = cx.new(|cx| Panel::new(photo.clone(), hist, window, cx));
         let history = cx.new(|cx| HistoryPanel::new(photo.clone(), cx));
         let library = self.library.clone();
-        let edits = cx.subscribe(&photo, move |_, photo, e, cx| {
-            if let PhotoEvent::Edited = e {
+        let edits = cx.subscribe(&photo, move |_, photo, e, cx| match e {
+            PhotoEvent::Edited => {
                 let p = photo.read(cx);
                 if let Some(path) = p.path.clone() {
                     let head = p.head().clone();
                     library.update(cx, |l, cx| l.photo_edited(&path, &head, cx));
                 }
             }
+            PhotoEvent::SnapshotsChanged => {
+                let p = photo.read(cx);
+                if let Some(path) = p.path.clone() {
+                    let snapshots = p.snapshots.clone();
+                    library.update(cx, |l, _| l.set_snapshots(&path, snapshots));
+                }
+            }
+            _ => {}
         });
         self.open = Some(OpenPhoto {
             photo,
@@ -340,7 +372,7 @@ impl Workspace {
 
     /// Esc: drop a pending mask, else leave the tool, else stop picking.
     fn cancel(&mut self, cx: &mut Context<Self>) {
-        if self.export_dialog.take().is_some() {
+        if self.export_dialog.take().is_some() || self.copy_dialog.take().is_some() {
             cx.notify();
             return;
         }
@@ -392,6 +424,96 @@ impl Workspace {
             name: it.entry.name.clone(),
             folder: l.dir.clone(),
         })
+    }
+
+    /// The edits that copy reads: the open photo in develop, the selection in the grid.
+    fn current_edits(&mut self, cx: &mut Context<Self>) -> Option<Arc<EditParams>> {
+        if self.mode == Mode::Develop
+            && let Some(o) = &self.open
+        {
+            return Some(o.photo.read(cx).head().clone());
+        }
+        let index = self.library.read(cx).selected?;
+        let meta = self.library.update(cx, |l, _| l.meta_now(index));
+        Some(Arc::new(meta.edits.unwrap_or_default()))
+    }
+
+    fn open_copy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(params) = self.current_edits(cx) else {
+            window.push_notification(crate::i18n::t("没有可拷贝设置的照片"), cx);
+            return;
+        };
+        self.export_dialog = None;
+        let dialog = cx.new(|_| CopyDialog::new(self.copy_groups.clone()));
+        let sub = cx.subscribe_in(&dialog, window, move |w, _, ev, window, cx| {
+            let CopyEvent::Done(chosen) = ev;
+            w.copy_dialog = None;
+            if let Some(groups) = chosen {
+                w.copy_groups = groups.clone();
+                w.clipboard = Some(Clipboard {
+                    params: params.clone(),
+                    groups: groups.clone(),
+                });
+                window.push_notification(crate::i18n::t("已拷贝设置"), cx);
+            }
+            window.focus(&w.focus, cx);
+            cx.notify();
+        });
+        self.copy_dialog = Some((dialog, sub));
+        cx.notify();
+    }
+
+    /// Paste onto the open photo in develop (one undo step), or onto the grid selection.
+    fn paste(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(clip) = self.clipboard.clone() else {
+            window.push_notification(crate::i18n::t("尚未拷贝设置"), cx);
+            return;
+        };
+        let target = match self.mode {
+            Mode::Develop => self.open.as_ref().map(|o| o.photo.clone()),
+            Mode::Library => {
+                let selected = self
+                    .library
+                    .read(cx)
+                    .selected_item()
+                    .map(|it| it.entry.path.clone());
+                self.open
+                    .as_ref()
+                    .filter(|o| {
+                        selected.is_some() && o.photo.read(cx).path.as_ref() == selected.as_ref()
+                    })
+                    .map(|o| o.photo.clone())
+            }
+        };
+        if let Some(photo) = target {
+            photo.update(cx, |p, cx| {
+                p.command(
+                    crate::i18n::t("粘贴设置"),
+                    clip.ops(),
+                    None,
+                    aigle_engine_api::Interaction::Final,
+                    cx,
+                );
+            });
+            return;
+        }
+        if self.mode != Mode::Library {
+            return;
+        }
+        let Some(index) = self.library.read(cx).selected else {
+            return;
+        };
+        let (path, meta) = self.library.update(cx, |l, _| {
+            let path = l.items.get(index).map(|it| it.entry.path.clone());
+            (path, l.meta_now(index))
+        });
+        let Some(path) = path else { return };
+        match clip.paste_onto(&meta.edits.unwrap_or_default()) {
+            Ok(next) => self
+                .library
+                .update(cx, |l, cx| l.photo_edited(&path, &Arc::new(next), cx)),
+            Err(e) => window.push_notification(e.to_string(), cx),
+        }
     }
 
     fn open_keybindings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -508,6 +630,7 @@ impl Workspace {
             _ => (false, false, false, Compare::Off, Tool::None),
         };
         let show_history = self.show_history;
+        let can_paste = self.clipboard.is_some();
         let mask_overlay = self
             .open
             .as_ref()
@@ -554,6 +677,13 @@ impl Workspace {
                         menu.action_context(edit_focus.clone())
                             .menu_with_disabled(crate::i18n::t("撤销"), Box::new(Undo), !can_undo)
                             .menu_with_disabled(crate::i18n::t("重做"), Box::new(Redo), !can_redo)
+                            .separator()
+                            .menu(crate::i18n::t("拷贝设置…"), Box::new(CopySettings))
+                            .menu_with_disabled(
+                                crate::i18n::t("粘贴设置"),
+                                Box::new(PasteSettings),
+                                !can_paste,
+                            )
                             .separator()
                             .submenu(crate::i18n::t("工具"), window, cx, move |menu, _, _| {
                                 menu.menu_with_check_and_disabled(
@@ -752,6 +882,7 @@ impl Render for Workspace {
             Mode::Develop => self.develop(cx),
         };
         let dialog = self.export_dialog.as_ref().map(|(d, _)| d.clone());
+        let copy_dialog = self.copy_dialog.as_ref().map(|(d, _)| d.clone());
         v_flex()
             .size_full()
             .track_focus(&self.focus)
@@ -793,6 +924,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &Label4, _, cx| w.label(3, cx)))
             .on_action(cx.listener(|w, _: &Undo, _, cx| w.with_photo(cx, Photo::undo)))
             .on_action(cx.listener(|w, _: &Redo, _, cx| w.with_photo(cx, Photo::redo)))
+            .on_action(cx.listener(|w, _: &CopySettings, window, cx| w.open_copy(window, cx)))
+            .on_action(cx.listener(|w, _: &PasteSettings, window, cx| w.paste(window, cx)))
             .on_action(
                 cx.listener(|w, _: &ToggleZoom, _, cx| w.with_canvas(cx, Canvas::toggle_zoom)),
             )
@@ -849,7 +982,8 @@ impl Render for Workspace {
                     .flex()
                     .flex_col()
                     .child(body)
-                    .when_some(dialog, |d, e| d.child(e)),
+                    .when_some(dialog, |d, e| d.child(e))
+                    .when_some(copy_dialog, |d, e| d.child(e)),
             )
     }
 }

@@ -25,6 +25,8 @@ actions!(
         Label4,
         Undo,
         Redo,
+        CopySettings,
+        PasteSettings,
         ToggleZoom,
         ToggleBefore,
         ToggleSplit,

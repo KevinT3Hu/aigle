@@ -7,6 +7,7 @@ rust_i18n::i18n!("locales", fallback = "en");
 
 mod actions;
 mod canvas;
+mod copy_settings;
 mod crop;
 mod curve;
 mod export;

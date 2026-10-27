@@ -9,6 +9,7 @@ use aigle_core::params::{Aspect, CropRect, GeometryParams};
 use aigle_core::{EditParams, MaskId};
 use aigle_doc::{CommandError, EditCommand, GestureId, ParamOp, PhotoDoc};
 use aigle_engine_api::{Engine, ImageInfo, Interaction, LoadState, Session, SourceRef};
+use aigle_library::Snapshot;
 use gpui::{Context, EventEmitter, Task};
 
 use crate::crop::{self, Frame};
@@ -24,6 +25,8 @@ pub enum PhotoEvent {
     Notice(String),
     /// The canvas tool changed.
     ToolChanged,
+    /// The saved snapshots changed.
+    SnapshotsChanged,
 }
 
 pub struct Photo {
@@ -32,8 +35,11 @@ pub struct Photo {
     pub path: Option<PathBuf>,
     pub source: SourceRef,
     pub file: FileFacts,
+    pub engine: Engine,
     pub session: Session,
     pub doc: PhotoDoc,
+    /// Saved states of the edits, oldest first; persisted in the sidecar.
+    pub snapshots: Vec<Snapshot>,
     pub load: LoadState,
     /// The white balance picker is active on the canvas.
     pub wb_pick: bool,
@@ -94,11 +100,12 @@ pub fn crop_ops(c: &CropRect) -> Vec<ParamOp> {
 impl EventEmitter<PhotoEvent> for Photo {}
 
 impl Photo {
-    /// Open `source` with the edits `initial` (from its sidecar).
+    /// Open `source` with the edits `initial` and `snapshots` (from its sidecar).
     pub fn open(
         engine: &Engine,
         source: SourceRef,
         initial: EditParams,
+        snapshots: Vec<Snapshot>,
         cx: &mut Context<Self>,
     ) -> Photo {
         let name = match &source {
@@ -155,8 +162,10 @@ impl Photo {
             path,
             source,
             file,
+            engine: engine.clone(),
             session,
             doc,
+            snapshots,
             load: LoadState::Loading,
             wb_pick: false,
             pick_job: None,
@@ -445,6 +454,37 @@ impl Photo {
         }
     }
 
+    /// Save the head as a new snapshot.
+    pub fn add_snapshot(&mut self, cx: &mut Context<Self>) {
+        let name = snapshot_name(&self.snapshots, &crate::i18n::t("快照"));
+        self.snapshots.push(Snapshot {
+            name,
+            params: (**self.head()).clone(),
+        });
+        cx.emit(PhotoEvent::SnapshotsChanged);
+        cx.notify();
+    }
+
+    pub fn remove_snapshot(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.snapshots.len() {
+            self.snapshots.remove(index);
+            cx.emit(PhotoEvent::SnapshotsChanged);
+            cx.notify();
+        }
+    }
+
+    /// Make snapshot `index` the head, as one undoable command.
+    pub fn apply_snapshot(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(s) = self.snapshots.get(index) else {
+            return;
+        };
+        let label = format!("{} · {}", crate::i18n::t("快照"), s.name);
+        let ops = vec![ParamOp::ReplaceAll {
+            params: Box::new(s.params.clone()),
+        }];
+        self.command(label, ops, None, Interaction::Final, cx);
+    }
+
     pub fn set_wb_pick(&mut self, on: bool, cx: &mut Context<Self>) {
         let on = on && self.info().is_some();
         if self.wb_pick != on {
@@ -488,5 +528,29 @@ impl Photo {
                 }
             });
         }));
+    }
+}
+
+/// `"{base} N"` with the smallest N ≥ 1 not used by an existing snapshot.
+fn snapshot_name(existing: &[Snapshot], base: &str) -> String {
+    (1..)
+        .map(|n| format!("{base} {n}"))
+        .find(|name| existing.iter().all(|s| &s.name != name))
+        .expect("unbounded range")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_names_fill_gaps() {
+        let snap = |name: &str| Snapshot {
+            name: name.into(),
+            params: EditParams::default(),
+        };
+        assert_eq!(snapshot_name(&[], "S"), "S 1");
+        assert_eq!(snapshot_name(&[snap("S 1"), snap("S 3")], "S"), "S 2");
+        assert_eq!(snapshot_name(&[snap("S 2")], "S"), "S 1");
     }
 }

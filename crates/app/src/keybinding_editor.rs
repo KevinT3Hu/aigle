@@ -112,6 +112,8 @@ fn description(action: &str) -> (String, String) {
         "Down" => ("向下", "导航"),
         "Undo" => ("撤销", "编辑"),
         "Redo" => ("重做", "编辑"),
+        "CopySettings" => ("拷贝设置…", "编辑"),
+        "PasteSettings" => ("粘贴设置", "编辑"),
         "ToggleCrop" => ("裁剪与拉直", "编辑"),
         "ToggleMask" => ("蒙版", "编辑"),
         "ToggleWbPicker" => ("白平衡吸管", "编辑"),

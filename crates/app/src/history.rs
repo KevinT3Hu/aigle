@@ -1,11 +1,13 @@
-//! History sidebar: every edit of the open photo; clicking one jumps there (doc 01 §5).
+//! History sidebar: saved snapshots of the open photo, then every edit; clicking a snapshot
+//! applies it and clicking an edit jumps there (doc 01 §5).
 
 use aigle_doc::Origin;
 use gpui::{
     Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled, Window, div,
-    prelude::*,
+    prelude::*, px,
 };
-use gpui_component::{ActiveTheme, h_flex, v_flex};
+use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::{ActiveTheme, Sizable, h_flex, v_flex};
 
 use crate::photo::Photo;
 
@@ -70,15 +72,94 @@ impl Render for HistoryPanel {
             })
             .collect::<Vec<_>>();
 
+        let snapshots = self
+            .photo
+            .read(cx)
+            .snapshots
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let apply = photo.clone();
+                let remove = photo.clone();
+                h_flex()
+                    .px_3()
+                    .py_1()
+                    .gap_2()
+                    .text_xs()
+                    .hover(|d| d.bg(theme.list_hover))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("snapshot-{i}")))
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .cursor_pointer()
+                            .on_click(move |_, _, cx| {
+                                apply.update(cx, |p, cx| p.apply_snapshot(i, cx))
+                            })
+                            .child(s.name.clone()),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("snapshot-del-{i}")))
+                            .label("×")
+                            .xsmall()
+                            .ghost()
+                            .tooltip(crate::i18n::t("删除快照"))
+                            .on_click(move |_, _, cx| {
+                                remove.update(cx, |p, cx| p.remove_snapshot(i, cx))
+                            }),
+                    )
+            })
+            .collect::<Vec<_>>();
+        let no_snapshots = snapshots.is_empty();
+        let add = photo.clone();
+        let heading = |s: String| {
+            div()
+                .text_sm()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(s)
+        };
+
         v_flex()
             .size_full()
+            .child(
+                h_flex()
+                    .px_3()
+                    .py_2()
+                    .justify_between()
+                    .child(heading(crate::i18n::t("快照_标题")))
+                    .child(
+                        Button::new("snapshot-add")
+                            .label("+")
+                            .xsmall()
+                            .ghost()
+                            .tooltip(crate::i18n::t("将当前设置存为快照"))
+                            .on_click(move |_, _, cx| add.update(cx, |p, cx| p.add_snapshot(cx))),
+                    ),
+            )
+            .child(
+                div()
+                    .id("snapshot-scroll")
+                    .flex_none()
+                    .max_h(px(180.0))
+                    .overflow_y_scroll()
+                    .when(no_snapshots, |d| {
+                        d.child(
+                            div()
+                                .px_3()
+                                .pb_1()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(crate::i18n::t("暂无快照")),
+                        )
+                    })
+                    .child(v_flex().children(snapshots)),
+            )
             .child(
                 div()
                     .px_3()
                     .py_2()
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child(crate::i18n::t("历史记录")),
+                    .child(heading(crate::i18n::t("历史记录"))),
             )
             .child(
                 div()

@@ -12,8 +12,10 @@
 //! * **C1 tile** (B1 resample ∘ C1 ∘ C2), RGB f16, cached — the base for most slider changes;
 //! * **output tile** (D1 ∘ D2 ∘ D3 ∘ E1), BGRA8, cached.
 //!
-//! Not implemented yet (identity): mask fields (M), D2 look LUT, D3, margins/adaptive tile
-//! size (§5.3; C2 needs no margins because its support lives in the coarse field).
+//! Local adjustments (M) are compiled per tile from the edit (`crate::masks`).
+//!
+//! Not implemented yet: margins/adaptive tile size (§5.3; C2 needs no margins because its
+//! support lives in the coarse field).
 
 pub mod c2;
 pub mod color;

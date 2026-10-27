@@ -21,6 +21,8 @@
   "ctrl-z": "aigle::Undo",
   "ctrl-shift-z": "aigle::Redo",
   "ctrl-y": "aigle::Redo",
+  "ctrl-shift-c": "aigle::CopySettings",
+  "ctrl-shift-v": "aigle::PasteSettings",
   "z": "aigle::ToggleZoom",
   "\\": "aigle::ToggleBefore",
   "y": "aigle::ToggleSplit",

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use aigle_core::EditParams;
 use aigle_engine_api::{Engine, Priority, SourceRef};
-use aigle_library::{PhotoEntry, PhotoMeta, Store, WriteReport, Writer};
+use aigle_library::{PhotoEntry, PhotoMeta, Snapshot, Store, WriteReport, Writer};
 use futures::StreamExt;
 use gpui::{AppContext, Context, EventEmitter, RenderImage, Task};
 
@@ -492,6 +492,23 @@ impl Library {
             });
         }));
         cx.notify();
+    }
+
+    /// Store the snapshots of `path`.
+    pub fn set_snapshots(&mut self, path: &Path, snapshots: Vec<Snapshot>) {
+        let Some(i) = self.index_of(path) else {
+            let mut meta = self.read_meta(path);
+            meta.snapshots = snapshots;
+            self.writer.schedule(path.to_path_buf(), meta);
+            return;
+        };
+        self.meta_now(i);
+        if let Some(meta) = self.items[i].meta.as_mut()
+            && meta.snapshots != snapshots
+        {
+            meta.snapshots = snapshots;
+            self.save(i);
+        }
     }
 
     /// Write every pending sidecar change now (closing a photo, quitting).

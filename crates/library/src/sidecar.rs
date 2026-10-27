@@ -15,6 +15,14 @@ const RATING: &str = "Xmp.xmp.Rating";
 const LABEL: &str = "Xmp.xmp.Label";
 const SCHEMA: &str = "Xmp.aigle.SchemaVersion";
 const EDITS: &str = "Xmp.aigle.Edits";
+const SNAPSHOTS: &str = "Xmp.aigle.Snapshots";
+
+/// A named, saved state of a photo's edits.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Snapshot {
+    pub name: String,
+    pub params: EditParams,
+}
 
 /// What aigle keeps per photo.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -25,6 +33,8 @@ pub struct PhotoMeta {
     pub label: Option<String>,
     /// `None` for an unedited photo.
     pub edits: Option<EditParams>,
+    /// Oldest first.
+    pub snapshots: Vec<Snapshot>,
 }
 
 /// The result of [`Store::read`].
@@ -117,6 +127,8 @@ struct Known {
     hash: Option<blake3::Hash>,
     /// The stored edits could not be read; they are never overwritten.
     edits_locked: bool,
+    /// Likewise for the snapshots.
+    snapshots_locked: bool,
 }
 
 /// Reads and writes sidecars and remembers what it last saw of each, so that external
@@ -175,22 +187,34 @@ impl Store {
             ..Loaded::default()
         };
         let mut edits_locked = false;
+        let mut snapshots_locked = false;
         if let Some(packet) = &packet {
             let at = source.as_deref().unwrap_or(photo);
-            let v = aigle_exiv2_sys::get(packet, &[RATING, LABEL, SCHEMA, EDITS])
+            let v = aigle_exiv2_sys::get(packet, &[RATING, LABEL, SCHEMA, EDITS, SNAPSHOTS])
                 .map_err(xmp_err(at))?;
-            let [rating, label, schema, edits] = <[Option<String>; 4]>::try_from(v)
+            let [rating, label, schema, edits, snapshots] = <[Option<String>; 5]>::try_from(v)
                 .map_err(|_| xmp_err(at)(aigle_exiv2_sys::Error("short result".into())))?;
             loaded.meta.rating = rating.as_deref().and_then(parse_rating).unwrap_or(0);
             loaded.meta.label = label.filter(|l| !l.trim().is_empty());
+            let version = schema.as_deref().and_then(|s| s.trim().parse::<u32>().ok());
             if source.is_some()
                 && let Some(json) = edits
             {
-                let version = schema.as_deref().and_then(|s| s.trim().parse::<u32>().ok());
                 match parse_edits(&json, version) {
                     Ok(e) => loaded.meta.edits = Some(e),
                     Err(w) => {
                         edits_locked = true;
+                        loaded.warnings.push(w);
+                    }
+                }
+            }
+            if source.is_some()
+                && let Some(json) = snapshots
+            {
+                match parse_snapshots(&json, version) {
+                    Ok(s) => loaded.meta.snapshots = s,
+                    Err(w) => {
+                        snapshots_locked = true;
                         loaded.warnings.push(w);
                     }
                 }
@@ -203,6 +227,7 @@ impl Store {
                 sidecar: existing.unwrap_or(target),
                 hash,
                 edits_locked,
+                snapshots_locked,
             },
         );
         Ok(loaded)
@@ -237,12 +262,26 @@ impl Store {
                 path: k.sidecar.clone(),
                 message: e.to_string(),
             })?;
+        let snapshots = (!meta.snapshots.is_empty())
+            .then(|| serde_json::to_string(&meta.snapshots))
+            .transpose()
+            .map_err(|e| Error::Xmp {
+                path: k.sidecar.clone(),
+                message: e.to_string(),
+            })?;
         let schema = SCHEMA_VERSION.to_string();
         let mut changes: Vec<(&str, Option<&str>)> =
             vec![(RATING, rating.as_deref()), (LABEL, label)];
         if !k.edits_locked {
             changes.push((EDITS, edits.as_deref()));
-            changes.push((SCHEMA, edits.as_ref().map(|_| schema.as_str())));
+        }
+        if !k.snapshots_locked {
+            changes.push((SNAPSHOTS, snapshots.as_deref()));
+        }
+        // The schema version describes whatever locked data is kept, so it stays as is then.
+        if !k.edits_locked && !k.snapshots_locked {
+            let any = edits.is_some() || snapshots.is_some();
+            changes.push((SCHEMA, any.then_some(schema.as_str())));
         }
         if current.is_none() && changes.iter().all(|(_, v)| v.is_none()) {
             return Ok(None);
@@ -266,20 +305,36 @@ impl Store {
 }
 
 fn parse_edits(json: &str, version: Option<u32>) -> Result<EditParams, String> {
-    match version {
-        Some(v) if v > SCHEMA_VERSION => {
-            return Err(format!(
-                "edits were saved by a newer aigle (schema {v}); they are kept but not shown"
-            ));
-        }
-        None => return Err("edits have no schema version; they are kept but not shown".into()),
-        _ => {}
-    }
+    check_version(version, "edits")?;
     let mut p: EditParams =
         serde_json::from_str(json).map_err(|e| format!("edits are unreadable ({e}); kept"))?;
     p.sanitize()
         .map_err(|e| format!("edits are invalid ({e}); kept"))?;
     Ok(p)
+}
+
+fn parse_snapshots(json: &str, version: Option<u32>) -> Result<Vec<Snapshot>, String> {
+    check_version(version, "snapshots")?;
+    let mut s: Vec<Snapshot> =
+        serde_json::from_str(json).map_err(|e| format!("snapshots are unreadable ({e}); kept"))?;
+    for snap in &mut s {
+        snap.params
+            .sanitize()
+            .map_err(|e| format!("snapshot {:?} is invalid ({e}); kept", snap.name))?;
+    }
+    Ok(s)
+}
+
+fn check_version(version: Option<u32>, what: &str) -> Result<(), String> {
+    match version {
+        Some(v) if v > SCHEMA_VERSION => Err(format!(
+            "{what} were saved by a newer aigle (schema {v}); they are kept but not shown"
+        )),
+        None => Err(format!(
+            "{what} have no schema version; they are kept but not shown"
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// Write a temp file in the same folder, sync it, rename it over `path` and sync the folder.
@@ -337,6 +392,10 @@ pub(crate) mod tests {
             rating: 4,
             label: Some("Red".into()),
             edits: Some(edited()),
+            snapshots: vec![Snapshot {
+                name: "Warm".into(),
+                params: edited(),
+            }],
         };
         assert_eq!(
             store.write(&photo, &meta).unwrap(),
@@ -351,6 +410,7 @@ pub(crate) mod tests {
         let text = std::fs::read_to_string(dir.join("IMG_1.xmp")).unwrap();
         assert!(text.contains("image/x-nikon-nef"));
         assert!(!text.contains("Edits"));
+        assert!(!text.contains("Snapshots"));
         assert_eq!(
             Store::new().read(&photo).unwrap().meta,
             PhotoMeta::default()
@@ -455,6 +515,26 @@ pub(crate) mod tests {
         let text = std::fs::read_to_string(dir.join("c.xmp")).unwrap();
         assert!(text.contains("future"), "{text}");
         assert_eq!(store.read(&photo).unwrap().meta.rating, 3);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn snapshots_without_edits_round_trip() {
+        let dir = temp_dir("snap");
+        let photo = dir.join("d.nef");
+        std::fs::write(&photo, b"raw").unwrap();
+        let store = Store::new();
+        let meta = PhotoMeta {
+            snapshots: vec![Snapshot {
+                name: "a".into(),
+                params: edited(),
+            }],
+            ..PhotoMeta::default()
+        };
+        store.write(&photo, &meta).unwrap().unwrap();
+        let loaded = Store::new().read(&photo).unwrap();
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        assert_eq!(loaded.meta, meta);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

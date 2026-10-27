@@ -161,7 +161,7 @@ impl Canvas {
                 cx.notify();
             }
             PhotoEvent::ToolChanged => c.sync_tool(cx),
-            PhotoEvent::Notice(_) => {}
+            PhotoEvent::Notice(_) | PhotoEvent::SnapshotsChanged => {}
         })
         .detach();
         cx.observe(&photo, |c, _, cx| {

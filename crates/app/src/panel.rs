@@ -6,17 +6,19 @@
 use std::sync::Arc;
 
 use aigle_core::EditParams;
-use aigle_core::params::{Aspect, LensProfile, WbMode};
-use aigle_doc::{EditCommand, GestureId, ParamOp};
-use aigle_engine_api::{Histogram, Interaction, watch};
+use aigle_core::params::{Aspect, CameraProfile, Demosaic, HighlightRecon, LensProfile, WbMode};
+use aigle_doc::{EditCommand, GestureId, ParamOp, value_at};
+use aigle_engine_api::{Histogram, ImportKind, Interaction, SourceKind, watch};
 use gpui::{
-    App, Context, Entity, IntoElement, ParentElement, PathBuilder, Render, SharedString, Styled,
-    Subscription, Task, Window, canvas, div, point, prelude::*, px, rgb, rgba,
+    App, Context, Entity, IntoElement, ParentElement, PathBuilder, PathPromptOptions, Render,
+    SharedString, Styled, Subscription, Task, Window, canvas, div, point, prelude::*, px, rgb,
+    rgba,
 };
-use gpui_component::button::Button;
+use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::slider::{Slider, SliderEvent, SliderScale, SliderState};
 use gpui_component::tab::TabBar;
 use gpui_component::{ActiveTheme, Selectable, Sizable, h_flex, v_flex};
+use serde_json::Value;
 
 use crate::curve::CurveEditor;
 use crate::mask_panel::MaskPanel;
@@ -25,7 +27,7 @@ use crate::photo::{Photo, PhotoEvent, Tool};
 
 const PANEL_TABS: [&str; 4] = ["调整", "修饰", "蒙版", "信息"];
 const MASK_TAB: usize = 2;
-const GROUPS: [&[usize]; 2] = [&[0, 1, 2, 3], &[4, 5, 6]];
+const GROUPS: [&[usize]; 2] = [&[0, 1, 2, 3], &[4, 5, 6, 7]];
 
 /// Buttons shown above a section's sliders.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -34,6 +36,36 @@ pub enum Extra {
     WhiteBalance,
     LensProfile,
     PointCurve,
+    CameraProfile,
+    RawSettings,
+}
+
+impl Extra {
+    /// Non-slider paths the section's reset button also restores.
+    fn reset_paths(self) -> &'static [&'static str] {
+        match self {
+            Extra::None | Extra::LensProfile => &[],
+            Extra::WhiteBalance => &["wb.mode"],
+            Extra::PointCurve => &["curve.point"],
+            Extra::CameraProfile => &["profile.camera", "profile.look"],
+            Extra::RawSettings => &[
+                "raw.demosaic",
+                "raw.highlight_recon",
+                "raw.ca_correction",
+                "raw.hot_pixels",
+            ],
+        }
+    }
+}
+
+impl Section {
+    /// Every path the section's reset button restores.
+    pub fn paths(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.rows
+            .iter()
+            .map(|(p, _)| *p)
+            .chain(self.extra.reset_paths().iter().copied())
+    }
 }
 
 pub struct Section {
@@ -60,6 +92,11 @@ pub const TOOL_GROUPS: &[GroupDef] = &[
     GroupDef {
         title: "基本",
         sections: &[
+            Section {
+                title: "配置文件",
+                extra: Extra::CameraProfile,
+                rows: &[],
+            },
             Section {
                 title: "白平衡",
                 extra: Extra::WhiteBalance,
@@ -260,6 +297,27 @@ pub const TOOL_GROUPS: &[GroupDef] = &[
             ),
         ],
     },
+    GroupDef {
+        title: "RAW 处理",
+        sections: &[Section {
+            title: "解码",
+            extra: Extra::RawSettings,
+            rows: &[],
+        }],
+    },
+];
+
+const DEMOSAIC: [(Demosaic, &str); 3] = [
+    (Demosaic::Auto, "自动"),
+    (Demosaic::Rcd, "RCD"),
+    (Demosaic::Amaze, "AMaZE"),
+];
+
+const HIGHLIGHTS: [(HighlightRecon, &str); 4] = [
+    (HighlightRecon::ColorPropagation, "颜色传播"),
+    (HighlightRecon::InpaintOpposed, "反向修补"),
+    (HighlightRecon::Guided, "引导式"),
+    (HighlightRecon::Off, "关闭"),
 ];
 
 struct Row {
@@ -276,13 +334,17 @@ pub struct Panel {
     photo: Entity<Photo>,
     rows: Vec<Row>,
     tab: usize,
-    expanded: [bool; 7],
+    expanded: [bool; TOOL_GROUPS.len()],
     histogram: Option<Arc<Histogram>>,
     curve: Entity<CurveEditor>,
     masks: Entity<MaskPanel>,
     gesture: Option<GestureId>,
     job: Option<Task<()>>,
+    import_job: Option<Task<()>>,
     lens_name: Option<String>,
+    /// Names of the imported DCP and look, as reported on import.
+    profile_name: Option<String>,
+    look_name: Option<String>,
     error: Option<String>,
 }
 
@@ -374,6 +436,7 @@ impl Panel {
                 }
                 cx.notify();
             }
+            PhotoEvent::SnapshotsChanged => {}
         })
         .detach();
         cx.observe(&photo, |_, _, cx| cx.notify()).detach();
@@ -394,17 +457,23 @@ impl Panel {
         .detach();
         let curve = cx.new(|cx| CurveEditor::new(photo.clone(), cx));
         let masks = cx.new(|cx| MaskPanel::new(photo.clone(), window, cx));
+        let mut expanded = [false; TOOL_GROUPS.len()];
+        expanded[0] = true;
+        expanded[4] = true;
         let mut panel = Panel {
             photo,
             rows,
             tab: 0,
-            expanded: [true, false, false, false, true, false, false],
+            expanded,
             histogram: None,
             curve,
             masks,
             gesture: None,
             job: None,
+            import_job: None,
             lens_name: None,
+            profile_name: None,
+            look_name: None,
             error: None,
         };
         panel.sync(window, cx);
@@ -572,9 +641,307 @@ impl Panel {
         );
     }
 
+    fn set_json(&mut self, label: &str, path: &str, value: Value, cx: &mut Context<Self>) {
+        self.send(
+            label,
+            vec![ParamOp::set(path, value)],
+            None,
+            Interaction::Final,
+            cx,
+        );
+    }
+
+    fn section_modified(&self, s: &Section, cx: &App) -> bool {
+        let head = self.photo.read(cx).head().clone();
+        let defaults = EditParams::default();
+        s.paths()
+            .any(|p| value_at(&head, p) != value_at(&defaults, p))
+    }
+
+    fn reset_section(&mut self, group: usize, section: usize, cx: &mut Context<Self>) {
+        let s = &TOOL_GROUPS[group].sections[section];
+        let paths: Vec<&str> = s.paths().collect();
+        let label = rust_i18n::t!("重置 {}", arg0 = crate::i18n::t(s.title)).into_owned();
+        self.send(&label, resets(&paths), None, Interaction::Final, cx);
+    }
+
+    /// Pick a DCP or `.cube` file, import it into the engine and select it.
+    fn import(&mut self, kind: ImportKind, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(crate::i18n::t("导入").into()),
+        });
+        let engine = self.photo.read(cx).engine.clone();
+        self.import_job = Some(cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let read = cx
+                .background_spawn(async move { std::fs::read(&path) })
+                .await;
+            let r = match read {
+                Ok(bytes) => engine.import(kind, bytes).await.map_err(|e| e.to_string()),
+                Err(e) => Err(e.to_string()),
+            };
+            let _ = this.update(cx, |p, cx| {
+                let imported = match r {
+                    Ok(i) => i,
+                    Err(e) => {
+                        p.error = Some(rust_i18n::t!("导入失败：{e}", e = e).into_owned());
+                        cx.notify();
+                        return;
+                    }
+                };
+                match kind {
+                    ImportKind::Dcp => {
+                        let value = serde_json::to_value(CameraProfile::Dcp(imported.data_ref))
+                            .expect("serialisable");
+                        p.set_json(
+                            &crate::i18n::t("配置文件 · 导入 DCP"),
+                            "profile.camera",
+                            value,
+                            cx,
+                        );
+                        let model = p
+                            .photo
+                            .read(cx)
+                            .info()
+                            .and_then(|i| i.camera.as_ref())
+                            .map(|c| c.model.clone());
+                        if let (Some(made_for), Some(model)) = (&imported.camera_model, model)
+                            && !made_for.to_lowercase().contains(&model.to_lowercase())
+                        {
+                            p.error = Some(
+                                rust_i18n::t!("此 DCP 是为 {made_for} 制作的", made_for = made_for)
+                                    .into_owned(),
+                            );
+                        }
+                        p.profile_name = Some(imported.name);
+                    }
+                    ImportKind::LookLut => {
+                        let value = serde_json::to_value(imported.data_ref).expect("serialisable");
+                        p.set_json(
+                            &crate::i18n::t("配置文件 · 导入 LUT"),
+                            "profile.look",
+                            value,
+                            cx,
+                        );
+                        p.look_name = Some(imported.name);
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// A row of buttons choosing one JSON value for `path`.
+    fn choices(
+        &self,
+        id: &'static str,
+        path: &'static str,
+        history: String,
+        options: Vec<(Value, String)>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let current = value_at(self.photo.read(cx).head(), path);
+        h_flex()
+            .gap_1()
+            .flex_wrap()
+            .children(options.into_iter().enumerate().map(|(i, (value, label))| {
+                let history = history.clone();
+                Button::new(SharedString::from(format!("{id}-{i}")))
+                    .label(label)
+                    .small()
+                    .selected(value == current)
+                    .on_click(
+                        cx.listener(move |p, _, _, cx| {
+                            p.set_json(&history, path, value.clone(), cx)
+                        }),
+                    )
+            }))
+    }
+
+    fn render_raw_settings(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let photo = self.photo.read(cx);
+        if photo.info().is_some_and(|i| i.kind != SourceKind::Raw) {
+            return div()
+                .text_xs()
+                .text_color(muted)
+                .child(crate::i18n::t("仅适用于 RAW 文件"))
+                .into_any_element();
+        }
+        let raw = photo.head().raw.clone();
+        let history = |s: &str| format!("{} · {}", crate::i18n::t("解码"), crate::i18n::t(s));
+        let heading = |s: &str| div().text_xs().child(crate::i18n::t(s));
+        let note = |s: &str| div().text_xs().text_color(muted).child(crate::i18n::t(s));
+        let demosaic = DEMOSAIC
+            .iter()
+            .map(|(d, l)| {
+                (
+                    serde_json::to_value(d).expect("serialisable"),
+                    crate::i18n::t(l),
+                )
+            })
+            .collect();
+        let highlights = HIGHLIGHTS
+            .iter()
+            .map(|(h, l)| {
+                (
+                    serde_json::to_value(h).expect("serialisable"),
+                    crate::i18n::t(l),
+                )
+            })
+            .collect();
+        let toggle =
+            |id: &'static str, path: &'static str, label: &'static str, on: bool| {
+                let history = history(label);
+                Button::new(id)
+                    .label(crate::i18n::t(label))
+                    .small()
+                    .selected(on)
+                    .on_click(cx.listener(move |p, _, _, cx| {
+                        p.set_json(&history, path, Value::Bool(!on), cx)
+                    }))
+            };
+        let toggles = h_flex()
+            .gap_1()
+            .flex_wrap()
+            .child(toggle(
+                "raw-ca",
+                "raw.ca_correction",
+                "自动色差校正",
+                raw.ca_correction,
+            ))
+            .child(toggle(
+                "raw-hot-pixels",
+                "raw.hot_pixels",
+                "坏点去除",
+                raw.hot_pixels,
+            ));
+        v_flex()
+            .gap_2()
+            .child(heading("去马赛克"))
+            .child(self.choices(
+                "raw-demosaic",
+                "raw.demosaic",
+                history("去马赛克"),
+                demosaic,
+                cx,
+            ))
+            .child(note(
+                "RCD 与 AMaZE 仅用于拜耳传感器；X-Trans 始终使用 Markesteijn。",
+            ))
+            .child(heading("高光重建"))
+            .child(self.choices(
+                "raw-highlights",
+                "raw.highlight_recon",
+                history("高光重建"),
+                highlights,
+                cx,
+            ))
+            .child(toggles)
+            .child(note("自动色差校正仅用于拜耳传感器。"))
+            .into_any_element()
+    }
+
+    fn render_camera_profile(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let photo = self.photo.read(cx);
+        let is_raw = photo.info().is_some_and(|i| i.kind == SourceKind::Raw);
+        let profile = photo.head().profile.clone();
+        let matrix = matches!(profile.camera, CameraProfile::Matrix(_));
+        let camera_status = if matrix {
+            crate::i18n::t("标准颜色矩阵")
+        } else {
+            self.profile_name
+                .clone()
+                .unwrap_or_else(|| crate::i18n::t("已导入的 DCP"))
+        };
+        let look_status = match &profile.look {
+            None => crate::i18n::t("无"),
+            Some(_) => self
+                .look_name
+                .clone()
+                .unwrap_or_else(|| crate::i18n::t("已导入的 LUT")),
+        };
+        let status = |s: String| div().text_xs().text_color(muted).child(s);
+        let heading = |s: &str| div().text_xs().child(crate::i18n::t(s));
+        v_flex()
+            .gap_2()
+            .when(is_raw, |d| {
+                d.child(heading("相机"))
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                Button::new("profile-matrix")
+                                    .label(crate::i18n::t("标准"))
+                                    .small()
+                                    .selected(matrix)
+                                    .on_click(cx.listener(|p, _, _, cx| {
+                                        p.send(
+                                            crate::i18n::t("配置文件 · 标准"),
+                                            resets(&["profile.camera"]),
+                                            None,
+                                            Interaction::Final,
+                                            cx,
+                                        )
+                                    })),
+                            )
+                            .child(
+                                Button::new("profile-dcp")
+                                    .label(crate::i18n::t("导入 DCP…"))
+                                    .small()
+                                    .selected(!matrix)
+                                    .on_click(
+                                        cx.listener(|p, _, _, cx| p.import(ImportKind::Dcp, cx)),
+                                    ),
+                            ),
+                    )
+                    .child(status(camera_status))
+            })
+            .child(heading("外观 LUT"))
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(
+                        Button::new("profile-lut")
+                            .label(crate::i18n::t("导入 LUT…"))
+                            .small()
+                            .on_click(cx.listener(|p, _, _, cx| p.import(ImportKind::LookLut, cx))),
+                    )
+                    .when(profile.look.is_some(), |d| {
+                        d.child(
+                            Button::new("profile-lut-off")
+                                .label(crate::i18n::t("移除"))
+                                .small()
+                                .on_click(cx.listener(|p, _, _, cx| {
+                                    p.send(
+                                        crate::i18n::t("配置文件 · 移除 LUT"),
+                                        resets(&["profile.look"]),
+                                        None,
+                                        Interaction::Final,
+                                        cx,
+                                    )
+                                })),
+                        )
+                    }),
+            )
+            .child(status(look_status))
+            .into_any_element()
+    }
+
     fn render_extra(&self, extra: Extra, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         match extra {
             Extra::None => None,
+            Extra::RawSettings => Some(self.render_raw_settings(cx)),
+            Extra::CameraProfile => Some(self.render_camera_profile(cx)),
             Extra::PointCurve => Some(self.curve.clone().into_any_element()),
             Extra::WhiteBalance => {
                 let picking = self.photo.read(cx).wb_pick;
@@ -846,12 +1213,28 @@ impl Panel {
                 .flat_map(|t| t.sections)
                 .map(|s| s.rows.len())
                 .sum();
-            for s in TOOL_GROUPS[group].sections {
+            for (j, s) in TOOL_GROUPS[group].sections.iter().enumerate() {
+                let modified = self.section_modified(s, cx);
                 let mut sec = v_flex().gap_2().child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(crate::i18n::t(&s.title)),
+                    h_flex()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(crate::i18n::t(s.title)),
+                        )
+                        .when(modified, |d| {
+                            d.child(
+                                Button::new(SharedString::from(format!("reset-{group}-{j}")))
+                                    .label(crate::i18n::t("重置"))
+                                    .xsmall()
+                                    .ghost()
+                                    .on_click(cx.listener(move |p, _, _, cx| {
+                                        p.reset_section(group, j, cx)
+                                    })),
+                            )
+                        }),
                 );
                 if let Some(e) = self.render_extra(s.extra, cx) {
                     sec = sec.child(e);
@@ -1005,5 +1388,33 @@ mod tests {
         assert_eq!(decimals(0.01), 2);
         assert_eq!(decimals(1.0), 0);
         assert_eq!(decimals(0.1), 1);
+    }
+
+    #[test]
+    fn section_resets_restore_defaults() {
+        use aigle_doc::PhotoDoc;
+        let mut doc = PhotoDoc::new(EditParams::default()).unwrap();
+        let ops = vec![
+            ParamOp::set("raw.demosaic", "amaze"),
+            ParamOp::set("raw.highlight_recon", "off"),
+            ParamOp::set("raw.ca_correction", false),
+            ParamOp::set("profile.look", "abc"),
+            ParamOp::set("wb.mode", "custom"),
+            ParamOp::set("light.exposure", 1.0),
+        ];
+        doc.apply(EditCommand::user(doc.rev(), "x", ops), Interaction::Final)
+            .unwrap();
+        assert_eq!(doc.head().raw.demosaic, Demosaic::Amaze);
+        let paths: Vec<&str> = TOOL_GROUPS
+            .iter()
+            .flat_map(|t| t.sections)
+            .flat_map(|s| s.paths())
+            .collect();
+        doc.apply(
+            EditCommand::user(doc.rev(), "reset", resets(&paths)),
+            Interaction::Final,
+        )
+        .unwrap();
+        assert_eq!(**doc.head(), EditParams::default());
     }
 }

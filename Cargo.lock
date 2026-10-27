@@ -248,6 +248,7 @@ dependencies = [
  "aigle-engine-api",
  "aigle-exiv2-sys",
  "blake3",
+ "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tracing",

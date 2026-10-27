@@ -11,5 +11,5 @@ mod sidecar;
 mod writer;
 
 pub use scan::{PhotoEntry, scan};
-pub use sidecar::{Error, Loaded, PhotoMeta, SCHEMA_VERSION, Store, sidecar_candidates};
+pub use sidecar::{Error, Loaded, PhotoMeta, SCHEMA_VERSION, Snapshot, Store, sidecar_candidates};
 pub use writer::{WriteReport, Writer};
