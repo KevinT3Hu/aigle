@@ -272,6 +272,12 @@ pub enum DisplayProfileId {
     #[default]
     Srgb,
     DisplayP3,
+    /// Adobe RGB (1998). Output only.
+    AdobeRgb,
+    /// ProPhoto (ROMM) RGB. Output only; best with 16-bit formats.
+    ProPhoto,
+    /// ITU-R BT.2020 primaries with the BT.709 transfer curve. Output only.
+    Rec2020,
     /// Content hash of a display ICC profile registered with the engine.
     Icc(String),
 }

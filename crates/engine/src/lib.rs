@@ -43,6 +43,7 @@ mod lens;
 pub mod look;
 pub mod masks;
 pub mod noise;
+pub mod output_space;
 pub mod pipeline;
 pub mod profile;
 pub mod scheduler;

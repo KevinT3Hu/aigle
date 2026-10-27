@@ -297,12 +297,40 @@ typedef struct {
   const aigle_vips_exif *exif; // NULL = none
   const char *suffix;   // saver and options, e.g. ".jpg[Q=90,strip=false]"
   double sharpen_sigma, sharpen_amount; // unsharp mask on lightness after resizing; 0 = off
+  const void *icc_data; // ICC profile to embed instead of `icc`, or NULL
+  size_t icc_len;
+  double resize_gamma;  // > 0: resize linearised by this power instead of the sRGB curve
 } aigle_vips_save_opts;
+
+// `x` in [0, ∞) with negative ringing folded to 0: (x + |x|) / 2.
+static int clip_negative(VipsImage *in, VipsImage **out, VipsObject *ctx) {
+  VipsImage **t = (VipsImage **)vips_object_local_array(ctx, 2);
+  if (vips_abs(in, &t[0], NULL) || vips_add(in, t[0], &t[1], NULL) ||
+      vips_linear1(t[1], out, 0.5, 0.0, NULL))
+    return -1;
+  return 0;
+}
+
+// Resize `in` (uchar or ushort, encoded with a power-law curve of `gamma`) in linear light.
+static int resize_power(VipsImage *in, VipsImage **out, double hs, double vs, double gamma,
+                        int sixteen, VipsObject *ctx) {
+  VipsImage **t = (VipsImage **)vips_object_local_array(ctx, 6);
+  double max = sixteen ? 65535.0 : 255.0;
+  if (vips_linear1(in, &t[0], 1.0 / max, 0.0, NULL) ||
+      vips_math2_const1(t[0], &t[1], VIPS_OPERATION_MATH2_POW, gamma, NULL) ||
+      vips_resize(t[1], &t[2], hs, "vscale", vs, "kernel", VIPS_KERNEL_LANCZOS3, NULL) ||
+      clip_negative(t[2], &t[3], ctx) ||
+      vips_math2_const1(t[3], &t[4], VIPS_OPERATION_MATH2_POW, 1.0 / gamma, NULL) ||
+      vips_linear1(t[4], &t[5], max, 0.5, NULL) ||
+      vips_cast(t[5], out, sixteen ? VIPS_FORMAT_USHORT : VIPS_FORMAT_UCHAR, NULL))
+    return -1;
+  return 0;
+}
 
 // Build the output image (a pipeline over `fill`) into `*out`; objects owned by `ctx`.
 static int build(const aigle_vips_save_opts *o, aigle_vips_fill_fn fill, void *user, VipsObject *ctx,
                  VipsImage **out) {
-  VipsImage **t = (VipsImage **)vips_object_local_array(ctx, 7);
+  VipsImage **t = (VipsImage **)vips_object_local_array(ctx, 8);
   gen_ctx *c = vips_malloc(ctx, sizeof(gen_ctx));
   c->fill = fill;
   c->user = user;
@@ -315,13 +343,21 @@ static int build(const aigle_vips_save_opts *o, aigle_vips_fill_fn fill, void *u
     return fail();
   VipsImage *im = t[0];
   if (o->out_width != o->width || o->out_height != o->height) {
-    // Resize in linear light; the sRGB transfer is shared by sRGB and Display P3.
     double hs = (double)o->out_width / o->width, vs = (double)o->out_height / o->height;
-    if (vips_colourspace(im, &t[1], VIPS_INTERPRETATION_scRGB, NULL) ||
-        vips_resize(t[1], &t[2], hs, "vscale", vs, "kernel", VIPS_KERNEL_LANCZOS3, NULL) ||
-        vips_colourspace(t[2], &t[3], interp, NULL))
-      return fail();
-    im = t[3];
+    if (o->resize_gamma > 0) {
+      if (resize_power(im, &t[3], hs, vs, o->resize_gamma, o->sixteen_bit, ctx))
+        return fail();
+      if (vips_copy(t[3], &t[7], "interpretation", interp, NULL))
+        return fail();
+      im = t[7];
+    } else {
+      // Resize in linear light; the sRGB transfer is shared by sRGB and Display P3.
+      if (vips_colourspace(im, &t[1], VIPS_INTERPRETATION_scRGB, NULL) ||
+          vips_resize(t[1], &t[2], hs, "vscale", vs, "kernel", VIPS_KERNEL_LANCZOS3, NULL) ||
+          vips_colourspace(t[2], &t[3], interp, NULL))
+        return fail();
+      im = t[3];
+    }
   }
   if (o->sharpen_sigma > 0) {
     // Flat areas (m1 = 0) stay untouched; sharpening works on L and returns to `interp`.
@@ -334,7 +370,9 @@ static int build(const aigle_vips_save_opts *o, aigle_vips_fill_fn fill, void *u
   if (vips_copy(im, &t[4], NULL))
     return fail();
   im = t[4];
-  if (o->icc) {
+  if (o->icc_data && o->icc_len) {
+    vips_image_set_blob_copy(im, VIPS_META_ICC_NAME, o->icc_data, o->icc_len);
+  } else if (o->icc) {
     VipsBlob *blob = NULL;
     if (vips_profile_load(o->icc, &blob, NULL))
       return fail();

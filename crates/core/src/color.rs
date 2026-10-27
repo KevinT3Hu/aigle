@@ -97,6 +97,44 @@ pub const CAT16: Mat3 = [
 /// D65 white point chromaticity.
 pub const D65_XY: (f64, f64) = (0.3127, 0.3290);
 
+/// ICC PCS illuminant (D50) chromaticity, as XYZ (0.9642, 1, 0.8249).
+pub const D50_XY: (f64, f64) = (0.3457, 0.3585);
+
+/// Bradford cone response matrix (Lam 1985), the ICC chromatic adaptation.
+pub const BRADFORD: Mat3 = [
+    [0.8951, 0.2664, -0.1614],
+    [-0.7502, 1.7135, 0.0367],
+    [0.0389, -0.0685, 1.0296],
+];
+
+/// Bradford adaptation from white `src` to white `dst` (XYZ).
+pub fn bradford(src: [f64; 3], dst: [f64; 3]) -> Mat3 {
+    let ls = mul_vec(&BRADFORD, src);
+    let ld = mul_vec(&BRADFORD, dst);
+    let gain = diag([ld[0] / ls[0], ld[1] / ls[1], ld[2] / ls[2]]);
+    let inv = invert(&BRADFORD).expect("Bradford invertible");
+    mul(&inv, &mul(&gain, &BRADFORD))
+}
+
+/// Linear Adobe RGB (1998) → XYZ (D65).
+pub fn adobe_rgb_to_xyz() -> Mat3 {
+    primaries_to_xyz((0.64, 0.33), (0.21, 0.71), (0.15, 0.06), D65_XY)
+}
+
+/// Linear ProPhoto (ROMM) RGB → XYZ relative to its native D50 white.
+pub fn prophoto_to_xyz_d50() -> Mat3 {
+    primaries_to_xyz((0.7347, 0.2653), (0.1596, 0.8404), (0.0366, 0.0001), D50_XY)
+}
+
+/// Linear ProPhoto RGB → XYZ (D65): native matrix followed by Bradford D50 → D65, so
+/// ProPhoto white maps to D65 like the other spaces.
+pub fn prophoto_to_xyz() -> Mat3 {
+    mul(
+        &bradford(xy_to_xyz(D50_XY.0, D50_XY.1), xy_to_xyz(D65_XY.0, D65_XY.1)),
+        &prophoto_to_xyz_d50(),
+    )
+}
+
 /// Rec.2020 luminance weights.
 pub const REC2020_LUMA: [f64; 3] = [0.2627, 0.6780, 0.0593];
 
@@ -340,6 +378,31 @@ mod tests {
                 assert!(approx(srgb[i][j], SRGB_TO_XYZ[i][j], 1e-4));
             }
         }
+    }
+
+    #[test]
+    fn wide_gamut_spaces() {
+        // Published Adobe RGB (1998) matrix.
+        let a = adobe_rgb_to_xyz();
+        let want = [
+            [0.5767, 0.1856, 0.1882],
+            [0.2973, 0.6274, 0.0753],
+            [0.0270, 0.0707, 0.9911],
+        ];
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(approx(a[i][j], want[i][j], 1e-3), "{a:?}");
+            }
+        }
+        // ProPhoto white is D50 natively and D65 after adaptation.
+        let w50 = xyz_to_xy(mul_vec(&prophoto_to_xyz_d50(), [1.0; 3]));
+        assert!(approx(w50.0, D50_XY.0, 1e-4) && approx(w50.1, D50_XY.1, 1e-4));
+        let w65 = xyz_to_xy(mul_vec(&prophoto_to_xyz(), [1.0; 3]));
+        assert!(approx(w65.0, D65_XY.0, 1e-4) && approx(w65.1, D65_XY.1, 1e-4));
+        // Bradford D65 → D50 matches the ICC-published matrix.
+        let b = bradford(xy_to_xyz(D65_XY.0, D65_XY.1), xy_to_xyz(D50_XY.0, D50_XY.1));
+        assert!(approx(b[0][0], 1.0479, 2e-3) && approx(b[0][1], 0.0229, 2e-3));
+        assert!(approx(b[2][2], 0.7521, 2e-3));
     }
 
     #[test]

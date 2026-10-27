@@ -389,6 +389,68 @@ fn offscreen_analyze_sample() {
 }
 
 #[test]
+fn wide_gamut_exports_decode_like_srgb() {
+    let e = engine();
+    let dir = std::env::temp_dir().join(format!("aigle-wide-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut p = EditParams::default();
+    p.presence.saturation = -40.0;
+    let p = Arc::new(p);
+    // Resized exports exercise the sRGB-curve and power-curve linear-light resizes.
+    let decode = |output: DisplayProfileId, format: EncodedFormat| {
+        let path = dir.join(format!(
+            "{output:?}.{}",
+            if matches!(format, EncodedFormat::Tiff { .. }) {
+                "tif"
+            } else {
+                "jpg"
+            }
+        ));
+        e.export(
+            synthetic(1200, 800),
+            p.clone(),
+            ExportOptions {
+                path: path.clone(),
+                format,
+                long_edge: Some(300),
+                output,
+                ..Default::default()
+            },
+        )
+        .wait()
+        .unwrap();
+        let (im, h) = aigle_vips_sys::Image::open(&path).unwrap();
+        assert!(h.has_icc != 0, "{path:?} has no ICC profile");
+        assert_eq!((h.width, h.height), (300, 200));
+        let mut xyz = vec![0f32; 300 * 200 * 3];
+        im.decode_xyz(&h, &mut xyz, &|| false).unwrap();
+        xyz
+    };
+    let jpeg = EncodedFormat::Jpeg { quality: 98 };
+    let reference = decode(DisplayProfileId::Srgb, jpeg);
+    for (output, format) in [
+        (DisplayProfileId::AdobeRgb, jpeg),
+        (DisplayProfileId::Rec2020, jpeg),
+        (
+            DisplayProfileId::ProPhoto,
+            EncodedFormat::Tiff { sixteen_bit: true },
+        ),
+    ] {
+        let got = decode(output.clone(), format);
+        let n = got.len() as f64;
+        let mean_err = got
+            .iter()
+            .zip(&reference)
+            .map(|(a, b)| (a - b).abs() as f64)
+            .sum::<f64>()
+            / n;
+        eprintln!("{output:?}: mean |ΔXYZ| {mean_err:.3}");
+        assert!(mean_err < 0.8, "{output:?}: mean |ΔXYZ| {mean_err:.3}");
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn export_and_thumbnail() {
     let e = engine();
     let dir = std::env::temp_dir().join(format!("aigle-test-{}", std::process::id()));

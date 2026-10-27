@@ -228,15 +228,19 @@ impl EngineInner {
             true
         };
         let exif = encode::export_exif(src.info.camera.as_ref(), opts);
+        let icc = crate::output_space::icc(&opts.output);
+        let (icc_name, icc_data) = encode::icc_args(&icc);
         let vopts = aigle_vips_sys::SaveOpts {
             width: w,
             height: h,
             sixteen_bit: sixteen,
             out_size: (out.w, out.h),
-            icc: Some(encode::icc_name(&opts.output)),
+            icc: icc_name,
             exif: exif.as_ref(),
             suffix: &encode::suffix(opts.format),
             sharpen: encode::sharpen(opts.sharpening),
+            icc_data,
+            resize_gamma: crate::output_space::resize_gamma(&opts.output),
         };
         encode::save_streamed(&opts.path, &vopts, &fill).map_err(|e| {
             if cancel.is_cancelled() {

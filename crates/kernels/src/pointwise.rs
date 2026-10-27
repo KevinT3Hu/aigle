@@ -4,8 +4,8 @@
 //! transcendental setup once per render) and a per-pixel function.
 
 use crate::math::{
-    atan2, cbrt, clamp01, cos, exp2, luminance, mat3_mul, powf, sin, smoothstep, sqrt, srgb_eotf,
-    srgb_oetf,
+    atan2, cbrt, clamp01, cos, exp2, luminance, mat3_mul, output_oetf, powf, sin, smoothstep, sqrt,
+    srgb_eotf, srgb_oetf,
 };
 use crate::{Mat3f, Rgb};
 
@@ -377,13 +377,19 @@ pub fn d2_local(px: Rgb, p: &D2Params, lut: &[f32], dsat: f32, dhue: f32) -> Rgb
 pub struct E1Params {
     /// linear Rec.2020 → linear output primaries.
     pub matrix: Mat3f,
+    /// Output transfer function, `math::TRANSFER_*`.
+    pub transfer: u32,
 }
 
-/// Bounded linear Rec.2020 → encoded sRGB in [0, 1].
+/// Bounded linear Rec.2020 → encoded output values in [0, 1].
 #[inline]
 pub fn e1_srgb(px: Rgb, p: &E1Params) -> Rgb {
     let l = fit_output(mat3_mul(&p.matrix, px), luminance(px));
-    [srgb_oetf(l[0]), srgb_oetf(l[1]), srgb_oetf(l[2])]
+    [
+        output_oetf(l[0], p.transfer),
+        output_oetf(l[1], p.transfer),
+        output_oetf(l[2], p.transfer),
+    ]
 }
 
 #[cfg(test)]

@@ -164,19 +164,10 @@ pub fn look(p: &EditParams) -> (Option<Vec<f32>>, bool) {
     }
 }
 
-/// E1 matrix: linear Rec.2020 → linear display/output primaries (doc 02 §6.5). sRGB and
-/// Display P3 share the sRGB transfer curve, which the kernel applies. ICC profiles are
-/// resolved by the engine into a [`DisplayProfileId`] of one of these spaces plus a
-/// transform (see `crate::icc`); here an unresolved ICC id falls back to sRGB.
+/// E1 matrix: linear Rec.2020 → linear display/output primaries (doc 02 §6.5); see
+/// [`crate::output_space`]. An unresolved ICC id falls back to sRGB.
 pub fn e1_matrix(display: &DisplayProfileId) -> Mat3 {
-    let to_xyz = match display {
-        DisplayProfileId::DisplayP3 => color::DISPLAY_P3_TO_XYZ,
-        _ => color::SRGB_TO_XYZ,
-    };
-    color::mul(
-        &color::invert(&to_xyz).expect("invertible"),
-        &color::REC2020_TO_XYZ,
-    )
+    crate::output_space::e1_matrix(display)
 }
 
 // ---------------------------------------------------------------------------------------------

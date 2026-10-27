@@ -616,11 +616,22 @@ impl Render for ExportDialog {
                 vec![
                     (DisplayProfileId::Srgb, "sRGB"),
                     (DisplayProfileId::DisplayP3, "Display P3"),
+                    (DisplayProfileId::AdobeRgb, "Adobe RGB"),
+                    (DisplayProfileId::ProPhoto, "ProPhoto RGB"),
+                    (DisplayProfileId::Rec2020, "Rec. 2020"),
                 ],
                 s.output.clone(),
                 |s, v| s.output = v,
                 cx,
             ))
+            .when(
+                s.output == DisplayProfileId::ProPhoto && s.format != Format::Tiff16,
+                |d| {
+                    d.child(div().text_xs().text_color(muted).child(crate::i18n::t(
+                        "ProPhoto RGB 建议使用 16 位 TIFF，8 位输出可能出现色带。",
+                    )))
+                },
+            )
             .child(label(crate::i18n::t("输出锐化")))
             .child(self.choice(
                 "sharpen",

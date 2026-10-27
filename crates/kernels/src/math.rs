@@ -138,6 +138,59 @@ pub fn srgb_eotf(v: f32) -> f32 {
     }
 }
 
+/// Output transfer functions (`E1Params::transfer`).
+pub const TRANSFER_SRGB: u32 = 0;
+/// Adobe RGB (1998): pure power 563/256.
+pub const TRANSFER_ADOBE: u32 = 1;
+/// ROMM / ProPhoto RGB: 1.8 power with a linear toe below 1/512.
+pub const TRANSFER_PROPHOTO: u32 = 2;
+/// ITU-R BT.709 / BT.2020 camera curve.
+pub const TRANSFER_REC709: u32 = 3;
+
+/// Linear → encoded for output transfer `t`, `v` in [0, 1].
+#[inline]
+pub fn output_oetf(v: f32, t: u32) -> f32 {
+    if t == TRANSFER_ADOBE {
+        powf(v, 256.0 / 563.0)
+    } else if t == TRANSFER_PROPHOTO {
+        if v < 1.0 / 512.0 {
+            16.0 * v
+        } else {
+            powf(v, 1.0 / 1.8)
+        }
+    } else if t == TRANSFER_REC709 {
+        if v < 0.018 {
+            4.5 * v
+        } else {
+            1.099 * powf(v, 0.45) - 0.099
+        }
+    } else {
+        srgb_oetf(v)
+    }
+}
+
+/// Encoded → linear, the inverse of [`output_oetf`].
+#[inline]
+pub fn output_eotf(v: f32, t: u32) -> f32 {
+    if t == TRANSFER_ADOBE {
+        powf(v, 563.0 / 256.0)
+    } else if t == TRANSFER_PROPHOTO {
+        if v < 16.0 / 512.0 {
+            v / 16.0
+        } else {
+            powf(v, 1.8)
+        }
+    } else if t == TRANSFER_REC709 {
+        if v < 0.081 {
+            v / 4.5
+        } else {
+            powf((v + 0.099) / 1.099, 1.0 / 0.45)
+        }
+    } else {
+        srgb_eotf(v)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,6 +201,26 @@ mod tests {
             let v = i as f32 / 100.0;
             assert!((srgb_eotf(srgb_oetf(v)) - v).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn output_transfers_round_trip_and_are_continuous() {
+        for t in [
+            TRANSFER_SRGB,
+            TRANSFER_ADOBE,
+            TRANSFER_PROPHOTO,
+            TRANSFER_REC709,
+        ] {
+            for i in 0..=1000 {
+                let v = i as f32 / 1000.0;
+                let e = output_oetf(v, t);
+                assert!((output_eotf(e, t) - v).abs() < 2e-5, "t={t} v={v}");
+            }
+            assert!(output_oetf(0.0, t).abs() < 1e-7 && (output_oetf(1.0, t) - 1.0).abs() < 1e-4);
+        }
+        // Toe/power joins.
+        assert!((output_oetf(1.0 / 512.0 - 1e-7, TRANSFER_PROPHOTO) - 16.0 / 512.0).abs() < 1e-4);
+        assert!((output_oetf(0.018 + 1e-7, TRANSFER_REC709) - 0.081).abs() < 1e-3);
     }
 
     #[test]

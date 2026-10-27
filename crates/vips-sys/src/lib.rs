@@ -49,6 +49,9 @@ struct SaveOptsC {
     suffix: *const c_char,
     sharpen_sigma: f64,
     sharpen_amount: f64,
+    icc_data: *const c_void,
+    icc_len: usize,
+    resize_gamma: f64,
 }
 
 type FillFn =
@@ -259,6 +262,11 @@ pub struct SaveOpts<'a> {
     pub suffix: &'a str,
     /// Unsharp mask on lightness after resizing: `(sigma, amount)`.
     pub sharpen: Option<(f64, f64)>,
+    /// ICC profile bytes to embed; overrides `icc`.
+    pub icc_data: Option<&'a [u8]>,
+    /// `Some(γ)`: the samples are encoded with a power curve of γ (Adobe RGB, ProPhoto…),
+    /// so resizing linearises with it instead of the sRGB curve.
+    pub resize_gamma: Option<f64>,
 }
 
 /// Fills the RGB samples of rectangle (x, y, w, h); row `j` starts at byte `j · stride` of
@@ -340,6 +348,11 @@ fn with_opts<R>(o: &SaveOpts<'_>, f: impl FnOnce(&SaveOptsC) -> R) -> Result<R, 
         suffix,
         sharpen_sigma: o.sharpen.map_or(0.0, |s| s.0),
         sharpen_amount: o.sharpen.map_or(0.0, |s| s.1),
+        icc_data: o
+            .icc_data
+            .map_or(std::ptr::null(), |d| d.as_ptr() as *const c_void),
+        icc_len: o.icc_data.map_or(0, <[u8]>::len),
+        resize_gamma: o.resize_gamma.unwrap_or(0.0),
     };
     Ok(f(&c))
 }
@@ -453,6 +466,8 @@ mod tests {
             exif: None,
             suffix: ".png",
             sharpen: None,
+            icc_data: None,
+            resize_gamma: None,
         };
         let png = save_buffer(&opts, &f).unwrap();
         let (dw, dh, px) = decode_rgb8(&png).unwrap();
@@ -492,6 +507,8 @@ mod tests {
             exif: None,
             suffix: ".png",
             sharpen: None,
+            icc_data: None,
+            resize_gamma: None,
         };
         let row = |o: &SaveOpts<'_>| {
             let (_, _, px) = decode_rgb8(&save_buffer(o, &f).unwrap()).unwrap();
@@ -539,6 +556,8 @@ mod tests {
             }),
             suffix: "[compression=deflate]",
             sharpen: None,
+            icc_data: None,
+            resize_gamma: None,
         };
         save_file(&opts, &f, &path).unwrap();
         let jpg = dir.join("white");
@@ -586,6 +605,8 @@ mod tests {
             exif: None,
             suffix: ".png",
             sharpen: None,
+            icc_data: None,
+            resize_gamma: None,
         };
         assert!(save_buffer(&opts, &|_, _, _, _, _, _| false).is_err());
     }

@@ -396,5 +396,9 @@
   "无法打开目录数据库，历史记录和虚拟副本不会保存：{e}": "Cannot open the catalog; history and virtual copies will not be saved: %{e}",
   "自动色调": "Auto Tone",
   "自动色调：分析失败": "Auto tone: analysis failed",
-  "自动色调：分析失败：{e}": "Auto tone: analysis failed: %{e}"
+  "自动色调：分析失败：{e}": "Auto tone: analysis failed: %{e}",
+  "ProPhoto RGB 建议使用 16 位 TIFF，8 位输出可能出现色带。": "ProPhoto RGB is best exported as 16-bit TIFF; 8-bit output may band.",
+  "Adobe RGB": "Adobe RGB",
+  "ProPhoto RGB": "ProPhoto RGB",
+  "Rec. 2020": "Rec. 2020"
 }

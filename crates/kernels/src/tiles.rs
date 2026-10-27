@@ -26,7 +26,7 @@ use crate::d3::{D3Params, d3};
 use crate::dither::{blue, quantize8};
 use crate::masks;
 use crate::math::exp2;
-use crate::math::{luminance, mat3_mul, srgb_oetf};
+use crate::math::{luminance, mat3_mul, output_oetf};
 use crate::pointwise::{
     C1Params, D1Params, D2Params, E1Params, c1_color, d1, d2_local, fit_output,
 };
@@ -385,7 +385,12 @@ fn encode_target(v: Rgb, e1p: &E1Params) -> (Rgb, u32) {
     let hi = l[0].max(l[1]).max(l[2]) >= 1.0;
     let lo = l[0].min(l[1]).min(l[2]) <= 0.0;
     let l = fit_output(l, luminance(v));
-    let e = [srgb_oetf(l[0]), srgb_oetf(l[1]), srgb_oetf(l[2])];
+    let t = e1p.transfer;
+    let e = [
+        output_oetf(l[0], t),
+        output_oetf(l[1], t),
+        output_oetf(l[2], t),
+    ];
     (
         e,
         if hi { CLIP_HIGH } else { 0 } + if lo { CLIP_LOW } else { 0 },
@@ -599,8 +604,9 @@ pub const C1_F32: usize = 6 + 9 + 8;
 pub const C1_U32: usize = 18;
 pub const OUT_F32: usize = 4 + 9 + 10 + 3 + 2 + 24 + 12 + 2 + 36;
 /// `[tile_w, tile_h, grid_x0, grid_y0, seed, curve, color, mixer_on, d3_active, d_fields,
-/// look_offset, full]`; `full`: f32 input and 16-bit output ([`encode_out16`], 2 words).
-pub const OUT_U32: usize = 12;
+/// look_offset, full, transfer]`; `full`: f32 input and 16-bit output ([`encode_out16`],
+/// 2 words); `transfer`: `E1Params::transfer`.
+pub const OUT_U32: usize = 13;
 
 /// Sequential writer/reader so that pack and unpack share one field order.
 struct W<'a> {
@@ -747,6 +753,7 @@ pub fn pack_out_u32(
         d_fields as u32,
         p.d2.look,
         full as u32,
+        p.e1.transfer,
     ]
 }
 
@@ -758,7 +765,10 @@ fn read_head(r: &mut R<'_>, up: &[u32]) -> (D1Params, E1Params, D3Params) {
         white: r.get(),
         blacks: r.get(),
     };
-    let e1 = E1Params { matrix: r.mat() };
+    let e1 = E1Params {
+        matrix: r.mat(),
+        transfer: up[12],
+    };
     let d3 = D3Params {
         active: up[8],
         cx: r.get(),
@@ -867,6 +877,7 @@ mod tests {
             d2,
             e1: E1Params {
                 matrix: [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]],
+                transfer: crate::math::TRANSFER_PROPHOTO,
             },
             d3: D3Params::new(-30.0, 40.0, 20.0, 60.0, 30.0, 50.0, 40.0, 0.5, 800.0, 600.0),
             d1_sliders: [10.0, -5.0, 3.0],

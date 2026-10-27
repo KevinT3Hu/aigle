@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use aigle_core::EditParams;
 use aigle_core::geometry::ImageRect;
 use aigle_engine_api::{
-    BackendKind, BackendPreference, Engine, EngineConfig, Frame, Interaction, LoadState, Session,
-    SourceRef, SyntheticPattern, ViewSpec, Viewport,
+    BackendKind, BackendPreference, DisplayProfileId, Engine, EngineConfig, Frame, Interaction,
+    LoadState, Session, SourceRef, SyntheticPattern, ViewSpec, Viewport,
 };
 
 mod common;
@@ -62,6 +62,17 @@ fn render(
     region: Option<ImageRect>,
     size: (u32, u32),
 ) -> Arc<Frame> {
+    render_in(e, src, params, region, size, Default::default())
+}
+
+fn render_in(
+    e: &Engine,
+    src: &SourceRef,
+    params: &EditParams,
+    region: Option<ImageRect>,
+    size: (u32, u32),
+    display: DisplayProfileId,
+) -> Arc<Frame> {
     let s = e.open(src.clone());
     wait_ready(&s);
     s.set_edits(
@@ -70,16 +81,18 @@ fn render(
         Interaction::Final,
     );
     let view = s.create_view(ViewSpec::fit(size.0, size.1));
-    if let Some(region) = region {
+    let fallback = ImageRect::new(0.0, 0.0, size.0 as f64, size.1 as f64);
+    if region.is_some() || display != DisplayProfileId::Srgb {
         view.set_viewport(
             Viewport {
-                region,
+                region: region.unwrap_or(fallback),
                 output_size: size,
-                display: Default::default(),
+                display: display.clone(),
             },
             Interaction::Final,
         );
     }
+    let region = region.or((display != DisplayProfileId::Srgb).then_some(fallback));
     let mut frames = view.frames();
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
@@ -446,6 +459,36 @@ fn gpu_matches_cpu_reference() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn gpu_matches_cpu_in_every_output_space() {
+    let Some(gpu) = gpu_engine() else { return };
+    let cpu = engine(BackendPreference::Cpu);
+    let src = SourceRef::Synthetic {
+        pattern: SyntheticPattern::ColorChart,
+        width: 1200,
+        height: 800,
+    };
+    let region = Some(ImageRect::new(250.0, 150.0, 600.0, 400.0));
+    for display in [
+        DisplayProfileId::DisplayP3,
+        DisplayProfileId::AdobeRgb,
+        DisplayProfileId::ProPhoto,
+        DisplayProfileId::Rec2020,
+    ] {
+        let a = render_in(&cpu, &src, &edited(), region, (600, 400), display.clone());
+        let b = render_in(&gpu, &src, &edited(), region, (600, 400), display.clone());
+        let (max, over, ..) = compare(&a, &b);
+        eprintln!("{display:?}: max {max} >1: {over:.1e}");
+        assert!(
+            max <= 2 && over <= 1e-5,
+            "{display:?}: code values differ by up to {max} ({over:.1e} > 1)"
+        );
+        // A different space renders different code values (the transfer and matrix are used).
+        let srgb = render(&cpu, &src, &edited(), region, (600, 400));
+        assert!(compare(&a, &srgb).0 > 4, "{display:?} looks like sRGB");
     }
 }
 

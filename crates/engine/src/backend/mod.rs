@@ -28,7 +28,7 @@ use std::sync::{Arc, OnceLock};
 use aigle_engine_api::{BackendKind, BackendPreference, EngineEvent, broadcast};
 use aigle_kernels::Rgb;
 use aigle_kernels::c2::{C2Params, FIELD_CH, FieldView};
-use aigle_kernels::pointwise::{C1Params, CURVE_N, D1Params, E1Params};
+use aigle_kernels::pointwise::{C1Params, CURVE_N, D1Params};
 use aigle_kernels::resample::{Rgb2D, lanczos_radius};
 use aigle_kernels::tiles::{self, ATLAS_TILE, Affine, OutParams};
 use half::f16;
@@ -1023,11 +1023,7 @@ fn self_test_out_params() -> OutParams {
     OutParams {
         d1: D1Params::new(25.0, -10.0, 5.0),
         d2,
-        e1: E1Params {
-            matrix: aigle_core::color::to_f32(&crate::pipeline::color::e1_matrix(
-                &Default::default(),
-            )),
-        },
+        e1: crate::output_space::e1_params(&Default::default()),
         d3: aigle_kernels::d3::D3Params::new(
             -40.0, 30.0, 20.0, 50.0, 40.0, 30.0, 60.0, 1.0, 600.0, 400.0,
         ),

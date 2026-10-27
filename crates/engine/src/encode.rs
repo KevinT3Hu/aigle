@@ -1,8 +1,9 @@
 //! Encoding and output-size resampling of rendered BGRA8 images.
 //! Encoding through libvips (doc 04 §4): in-memory encodes of rendered BGRA8 images and
 //! streamed saves, where libvips pulls the image strip by strip from a callback so that the
-//! whole output is never resident (doc 04 §6). Output ICC profiles (sRGB, Display P3) and
-//! EXIF are embedded.
+//! whole output is never resident (doc 04 §6). Output ICC profiles (sRGB, Display P3, and the
+//! generated Adobe RGB / ProPhoto / Rec.2020 profiles of `crate::output_space`) and EXIF are
+//! embedded.
 
 use std::path::Path;
 
@@ -12,6 +13,8 @@ use aigle_engine_api::{
 use aigle_kernels::math::{srgb_eotf, srgb_oetf};
 use aigle_vips_sys as vips;
 use rayon::prelude::*;
+
+use crate::output_space;
 
 /// Saver suffix with options for `fmt` (libvips syntax).
 pub fn suffix(fmt: EncodedFormat) -> String {
@@ -29,12 +32,11 @@ pub fn sixteen_bit(fmt: EncodedFormat) -> bool {
     matches!(fmt, EncodedFormat::Tiff { sixteen_bit: true })
 }
 
-/// libvips built-in ICC profile matching the output transform (E1).
-pub fn icc_name(d: &DisplayProfileId) -> &'static str {
-    match d {
-        DisplayProfileId::DisplayP3 => "p3",
-        // E1 renders registered display profiles as sRGB.
-        DisplayProfileId::Srgb | DisplayProfileId::Icc(_) => "srgb",
+/// The `icc` / `icc_data` fields of [`vips::SaveOpts`] for an output profile.
+pub fn icc_args(icc: &output_space::Icc) -> (Option<&'static str>, Option<&[u8]>) {
+    match icc {
+        output_space::Icc::Builtin(n) => (Some(n), None),
+        output_space::Icc::Data(d) => (None, Some(d)),
     }
 }
 
@@ -121,18 +123,22 @@ pub fn encode(
         }
         true
     };
+    let icc = output_space::icc(display);
+    let (name, data) = icc_args(&icc);
     let opts = vips::SaveOpts {
         width,
         height,
         sixteen_bit: false,
         out_size: (width, height),
-        icc: Some(icc_name(display)),
+        icc: name,
         exif,
         suffix: &suffix(match fmt {
             EncodedFormat::Tiff { .. } => EncodedFormat::Tiff { sixteen_bit: false },
             f => f,
         }),
         sharpen: None,
+        icc_data: data,
+        resize_gamma: None,
     };
     vips::save_buffer(&opts, &fill).map_err(|e| format!("encode: {e}"))
 }

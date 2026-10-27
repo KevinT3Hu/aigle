@@ -170,9 +170,7 @@ impl Prepared {
             d2,
             lut: Aux::new(aux),
             s_key: keys::s_key(&src.a_key, params),
-            e1: E1Params {
-                matrix: aigle_core::color::to_f32(&color::e1_matrix(display)),
-            },
+            e1: crate::output_space::e1_params(display),
             lens_ok,
             seed: u32::from_le_bytes(src.a_key.0[..4].try_into().expect("4 bytes")),
         }
