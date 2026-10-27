@@ -17,8 +17,19 @@ fn cache_dir() -> std::path::PathBuf {
     std::env::temp_dir().join(format!("aigle-test-cache-{}", std::process::id()))
 }
 
+/// Create an engine, one at a time. Engine creation compiles the GPU kernels; with a cold
+/// driver shader cache that takes ~13 s of several cores each, and the parallel test
+/// harness would otherwise run one compile per test at once, starving the renders of the
+/// tests already running past their deadlines. Serialised, the first compile fills the
+/// driver cache and later engines start in well under a second.
+fn create(cfg: EngineConfig) -> Engine {
+    static CREATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one_at_a_time = CREATE.lock().unwrap_or_else(|e| e.into_inner());
+    aigle_engine::create(cfg)
+}
+
 fn engine() -> Engine {
-    aigle_engine::create(EngineConfig {
+    create(EngineConfig {
         memory_budget: Some(1 << 30),
         cache_dir: Some(cache_dir()),
         ..Default::default()
@@ -203,16 +214,18 @@ fn histogram_is_of_the_whole_image_and_ignores_pan_and_zoom() {
     wait_frame(&mut frames, |f| f.quality != Quality::Draft);
     let h0 = wait_hist(&mut hist, |_| true);
 
-    // During a gesture the histogram follows without waiting for the settle timer.
+    // During a gesture the histogram follows without waiting for the settle timer: it is
+    // rendered at the small gesture size, which the settled path never produces. (Checked by
+    // size rather than elapsed time, which other load on the machine can stretch.)
+    let count = |h: &Histogram| h.luma.iter().map(|&c| c as u64).sum::<u64>();
     let mut p = EditParams::default();
     p.light.exposure = 1.0;
-    let t = Instant::now();
     s.set_edits(Revision(1), Arc::new(p.clone()), Interaction::Continuous);
     let h1 = wait_hist(&mut hist, |h| **h != *h0);
     assert!(
-        t.elapsed() < Duration::from_millis(150),
-        "{:?}",
-        t.elapsed()
+        count(&h1) <= 384 * 384,
+        "the first histogram after a continuous edit is not the 384 px gesture one ({} px)",
+        count(&h1)
     );
     assert!(mean_luma(&h1) > mean_luma(&h0));
     wait_frame(&mut frames, |f| {
@@ -220,7 +233,6 @@ fn histogram_is_of_the_whole_image_and_ignores_pan_and_zoom() {
     });
     std::thread::sleep(Duration::from_millis(100));
     // The settled histogram uses the full overview, larger than the gesture one.
-    let count = |h: &Histogram| h.luma.iter().map(|&c| c as u64).sum::<u64>();
     let settled = wait_hist(&mut hist, |h| count(h) > count(&h1));
 
     // Zoom and pan re-render the view but leave the histogram alone.
@@ -566,7 +578,7 @@ fn sixteen_bit_tiff_matches_8_bit_and_has_finer_steps() {
         height: 700,
     };
     for backend in [BackendPreference::Cpu, BackendPreference::Auto] {
-        let e = aigle_engine::create(EngineConfig {
+        let e = create(EngineConfig {
             memory_budget: Some(2 << 30),
             backend,
             ..Default::default()
@@ -1541,7 +1553,7 @@ fn spilled_source_renders_identically() {
     // memory-mapped files; the render must be bit-identical (deterministic CPU path).
     let dir = std::env::temp_dir().join(format!("aigle-spill-e2e-{}", std::process::id()));
     let render = |budget: u64| {
-        let e = aigle_engine::create(EngineConfig {
+        let e = create(EngineConfig {
             memory_budget: Some(budget),
             deterministic: true,
             cache_dir: Some(dir.clone()),
@@ -1580,7 +1592,7 @@ fn spilled_source_renders_identically() {
 fn interactive_renders_preempt_an_export() {
     // doc 05 §12 scenario "slider drag during export": the export yields at its chunk
     // boundaries, so edits stay responsive, and it still completes.
-    let e = aigle_engine::create(EngineConfig {
+    let e = create(EngineConfig {
         memory_budget: Some(4 << 30),
         ..Default::default()
     });
