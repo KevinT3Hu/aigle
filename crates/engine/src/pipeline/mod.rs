@@ -420,6 +420,16 @@ fn s_rois(
     let Some(r_key) = &prep.r_key else {
         return s_base(ctx, src, prep, level, rects, true);
     };
+    let view = ctx.view(src, level);
+    let (lw, lh) = (view.full_w, view.full_h);
+    let rt = retouch::Retouch::new(&prep.edit, &prep.level_map(level), level);
+    // Rectangles no spot or eye reaches are the S ROIs themselves.
+    let touched: Vec<bool> = rects.iter().map(|&r| rt.touches(r, lw, lh)).collect();
+    let plain: Vec<_> = (0..rects.len())
+        .filter(|&i| !touched[i])
+        .map(|i| rects[i])
+        .collect();
+    let mut plain = s_base(ctx, src, prep, level, &plain, true).into_iter();
     let full = ctx.full_at(level);
     let key = |r: &(u32, u32, u32, u32)| {
         KeyBuilder::new("Rroi")
@@ -434,15 +444,19 @@ fn s_rois(
     };
     let mut out: Vec<Option<Arc<SRoi>>> = rects
         .iter()
-        .map(|r| ctx.cache.get::<SRoi>(&key(r)))
+        .zip(&touched)
+        .map(|(r, &t)| {
+            if t {
+                ctx.cache.get::<SRoi>(&key(r))
+            } else {
+                plain.next()
+            }
+        })
         .collect();
     let miss: Vec<usize> = (0..rects.len()).filter(|&i| out[i].is_none()).collect();
     if miss.is_empty() {
         return out.into_iter().map(|o| o.expect("cached")).collect();
     }
-    let view = ctx.view(src, level);
-    let (lw, lh) = (view.full_w, view.full_h);
-    let rt = retouch::Retouch::new(&prep.edit, &prep.level_map(level), level);
     let mrects: Vec<_> = miss.iter().map(|&i| rects[i]).collect();
     let patches: Vec<Arc<retouch::Patch>> = rt
         .spots
@@ -1178,11 +1192,34 @@ fn compute_tiles(
             .iter()
             .map(|(g, w, h)| g.roi(*w, *h, lvl.0, lvl.1))
             .collect();
-        let s_on = prep.s_on();
-        let rois = if s_on {
-            s_rois(ctx, src, prep, level, &rects)
-        } else {
+        // Tiles read S-processed (and retouched) ROIs only where S ops run or retouching
+        // reaches them; the others sample the level directly.
+        let s_all = !prep.s.is_identity();
+        let rt = (!s_all && prep.r_key.is_some())
+            .then(|| retouch::Retouch::new(&prep.edit, &prep.level_map(level), level));
+        let roi_of: Vec<Option<usize>> = {
+            let mut n = 0;
+            rects
+                .iter()
+                .map(|&r| {
+                    let on = s_all || rt.as_ref().is_some_and(|t| t.touches(r, lvl.0, lvl.1));
+                    on.then(|| {
+                        n += 1;
+                        n - 1
+                    })
+                })
+                .collect()
+        };
+        let roi_rects: Vec<_> = rects
+            .iter()
+            .zip(&roi_of)
+            .filter(|(_, i)| i.is_some())
+            .map(|(r, _)| *r)
+            .collect();
+        let rois = if roi_rects.is_empty() {
             Vec::new()
+        } else {
+            s_rois(ctx, src, prep, level, &roi_rects)
         };
         let roi_dev: Vec<_> = rois
             .iter()
@@ -1205,8 +1242,8 @@ fn compute_tiles(
             .enumerate()
             .map(|(k, (geo, w, h))| {
                 let (w, h) = (*w, *h);
-                let (view, device_src, atlas) = if s_on {
-                    let r = &rois[k];
+                let (view, device_src, atlas) = if let Some(i) = roi_of[k] {
+                    let r = &rois[i];
                     let view = LevelView {
                         data: r.data.as_px(),
                         x0: r.x0,
@@ -1216,7 +1253,7 @@ fn compute_tiles(
                         full_w: lvl.0,
                         full_h: lvl.1,
                     };
-                    let dev = roi_dev[k].as_deref().map(|buf| DeviceSrc {
+                    let dev = roi_dev[i].as_deref().map(|buf| DeviceSrc {
                         buf,
                         x0: r.x0,
                         y0: r.y0,

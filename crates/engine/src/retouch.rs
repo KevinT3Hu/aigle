@@ -21,6 +21,7 @@ use aigle_core::geometry::Orientation;
 use aigle_core::masks::Pt;
 use aigle_core::retouch::SpotMode;
 use aigle_kernels::Rgb;
+use rayon::prelude::*;
 
 use crate::backend::{Px, PxVec};
 use crate::masks::LevelMap;
@@ -134,6 +135,19 @@ impl Retouch {
         self.spots.is_empty() && self.eyes.is_empty()
     }
 
+    /// Whether any spot or eye changes pixels of rectangle `r` of the `lw × lh` level.
+    pub fn touches(&self, r: Rect, lw: u32, lh: u32) -> bool {
+        self.spots
+            .iter()
+            .filter_map(|s| s.rect(lw, lh))
+            .chain(
+                self.eyes
+                    .iter()
+                    .filter_map(|e| clip(disc_rect(e.center, e.radius, 0.0), lw, lh)),
+            )
+            .any(|a| intersects(a, r))
+    }
+
     /// Red-eye correction of `data`, the pixels of level rectangle `r`.
     pub fn apply_eyes(&self, r: Rect, data: &mut PxVec) {
         for e in &self.eyes {
@@ -141,21 +155,26 @@ impl Retouch {
                 continue;
             };
             let inner = e.radius * (1.0 - EYE_FEATHER);
-            for y in y0..y1 {
-                for x in x0..x1 {
+            let px = data.as_px();
+            let w = (x1 - x0) as usize;
+            let fixed: Vec<(usize, Rgb)> = (0..w * (y1 - y0) as usize)
+                .into_par_iter()
+                .filter_map(|k| {
+                    let (x, y) = (x0 + (k % w) as u32, y0 + (k / w) as u32);
                     let d = dist((x as f64 + 0.5, y as f64 + 0.5), e.center);
                     let edge = ramp(d, inner, e.radius);
                     if edge <= 0.0 {
-                        continue;
+                        return None;
                     }
                     let i = ((y - r.1) * r.2 + x - r.0) as usize;
-                    let p = data.as_px().get(i);
+                    let p = px.get(i);
                     let (fixed, m) = e.correct(p);
                     let a = m * edge;
-                    if a > 0.0 {
-                        data.set(i, std::array::from_fn(|c| p[c] + (fixed[c] - p[c]) * a));
-                    }
-                }
+                    (a > 0.0).then(|| (i, std::array::from_fn(|c| p[c] + (fixed[c] - p[c]) * a)))
+                })
+                .collect();
+            for (i, v) in fixed {
+                data.set(i, v);
             }
         }
     }
@@ -201,16 +220,14 @@ impl LevelSpot {
         let (x0, y0, w, h) = rect;
         let (dx, dy) = (self.source.0 - self.target.0, self.source.1 - self.target.1);
         let membrane = self.heal.then(|| Membrane::new(self, rect, target, source));
-        let mut rgb = Vec::with_capacity((w * h) as usize);
-        let mut alpha = Vec::with_capacity((w * h) as usize);
-        for y in y0..y0 + h {
-            for x in x0..x0 + w {
+        let (rgb, alpha) = (0..w as usize * h as usize)
+            .into_par_iter()
+            .map(|k| {
+                let (x, y) = (x0 + (k % w as usize) as u32, y0 + (k / w as usize) as u32);
                 let c = (x as f64 + 0.5, y as f64 + 0.5);
                 let a = ramp(dist(c, self.target), self.inner, self.radius) * self.opacity;
                 if a <= 0.0 {
-                    rgb.push([0.0; 3]);
-                    alpha.push(0.0);
-                    continue;
+                    return ([0.0; 3], 0.0);
                 }
                 let s = source.sample(c.0 + dx, c.1 + dy);
                 let v = match &membrane {
@@ -220,10 +237,9 @@ impl LevelSpot {
                     }
                     None => s,
                 };
-                rgb.push(v);
-                alpha.push(a);
-            }
-        }
+                (v, a)
+            })
+            .unzip();
         Patch { rect, rgb, alpha }
     }
 }
@@ -351,9 +367,10 @@ impl Membrane {
         let (x0, y0) = (rect.0 as f64 + 0.5, rect.1 as f64 + 0.5);
         let nx = ((rect.2 as f64 - 1.0) / step).ceil() as usize + 2;
         let ny = ((rect.3 as f64 - 1.0) / step).ceil() as usize + 2;
-        let mut nodes = Vec::with_capacity(nx * ny);
-        for j in 0..ny {
-            for i in 0..nx {
+        let nodes = (0..nx * ny)
+            .into_par_iter()
+            .map(|n| {
+                let (i, j) = (n % nx, n / nx);
                 let (mut dx, mut dy) = (
                     x0 + i as f64 * step - s.target.0,
                     y0 + j as f64 * step - s.target.1,
@@ -374,9 +391,9 @@ impl Membrane {
                         acc[k] += w * d[k];
                     }
                 }
-                nodes.push(acc.map(|v| (v / wsum) as f32));
-            }
-        }
+                acc.map(|v| (v / wsum) as f32)
+            })
+            .collect();
         Membrane {
             x0,
             y0,
@@ -590,6 +607,25 @@ mod tests {
 
     fn pt(x: f32, y: f32) -> Pt {
         Pt { x, y }
+    }
+
+    #[test]
+    fn touches_only_rects_the_discs_reach() {
+        let map = LevelMap::new(Size::new(400, 200), Orientation::default(), 0);
+        let mut p = EditParams::default();
+        p.spots.push(Spot::new(
+            SpotMode::Heal,
+            pt(0.25, 0.5),
+            pt(0.75, 0.5),
+            10.0 / 400.0,
+        ));
+        p.red_eye.push(RedEye::new(pt(0.9, 0.1), 5.0 / 400.0));
+        let rt = Retouch::new(&p, &map, 0);
+        assert!(rt.touches((95, 95, 10, 10), 400, 200));
+        assert!(rt.touches((355, 15, 10, 10), 400, 200));
+        // The spot's source is read, not changed.
+        assert!(!rt.touches((295, 95, 10, 10), 400, 200));
+        assert!(!rt.touches((0, 0, 50, 50), 400, 200));
     }
 
     #[test]

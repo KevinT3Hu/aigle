@@ -9,6 +9,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use aigle_core::geometry::ImageRect;
+use aigle_core::masks::Pt;
+use aigle_core::retouch::{Spot, SpotMode};
 use aigle_core::{EditParams, Revision};
 use aigle_engine_api::{
     BackendPreference, EngineConfig, Interaction, LoadState, Quality, SourceRef, SyntheticPattern,
@@ -93,6 +95,33 @@ fn main() {
         });
         run("luma NR (S + C1 + output)", &|p, i| {
             p.detail.noise.luma = 10.0 * (i + 1) as f32
+        });
+        let s_off = |p: &mut EditParams| {
+            p.detail.sharpen.amount = 0.0;
+            p.detail.noise.luma = 0.0;
+            p.detail.noise.chroma = 0.0;
+            p.presence.texture = 0.0;
+        };
+        let spot = |x: f32, r: f32| {
+            Spot::new(
+                SpotMode::Heal,
+                Pt { x, y: 0.35 },
+                Pt { x: x + 0.1, y: 0.4 },
+                r,
+            )
+        };
+        run("exposure, S off", &|p, i| {
+            s_off(p);
+            p.light.exposure = 0.1 * (i + 1) as f32
+        });
+        run("exposure, S off, 3 spots", &|p, i| {
+            s_off(p);
+            p.spots = vec![spot(0.25, 0.01), spot(0.35, 0.01), spot(0.45, 0.01)];
+            p.light.exposure = 0.1 * (i + 1) as f32
+        });
+        run("move a large heal spot", &|p, i| {
+            s_off(p);
+            p.spots = vec![spot(0.3 + 0.01 * i as f32, 0.04)];
         });
     }
 }
