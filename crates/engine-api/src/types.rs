@@ -434,13 +434,44 @@ impl Default for OffscreenOpts {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Sharpening for the output medium, applied after resizing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum OutputSharpening {
+    #[default]
+    Off,
+    Low,
+    Standard,
+    High,
+}
+
+/// Which metadata an export carries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MetadataPolicy {
+    /// Camera, lens, exposure, capture date, artist and copyright.
+    #[default]
+    All,
+    /// Artist and copyright only.
+    CopyrightOnly,
+    /// No EXIF at all (the colour profile is still embedded).
+    Strip,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ExportOptions {
     pub path: PathBuf,
     pub format: EncodedFormat,
     /// Resize after a full-resolution render (doc 02 §5.6); `None` = full size.
     pub long_edge: Option<u32>,
     pub output: DisplayProfileId,
+    #[serde(default)]
+    pub sharpening: OutputSharpening,
+    #[serde(default)]
+    pub metadata: MetadataPolicy,
+    /// Replace the source's artist / copyright when set (ignored with `Strip`).
+    #[serde(default)]
+    pub artist: Option<String>,
+    #[serde(default)]
+    pub copyright: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -160,6 +160,98 @@ pub struct HistoryItem {
     pub applied: bool,
 }
 
+/// Entries kept when history is saved; older applied entries are dropped first.
+pub const MAX_SAVED_ENTRIES: usize = 200;
+
+/// Label of the entry that reconciles saved history with edits changed elsewhere.
+pub const EXTERNAL_LABEL: &str = "外部修改";
+
+/// A document's history in storable form.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SavedHistory {
+    /// `states[0]` is the state before the first entry, `states[i]` the one after entry `i`.
+    pub states: Vec<EditParams>,
+    pub entries: Vec<SavedEntry>,
+    /// Number of applied entries.
+    pub position: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SavedEntry {
+    pub label: String,
+    pub origin: Origin,
+    pub paths: BTreeSet<String>,
+}
+
+impl SavedHistory {
+    fn valid(&self) -> bool {
+        self.states.len() == self.entries.len() + 1 && self.position <= self.entries.len()
+    }
+
+    /// The head the history ends at.
+    pub fn head(&self) -> Option<&EditParams> {
+        self.valid().then(|| &self.states[self.position])
+    }
+
+    /// Record a change to `after` made without opening the photo: undone entries are
+    /// dropped, like a new edit would.
+    pub fn push(&mut self, label: impl Into<String>, origin: Origin, after: EditParams) {
+        if !self.valid() {
+            return;
+        }
+        self.entries.truncate(self.position);
+        self.states.truncate(self.position + 1);
+        let before = &self.states[self.position];
+        if *before == after {
+            return;
+        }
+        self.entries.push(SavedEntry {
+            label: label.into(),
+            origin,
+            paths: changed_fields(before, &after),
+        });
+        self.states.push(after);
+        self.position += 1;
+        self.trim();
+    }
+
+    /// History starting from `initial` with no entries.
+    pub fn new(initial: EditParams) -> SavedHistory {
+        SavedHistory {
+            states: vec![initial],
+            entries: Vec::new(),
+            position: 0,
+        }
+    }
+
+    fn trim(&mut self) {
+        let drop = self
+            .entries
+            .len()
+            .saturating_sub(MAX_SAVED_ENTRIES)
+            .min(self.position);
+        if drop > 0 {
+            self.entries.drain(..drop);
+            self.states.drain(..drop);
+            self.position -= drop;
+        }
+    }
+}
+
+/// Top-level `EditParams` fields that differ between `a` and `b`.
+fn changed_fields(a: &EditParams, b: &EditParams) -> BTreeSet<String> {
+    let (Ok(Value::Object(a)), Ok(Value::Object(b))) =
+        (serde_json::to_value(a), serde_json::to_value(b))
+    else {
+        return [String::new()].into_iter().collect();
+    };
+    a.keys()
+        .chain(b.keys())
+        .filter(|k| a.get(*k) != b.get(*k))
+        .cloned()
+        .collect()
+}
+
 /// Edit state of one open photo.
 pub struct PhotoDoc {
     head: Arc<EditParams>,
@@ -181,6 +273,82 @@ impl PhotoDoc {
             redo: Vec::new(),
             session: None,
         })
+    }
+
+    /// Open with `initial` (the stored edits) and the history saved for it. When the saved
+    /// history ends elsewhere, the edits changed outside this document: undone entries are
+    /// dropped and an [`Origin::ExternalReload`] entry leads to `initial`. Invalid history
+    /// is ignored.
+    pub fn restore(initial: EditParams, saved: SavedHistory) -> Result<PhotoDoc, ParamsError> {
+        let mut doc = PhotoDoc::new(initial)?;
+        if !saved.valid() {
+            return Ok(doc);
+        }
+        let SavedHistory {
+            states,
+            mut entries,
+            position,
+        } = saved;
+        let mut states: Vec<Arc<EditParams>> = states
+            .into_iter()
+            .map(|mut s| s.sanitize().map(|_| Arc::new(s)))
+            .collect::<Result<_, _>>()
+            .unwrap_or_default();
+        if states.is_empty() {
+            return Ok(doc);
+        }
+        let mut position = position;
+        if *states[position] != *doc.head {
+            entries.truncate(position);
+            states.truncate(position + 1);
+            entries.push(SavedEntry {
+                label: EXTERNAL_LABEL.into(),
+                origin: Origin::ExternalReload,
+                paths: changed_fields(&states[position], &doc.head),
+            });
+            states.push(doc.head.clone());
+            position += 1;
+        }
+        let mut all: Vec<Entry> = entries
+            .into_iter()
+            .enumerate()
+            .map(|(i, e)| Entry {
+                label: e.label,
+                origin: e.origin,
+                before: states[i].clone(),
+                after: states[i + 1].clone(),
+                paths: e.paths,
+                gesture: None,
+                adjustment: None,
+            })
+            .collect();
+        doc.redo = all.split_off(position);
+        doc.redo.reverse();
+        doc.undo = all;
+        doc.head = states[position].clone();
+        Ok(doc)
+    }
+
+    /// The history in storable form, trimmed to [`MAX_SAVED_ENTRIES`].
+    pub fn saved_history(&self) -> SavedHistory {
+        let ordered: Vec<&Entry> = self.undo.iter().chain(self.redo.iter().rev()).collect();
+        let first = ordered.first().map_or(&self.head, |e| &e.before);
+        let mut saved = SavedHistory {
+            states: std::iter::once((**first).clone())
+                .chain(ordered.iter().map(|e| (*e.after).clone()))
+                .collect(),
+            entries: ordered
+                .iter()
+                .map(|e| SavedEntry {
+                    label: e.label.clone(),
+                    origin: e.origin.clone(),
+                    paths: e.paths.clone(),
+                })
+                .collect(),
+            position: self.undo.len(),
+        };
+        saved.trim();
+        saved
     }
 
     pub fn head(&self) -> &Arc<EditParams> {
@@ -953,5 +1121,81 @@ mod tests {
         assert_eq!(**d.head(), p);
         d.undo();
         assert_eq!(d.head().masks.len(), 1);
+    }
+
+    fn set(d: &mut PhotoDoc, label: &str, path: &str, v: f64) {
+        d.apply(
+            EditCommand::user(d.rev(), label, vec![ParamOp::set(path, v)]),
+            Interaction::Final,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn saved_history_restores_entries_and_position() {
+        let mut d = doc();
+        set(&mut d, "Exposure", "light.exposure", 1.0);
+        set(&mut d, "Contrast", "light.contrast", 10.0);
+        set(&mut d, "Clarity", "presence.clarity", 20.0);
+        d.undo();
+        let saved: SavedHistory =
+            serde_json::from_str(&serde_json::to_string(&d.saved_history()).unwrap()).unwrap();
+        let mut r = PhotoDoc::restore((**d.head()).clone(), saved.clone()).unwrap();
+        assert_eq!(r.history(), d.history());
+        assert_eq!(r.position(), 2);
+        r.redo();
+        assert_eq!(r.head().presence.clarity, 20.0);
+        r.goto(0);
+        assert_eq!(**r.head(), EditParams::default());
+
+        // Edits changed elsewhere: redo is dropped and an external entry leads to them.
+        let mut changed = (**d.head()).clone();
+        changed.light.exposure = -1.0;
+        let r = PhotoDoc::restore(changed.clone(), saved).unwrap();
+        let h = r.history();
+        assert_eq!(h.len(), 3);
+        assert_eq!(h[2].origin, Origin::ExternalReload);
+        assert!(h.iter().all(|e| e.applied));
+        assert_eq!(**r.head(), changed);
+    }
+
+    #[test]
+    fn pushing_onto_saved_history() {
+        let mut d = doc();
+        set(&mut d, "Exposure", "light.exposure", 1.0);
+        set(&mut d, "Contrast", "light.contrast", 10.0);
+        d.undo();
+        let mut saved = d.saved_history();
+        let mut next = (**d.head()).clone();
+        next.presence.clarity = 5.0;
+        saved.push("Paste", Origin::User, next.clone());
+        assert_eq!((saved.entries.len(), saved.position), (2, 2));
+        assert_eq!(
+            saved.entries[1].paths,
+            ["presence".to_string()].into_iter().collect()
+        );
+        let r = PhotoDoc::restore(next.clone(), saved.clone()).unwrap();
+        assert_eq!(r.history().len(), 2);
+        assert_eq!(**r.head(), next);
+
+        let mut long = SavedHistory::new(EditParams::default());
+        for i in 0..MAX_SAVED_ENTRIES + 5 {
+            let mut p = EditParams::default();
+            p.light.exposure = (i + 1) as f32 * 0.01;
+            long.push("x", Origin::User, p);
+        }
+        assert_eq!(long.entries.len(), MAX_SAVED_ENTRIES);
+        assert!(long.head().is_some());
+    }
+
+    #[test]
+    fn invalid_saved_history_is_ignored() {
+        let bad = SavedHistory {
+            states: vec![],
+            entries: vec![],
+            position: 3,
+        };
+        let r = PhotoDoc::restore(EditParams::default(), bad).unwrap();
+        assert!(r.history().is_empty());
     }
 }

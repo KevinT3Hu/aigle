@@ -7,12 +7,13 @@ use aigle_core::geometry::{GeometryMap, ImagePoint, Orientation, Size};
 use aigle_core::masks::LocalAdjustment;
 use aigle_core::params::{Aspect, CropRect, GeometryParams};
 use aigle_core::{EditParams, MaskId};
-use aigle_doc::{CommandError, EditCommand, GestureId, ParamOp, PhotoDoc};
+use aigle_doc::{CommandError, EditCommand, GestureId, Origin, ParamOp, PhotoDoc, SavedHistory};
 use aigle_engine_api::{Engine, ImageInfo, Interaction, LoadState, Session, SourceRef};
-use aigle_library::Snapshot;
+use aigle_library::{PhotoKey, Snapshot};
 use gpui::{Context, EventEmitter, Task};
 
 use crate::crop::{self, Frame};
+use crate::library::CopyInfo;
 use crate::meta::FileFacts;
 use crate::tools::{NewMask, Reorient, reorient_ops};
 
@@ -33,6 +34,8 @@ pub struct Photo {
     pub name: String,
     /// The photo's file; `None` for generated images.
     pub path: Option<PathBuf>,
+    /// Set when this is a virtual copy of `path`.
+    pub copy: Option<CopyInfo>,
     pub source: SourceRef,
     pub file: FileFacts,
     pub engine: Engine,
@@ -100,29 +103,36 @@ pub fn crop_ops(c: &CropRect) -> Vec<ParamOp> {
 impl EventEmitter<PhotoEvent> for Photo {}
 
 impl Photo {
-    /// Open `source` with the edits `initial` and `snapshots` (from its sidecar).
+    /// Open `source` with the edits `initial`, `snapshots` and the saved `history` (from its
+    /// sidecar or virtual copy, and the catalog).
     pub fn open(
         engine: &Engine,
         source: SourceRef,
+        copy: Option<CopyInfo>,
         initial: EditParams,
         snapshots: Vec<Snapshot>,
+        history: Option<SavedHistory>,
         cx: &mut Context<Self>,
     ) -> Photo {
-        let name = match &source {
+        let file_name = match &source {
             SourceRef::File(p) => p
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             SourceRef::Synthetic { pattern, .. } => format!("{pattern:?}"),
         };
+        let name = match &copy {
+            Some(c) => crate::library::copy_display_name(&file_name, &c.name),
+            None => file_name.clone(),
+        };
         let file = match &source {
             SourceRef::File(p) => FileFacts {
-                name: name.clone(),
+                name: file_name,
                 path: p.parent().map(|d| d.display().to_string()),
                 bytes: std::fs::metadata(p).ok().map(|m| m.len()),
             },
             SourceRef::Synthetic { .. } => FileFacts {
-                name: name.clone(),
+                name: file_name,
                 ..Default::default()
             },
         };
@@ -131,7 +141,11 @@ impl Photo {
             SourceRef::Synthetic { .. } => None,
         };
         let session = engine.open(source.clone());
-        let mut doc = PhotoDoc::new(initial).unwrap_or_else(|e| {
+        let opened = match history {
+            Some(h) => PhotoDoc::restore(initial, h),
+            None => PhotoDoc::new(initial),
+        };
+        let mut doc = opened.unwrap_or_else(|e| {
             tracing::warn!("stored edits are invalid, opening unedited: {e}");
             PhotoDoc::new(EditParams::default()).expect("default params are valid")
         });
@@ -160,6 +174,7 @@ impl Photo {
         Photo {
             name,
             path,
+            copy,
             source,
             file,
             engine: engine.clone(),
@@ -177,6 +192,14 @@ impl Photo {
             pending_mask: None,
             brush: Brush::default(),
         }
+    }
+
+    /// The library key of the photo or copy; `None` for generated images.
+    pub fn key(&self) -> Option<PhotoKey> {
+        Some(PhotoKey {
+            path: self.path.clone()?,
+            copy: self.copy.as_ref().map(|c| c.id),
+        })
     }
 
     pub fn info(&self) -> Option<&Arc<ImageInfo>> {
@@ -236,6 +259,25 @@ impl Photo {
         let mut cmd = EditCommand::user(self.doc.rev(), label.as_ref(), ops);
         cmd.gesture = gesture;
         match self.edit(cmd, hint, cx) {
+            Ok(()) => true,
+            Err(e) => {
+                cx.emit(PhotoEvent::Notice(e.to_string()));
+                false
+            }
+        }
+    }
+
+    /// Commit `ops` as one undoable command from `origin` (paste, sync, presets).
+    pub fn apply_ops(
+        &mut self,
+        origin: Origin,
+        label: impl Into<String>,
+        ops: Vec<ParamOp>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mut cmd = EditCommand::user(self.doc.rev(), label, ops);
+        cmd.origin = origin;
+        match self.edit(cmd, Interaction::Final, cx) {
             Ok(()) => true,
             Err(e) => {
                 cx.emit(PhotoEvent::Notice(e.to_string()));

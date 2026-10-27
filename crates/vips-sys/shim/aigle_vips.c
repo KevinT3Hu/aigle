@@ -296,12 +296,13 @@ typedef struct {
   const char *icc;      // libvips built-in profile name ("srgb", "p3") or NULL
   const aigle_vips_exif *exif; // NULL = none
   const char *suffix;   // saver and options, e.g. ".jpg[Q=90,strip=false]"
+  double sharpen_sigma, sharpen_amount; // unsharp mask on lightness after resizing; 0 = off
 } aigle_vips_save_opts;
 
 // Build the output image (a pipeline over `fill`) into `*out`; objects owned by `ctx`.
 static int build(const aigle_vips_save_opts *o, aigle_vips_fill_fn fill, void *user, VipsObject *ctx,
                  VipsImage **out) {
-  VipsImage **t = (VipsImage **)vips_object_local_array(ctx, 5);
+  VipsImage **t = (VipsImage **)vips_object_local_array(ctx, 7);
   gen_ctx *c = vips_malloc(ctx, sizeof(gen_ctx));
   c->fill = fill;
   c->user = user;
@@ -321,6 +322,14 @@ static int build(const aigle_vips_save_opts *o, aigle_vips_fill_fn fill, void *u
         vips_colourspace(t[2], &t[3], interp, NULL))
       return fail();
     im = t[3];
+  }
+  if (o->sharpen_sigma > 0) {
+    // Flat areas (m1 = 0) stay untouched; sharpening works on L and returns to `interp`.
+    if (vips_sharpen(im, &t[5], "sigma", o->sharpen_sigma, "m1", 0.0, "m2", o->sharpen_amount,
+                     NULL) ||
+        vips_colourspace(t[5], &t[6], interp, NULL))
+      return fail();
+    im = t[6];
   }
   if (vips_copy(im, &t[4], NULL))
     return fail();

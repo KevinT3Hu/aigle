@@ -1,6 +1,6 @@
 [package]
 name = "aigle-library"
-description = "aigle folders and XMP sidecars: scanning, sidecar read/write, debounced saving"
+description = "aigle folders, XMP sidecars and the catalog: scanning, sidecar read/write, debounced saving, history and virtual copies"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,9 +8,12 @@ rust-version.workspace = true
 
 [dependencies]
 aigle-core.workspace = true
+aigle-doc.workspace = true
 aigle-engine-api.workspace = true
 aigle-exiv2-sys.workspace = true
 blake3.workspace = true
+parking_lot.workspace = true
+rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -47,6 +47,8 @@ struct SaveOptsC {
     icc: *const c_char,
     exif: *const ExifC,
     suffix: *const c_char,
+    sharpen_sigma: f64,
+    sharpen_amount: f64,
 }
 
 type FillFn =
@@ -255,6 +257,8 @@ pub struct SaveOpts<'a> {
     pub exif: Option<&'a Exif>,
     /// Saver suffix with options, e.g. `.jpg[Q=90]`, `.tif[compression=deflate]`.
     pub suffix: &'a str,
+    /// Unsharp mask on lightness after resizing: `(sigma, amount)`.
+    pub sharpen: Option<(f64, f64)>,
 }
 
 /// Fills the RGB samples of rectangle (x, y, w, h); row `j` starts at byte `j · stride` of
@@ -334,6 +338,8 @@ fn with_opts<R>(o: &SaveOpts<'_>, f: impl FnOnce(&SaveOptsC) -> R) -> Result<R, 
             .as_ref()
             .map_or(std::ptr::null(), |e| e as *const ExifC),
         suffix,
+        sharpen_sigma: o.sharpen.map_or(0.0, |s| s.0),
+        sharpen_amount: o.sharpen.map_or(0.0, |s| s.1),
     };
     Ok(f(&c))
 }
@@ -446,6 +452,7 @@ mod tests {
             icc: Some("srgb"),
             exif: None,
             suffix: ".png",
+            sharpen: None,
         };
         let png = save_buffer(&opts, &f).unwrap();
         let (dw, dh, px) = decode_rgb8(&png).unwrap();
@@ -462,6 +469,51 @@ mod tests {
         )
         .unwrap();
         assert_eq!(decode_rgb8(&small).unwrap().0, 150);
+    }
+
+    #[test]
+    fn sharpening_adds_contrast_at_edges() {
+        let (w, h) = (64u32, 8u32);
+        let f = |x: u32, _, rw: u32, rh: u32, out: &mut [u8], stride: usize| {
+            for j in 0..rh as usize {
+                for i in 0..rw as usize {
+                    let v = if x + i as u32 >= w / 2 { 160 } else { 90 };
+                    out[j * stride + i * 3..j * stride + i * 3 + 3].fill(v);
+                }
+            }
+            true
+        };
+        let opts = SaveOpts {
+            width: w,
+            height: h,
+            sixteen_bit: false,
+            out_size: (w, h),
+            icc: Some("srgb"),
+            exif: None,
+            suffix: ".png",
+            sharpen: None,
+        };
+        let row = |o: &SaveOpts<'_>| {
+            let (_, _, px) = decode_rgb8(&save_buffer(o, &f).unwrap()).unwrap();
+            px[(4 * w as usize) * 3..(5 * w as usize) * 3]
+                .chunks(3)
+                .map(|p| p[1])
+                .collect::<Vec<_>>()
+        };
+        let plain = row(&opts);
+        let sharp = row(&SaveOpts {
+            sharpen: Some((0.7, 3.0)),
+            ..opts
+        });
+        let c = w as usize / 2;
+        assert!(
+            sharp[c] > plain[c] && sharp[c - 1] < plain[c - 1],
+            "{sharp:?}"
+        );
+        assert_eq!(
+            (sharp[2], sharp[w as usize - 3]),
+            (plain[2], plain[w as usize - 3])
+        );
     }
 
     #[test]
@@ -486,6 +538,7 @@ mod tests {
                 ..Default::default()
             }),
             suffix: "[compression=deflate]",
+            sharpen: None,
         };
         save_file(&opts, &f, &path).unwrap();
         let jpg = dir.join("white");
@@ -532,6 +585,7 @@ mod tests {
             icc: None,
             exif: None,
             suffix: ".png",
+            sharpen: None,
         };
         assert!(save_buffer(&opts, &|_, _, _, _, _, _| false).is_err());
     }

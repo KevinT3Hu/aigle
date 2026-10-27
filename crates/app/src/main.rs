@@ -22,6 +22,7 @@ mod mask_panel;
 mod meta;
 mod panel;
 mod photo;
+mod presets;
 mod resources;
 mod tools;
 mod viewport;
@@ -37,6 +38,24 @@ use gpui::{
 use gpui_component::{Root, Theme, ThemeMode, TitleBar};
 
 use crate::workspace::Workspace;
+
+/// `$XDG_CONFIG_HOME/aigle`, else `~/.config/aigle`.
+pub fn config_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".config")))
+        .map(|p| p.join("aigle"))
+}
+
+/// `$XDG_DATA_HOME/aigle`, else `~/.local/share/aigle`: the catalog.
+pub fn data_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_DATA_HOME")
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share")))
+        .map(|p| p.join("aigle"))
+}
 
 fn source_from_args() -> Option<SourceRef> {
     let arg = std::env::args_os().nth(1)?;

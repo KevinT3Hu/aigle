@@ -91,11 +91,7 @@ fn history_label_in(lang: Language, label: &str) -> String {
 }
 
 fn preference_path() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".config")))
-        .map(|p| p.join("aigle/language"))
+    crate::config_dir().map(|p| p.join("language"))
 }
 
 pub fn init() {

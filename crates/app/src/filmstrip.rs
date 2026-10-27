@@ -73,8 +73,10 @@ impl Render for Filmstrip {
 
         let theme = cx.theme();
         let l = self.library.read(cx);
+        let multi = l.selection_len() > 1;
         let items = (first..last).map(|i| {
             let it = &l.items[i];
+            let picked = l.is_selected(i);
             let d = v_flex()
                 .id(SharedString::from(format!("strip-{i}")))
                 .flex_none()
@@ -83,9 +85,14 @@ impl Render for Filmstrip {
                 .p_1()
                 .gap_0p5()
                 .rounded_sm()
+                .border_1()
+                .border_color(gpui::transparent_black())
                 .cursor_pointer()
-                .when(selected == Some(i), |d| d.bg(theme.list_active))
-                .when(selected != Some(i), |d| d.hover(|d| d.bg(theme.list_hover)))
+                .when(picked, |d| d.bg(theme.list_active))
+                .when(multi && selected == Some(i), |d| {
+                    d.border_color(theme.primary)
+                })
+                .when(!picked, |d| d.hover(|d| d.bg(theme.list_hover)))
                 .child(
                     div()
                         .w_full()

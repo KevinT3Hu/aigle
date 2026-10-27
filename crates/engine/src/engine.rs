@@ -227,15 +227,16 @@ impl EngineInner {
             }
             true
         };
-        let exif = encode::exif_for(src.info.camera.as_ref());
+        let exif = encode::export_exif(src.info.camera.as_ref(), opts);
         let vopts = aigle_vips_sys::SaveOpts {
             width: w,
             height: h,
             sixteen_bit: sixteen,
             out_size: (out.w, out.h),
             icc: Some(encode::icc_name(&opts.output)),
-            exif: Some(&exif),
+            exif: exif.as_ref(),
             suffix: &encode::suffix(opts.format),
+            sharpen: encode::sharpen(opts.sharpening),
         };
         encode::save_streamed(&opts.path, &vopts, &fill).map_err(|e| {
             if cancel.is_cancelled() {

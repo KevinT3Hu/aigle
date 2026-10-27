@@ -16,12 +16,8 @@ struct ActiveKeymap(Bindings);
 impl Global for ActiveKeymap {}
 
 pub fn path() -> Result<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|p| !p.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".config")))
-        .context("Cannot find the user configuration directory")?;
-    Ok(base.join("aigle/keymap.json"))
+    let base = crate::config_dir().context("Cannot find the user configuration directory")?;
+    Ok(base.join("keymap.json"))
 }
 
 pub fn normalize(key: &str) -> Result<String> {

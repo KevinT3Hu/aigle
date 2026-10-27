@@ -403,6 +403,7 @@ fn export_and_thumbnail() {
                 format: EncodedFormat::default(),
                 long_edge: Some(400),
                 output: Default::default(),
+                ..Default::default()
             },
         )
         .wait()
@@ -480,6 +481,7 @@ fn export_to(
             format,
             long_edge: None,
             output,
+            ..Default::default()
         },
     )
     .wait()
@@ -1564,6 +1566,7 @@ fn interactive_renders_preempt_an_export() {
             format: EncodedFormat::Jpeg { quality: 90 },
             long_edge: None,
             output: Default::default(),
+            ..Default::default()
         },
     );
     std::thread::sleep(Duration::from_millis(200));

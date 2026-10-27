@@ -6,7 +6,9 @@
 
 use std::path::Path;
 
-use aigle_engine_api::{CameraInfo, DisplayProfileId, EncodedFormat};
+use aigle_engine_api::{
+    CameraInfo, DisplayProfileId, EncodedFormat, ExportOptions, MetadataPolicy, OutputSharpening,
+};
 use aigle_kernels::math::{srgb_eotf, srgb_oetf};
 use aigle_vips_sys as vips;
 use rayon::prelude::*;
@@ -60,6 +62,44 @@ pub fn exif_for(camera: Option<&CameraInfo>) -> vips::Exif {
     x
 }
 
+/// EXIF of an export from the source's camera data under `opts`' metadata policy; `None`
+/// writes no EXIF.
+pub fn export_exif(camera: Option<&CameraInfo>, opts: &ExportOptions) -> Option<vips::Exif> {
+    let mut x = match opts.metadata {
+        MetadataPolicy::Strip => return None,
+        MetadataPolicy::All => exif_for(camera),
+        MetadataPolicy::CopyrightOnly => {
+            let full = exif_for(camera);
+            vips::Exif {
+                software: full.software,
+                artist: full.artist,
+                copyright: full.copyright,
+                ..Default::default()
+            }
+        }
+    };
+    fn set(v: &Option<String>) -> Option<&str> {
+        v.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+    if let Some(a) = set(&opts.artist) {
+        x.artist = Some(a.to_owned());
+    }
+    if let Some(c) = set(&opts.copyright) {
+        x.copyright = Some(c.to_owned());
+    }
+    Some(x)
+}
+
+/// Unsharp-mask `(sigma, amount)` for an output sharpening strength.
+pub fn sharpen(s: OutputSharpening) -> Option<(f64, f64)> {
+    match s {
+        OutputSharpening::Off => None,
+        OutputSharpening::Low => Some((0.5, 1.0)),
+        OutputSharpening::Standard => Some((0.5, 2.0)),
+        OutputSharpening::High => Some((0.7, 3.0)),
+    }
+}
+
 /// Encode a BGRA8 image in memory.
 pub fn encode(
     width: u32,
@@ -92,6 +132,7 @@ pub fn encode(
             EncodedFormat::Tiff { .. } => EncodedFormat::Tiff { sixteen_bit: false },
             f => f,
         }),
+        sharpen: None,
     };
     vips::save_buffer(&opts, &fill).map_err(|e| format!("encode: {e}"))
 }
@@ -213,6 +254,29 @@ pub fn side_by_side(a: (u32, u32, &[u8]), b: (u32, u32, &[u8])) -> (u32, u32, Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_metadata_policy() {
+        let cam = CameraInfo {
+            make: "Nikon".into(),
+            model: "D3200".into(),
+            ..Default::default()
+        };
+        let mut opts = ExportOptions {
+            copyright: Some("© Me".into()),
+            artist: Some("  ".into()),
+            ..Default::default()
+        };
+        let all = export_exif(Some(&cam), &opts).unwrap();
+        assert_eq!(all.model.as_deref(), Some("D3200"));
+        assert_eq!(all.copyright.as_deref(), Some("© Me"));
+        assert_eq!(all.artist, None);
+        opts.metadata = MetadataPolicy::CopyrightOnly;
+        let some = export_exif(Some(&cam), &opts).unwrap();
+        assert_eq!((some.make, some.copyright.as_deref()), (None, Some("© Me")));
+        opts.metadata = MetadataPolicy::Strip;
+        assert_eq!(export_exif(Some(&cam), &opts), None);
+    }
 
     #[test]
     fn resize_preserves_flat_colour() {

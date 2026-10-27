@@ -90,7 +90,8 @@ pub fn thumb_or_placeholder(item: &Item, cx: &App) -> gpui::AnyElement {
     }
 }
 
-/// Select on click, open in develop after `clicks_to_open` clicks.
+/// Select on click (Ctrl adds or removes, Shift selects a range), open in develop after
+/// `clicks_to_open` plain clicks.
 pub fn on_pick(
     d: Stateful<Div>,
     lib: &Entity<Library>,
@@ -99,11 +100,17 @@ pub fn on_pick(
 ) -> Stateful<Div> {
     let lib = lib.clone();
     d.on_click(move |e, _, cx| {
-        let open = e.click_count() >= clicks_to_open;
+        let m = e.modifiers();
         lib.update(cx, |l, cx| {
-            l.select(index, cx);
-            if open {
-                cx.emit(LibraryEvent::Open(index));
+            if m.shift {
+                l.extend_select(index, cx);
+            } else if m.secondary() {
+                l.toggle_select(index, cx);
+            } else {
+                l.select(index, cx);
+                if e.click_count() >= clicks_to_open {
+                    cx.emit(LibraryEvent::Open(index));
+                }
             }
         });
     })
@@ -112,7 +119,7 @@ pub fn on_pick(
 fn cell(
     item: &Item,
     index: usize,
-    selected: bool,
+    (selected, primary): (bool, bool),
     lib: &Entity<Library>,
     cx: &App,
 ) -> Stateful<Div> {
@@ -124,8 +131,11 @@ fn cell(
         .p_2()
         .gap_1()
         .rounded_md()
+        .border_1()
+        .border_color(gpui::transparent_black())
         .cursor_pointer()
         .when(selected, |d| d.bg(theme.list_active))
+        .when(primary, |d| d.border_color(theme.primary))
         .when(!selected, |d| d.hover(|d| d.bg(theme.list_hover)))
         .child(
             div()
@@ -139,7 +149,7 @@ fn cell(
                 .truncate()
                 .text_xs()
                 .text_center()
-                .child(item.entry.name.clone()),
+                .child(item.name()),
         )
         .child(
             h_flex()
@@ -199,11 +209,14 @@ impl Render for Grid {
                         l.want(Consumer::Grid, range.start * cols..range.end * cols, cx)
                     });
                     let l = lib.read(cx);
+                    let multi = l.selection_len() > 1;
                     range
                         .map(|row| {
                             h_flex().px(px(PAD)).pb(px(GAP)).gap(px(GAP)).children(
-                                (row * cols..((row + 1) * cols).min(n))
-                                    .map(|i| cell(&l.items[i], i, l.selected == Some(i), &lib, cx)),
+                                (row * cols..((row + 1) * cols).min(n)).map(|i| {
+                                    let primary = multi && l.selected == Some(i);
+                                    cell(&l.items[i], i, (l.is_selected(i), primary), &lib, cx)
+                                }),
                             )
                         })
                         .collect::<Vec<_>>()

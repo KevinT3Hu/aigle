@@ -9,13 +9,17 @@ use std::sync::Arc;
 use aigle_core::EditParams;
 use aigle_doc::{ParamOp, value_at};
 use gpui::{
-    Context, EventEmitter, IntoElement, ParentElement, Render, SharedString, Styled, Window, div,
-    prelude::*, px,
+    Context, Entity, EventEmitter, IntoElement, ParentElement, Render, SharedString, Styled,
+    Subscription, Window, div, prelude::*, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{ActiveTheme, Selectable, Sizable, h_flex, v_flex};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum Group {
     Profile,
     WhiteBalance,
@@ -127,19 +131,63 @@ impl Clipboard {
 }
 
 pub enum CopyEvent {
-    /// The dialog closed; `Some` with the chosen groups when the user copied.
-    Done(Option<BTreeSet<Group>>),
+    /// The dialog closed; `Some` with the chosen groups (and the typed name, empty unless
+    /// creating a preset) when the user confirmed.
+    Done(Option<(BTreeSet<Group>, String)>),
+}
+
+/// What the group chooser is for.
+pub enum Purpose {
+    Copy,
+    /// Sync the primary photo's settings onto this many others.
+    Sync(usize),
+    Preset,
 }
 
 pub struct CopyDialog {
     groups: BTreeSet<Group>,
+    purpose: Purpose,
+    name: Option<Entity<InputState>>,
+    _sub: Option<Subscription>,
 }
 
 impl EventEmitter<CopyEvent> for CopyDialog {}
 
 impl CopyDialog {
-    pub fn new(groups: BTreeSet<Group>) -> CopyDialog {
-        CopyDialog { groups }
+    pub fn new(
+        groups: BTreeSet<Group>,
+        purpose: Purpose,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> CopyDialog {
+        let (name, sub) = if matches!(purpose, Purpose::Preset) {
+            let name =
+                cx.new(|cx| InputState::new(window, cx).placeholder(crate::i18n::t("预设名称")));
+            name.update(cx, |n, cx| n.focus(window, cx));
+            let sub = cx.subscribe(&name, |d, _, ev: &InputEvent, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    d.confirm(cx);
+                }
+            });
+            (Some(name), Some(sub))
+        } else {
+            (None, None)
+        };
+        CopyDialog {
+            groups,
+            purpose,
+            name,
+            _sub: sub,
+        }
+    }
+
+    fn confirm(&mut self, cx: &mut Context<Self>) {
+        let name = self
+            .name
+            .as_ref()
+            .map(|n| n.read(cx).value().trim().to_string())
+            .unwrap_or_default();
+        cx.emit(CopyEvent::Done(Some((self.groups.clone(), name))));
     }
 
     fn toggle(&mut self, g: Group, cx: &mut Context<Self>) {
@@ -173,6 +221,14 @@ impl Render for CopyDialog {
                     .selected(self.groups.contains(&g))
                     .on_click(cx.listener(move |d, _, _, cx| d.toggle(g, cx)))
             }));
+        let (title, confirm) = match self.purpose {
+            Purpose::Copy => (crate::i18n::t("拷贝设置"), crate::i18n::t("拷贝")),
+            Purpose::Sync(n) => (
+                rust_i18n::t!("将设置同步到另外 {} 张照片", arg0 = n).into_owned(),
+                crate::i18n::t("同步"),
+            ),
+            Purpose::Preset => (crate::i18n::t("新建预设"), crate::i18n::t("创建")),
+        };
         let card = v_flex()
             .id("copy-card")
             .w(px(440.0))
@@ -188,8 +244,9 @@ impl Render for CopyDialog {
                 div()
                     .text_base()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child(crate::i18n::t("拷贝设置")),
+                    .child(title),
             )
+            .when_some(self.name.as_ref(), |d, n| d.child(Input::new(n).small()))
             .child(groups)
             .child(
                 h_flex()
@@ -222,12 +279,10 @@ impl Render for CopyDialog {
                     )
                     .child(
                         Button::new("copy-go")
-                            .label(crate::i18n::t("拷贝"))
+                            .label(confirm)
                             .small()
                             .primary()
-                            .on_click(cx.listener(|d, _, _, cx| {
-                                cx.emit(CopyEvent::Done(Some(d.groups.clone())))
-                            })),
+                            .on_click(cx.listener(|d, _, _, cx| d.confirm(cx))),
                     ),
             );
         div()

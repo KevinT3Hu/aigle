@@ -4,14 +4,19 @@
 //! show; leaving a range drops its jobs, which cancels them in the engine. Thumbnails of
 //! edited photos follow the edits about a second after the last change.
 
+use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use aigle_core::EditParams;
+use aigle_doc::Origin;
 use aigle_engine_api::{Engine, Priority, SourceRef};
-use aigle_library::{PhotoEntry, PhotoMeta, Snapshot, Store, WriteReport, Writer};
+use aigle_library::{
+    Catalog, CopyId, PhotoEntry, PhotoKey, PhotoMeta, Snapshot, Store, VirtualCopy, WriteReport,
+    Writer,
+};
 use futures::StreamExt;
 use gpui::{AppContext, Context, EventEmitter, RenderImage, Task};
 
@@ -37,8 +42,17 @@ pub enum LibraryEvent {
     Notice(String),
 }
 
+/// A virtual copy shown in the library.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CopyInfo {
+    pub id: CopyId,
+    pub name: String,
+}
+
 pub struct Item {
     pub entry: PhotoEntry,
+    /// `Some` for a virtual copy of `entry`.
+    pub copy: Option<CopyInfo>,
     /// `None` until the sidecar has been read.
     pub meta: Option<PhotoMeta>,
     pub thumb: Option<Arc<RenderImage>>,
@@ -49,7 +63,47 @@ pub struct Item {
     failed_for: Option<Option<Arc<EditParams>>>,
 }
 
+/// `IMG_1 (Copy 1).CR3`: the photo's file name with the copy's name before the extension.
+pub fn copy_display_name(file_name: &str, copy: &str) -> String {
+    let p = Path::new(file_name);
+    let stem = p
+        .file_stem()
+        .map(|s| s.to_string_lossy())
+        .unwrap_or_default();
+    match p.extension() {
+        Some(ext) => format!("{stem} ({copy}).{}", ext.to_string_lossy()),
+        None => format!("{stem} ({copy})"),
+    }
+}
+
 impl Item {
+    fn new(entry: PhotoEntry, copy: Option<CopyInfo>, meta: Option<PhotoMeta>) -> Item {
+        Item {
+            entry,
+            copy,
+            shown: meta.as_ref().and_then(|m| m.edits.clone()).map(Arc::new),
+            meta,
+            thumb: None,
+            thumb_of: None,
+            failed_for: None,
+        }
+    }
+
+    pub fn key(&self) -> PhotoKey {
+        PhotoKey {
+            path: self.entry.path.clone(),
+            copy: self.copy.as_ref().map(|c| c.id),
+        }
+    }
+
+    /// The file name, with the copy name for a virtual copy.
+    pub fn name(&self) -> String {
+        match &self.copy {
+            Some(c) => copy_display_name(&self.entry.name, &c.name),
+            None => self.entry.name.clone(),
+        }
+    }
+
     pub fn rating(&self) -> i8 {
         self.meta.as_ref().map_or(0, |m| m.rating)
     }
@@ -73,22 +127,34 @@ pub struct Library {
     engine: Engine,
     pub dir: Option<PathBuf>,
     pub items: Vec<Item>,
+    /// The primary selection: the photo develop opens and single-photo commands act on.
     pub selected: Option<usize>,
+    /// Every selected photo; contains `selected`.
+    selection: BTreeSet<usize>,
+    /// Where a shift-click range starts.
+    anchor: Option<usize>,
     pub loading: bool,
     store: Arc<Store>,
     writer: Writer,
+    pub catalog: Arc<Catalog>,
+    /// Item positions by key.
+    index: HashMap<PhotoKey, usize>,
     wanted: [Range<usize>; 2],
     jobs: Vec<ThumbJob>,
     generation: u64,
     scan: Option<Task<()>>,
-    refresh: Option<Task<()>>,
+    /// Pending thumbnail refreshes after edits.
+    refresh: HashMap<PhotoKey, Task<()>>,
+    /// Virtual copy metadata waiting to be stored, and the timer that stores it.
+    pending_copies: HashMap<CopyId, PhotoMeta>,
+    copy_save: Option<Task<()>>,
     _reports: Task<()>,
 }
 
 impl EventEmitter<LibraryEvent> for Library {}
 
 impl Library {
-    pub fn new(engine: Engine, cx: &mut Context<Self>) -> Library {
+    pub fn new(engine: Engine, catalog: Arc<Catalog>, cx: &mut Context<Self>) -> Library {
         let store = Arc::new(Store::new());
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<WriteReport>();
         let writer = Writer::new(store.clone(), SAVE_DELAY, move |r| {
@@ -122,20 +188,35 @@ impl Library {
             dir: None,
             items: Vec::new(),
             selected: None,
+            selection: BTreeSet::new(),
+            anchor: None,
             loading: false,
             store,
             writer,
+            catalog,
+            index: HashMap::new(),
             wanted: [0..0, 0..0],
             jobs: Vec::new(),
             generation: 0,
             scan: None,
-            refresh: None,
+            refresh: HashMap::new(),
+            pending_copies: HashMap::new(),
+            copy_save: None,
             _reports: reports,
         }
     }
 
-    pub fn index_of(&self, path: &Path) -> Option<usize> {
-        self.items.iter().position(|it| it.entry.path == path)
+    pub fn index_of(&self, key: &PhotoKey) -> Option<usize> {
+        self.index.get(key).copied()
+    }
+
+    fn reindex(&mut self) {
+        self.index = self
+            .items
+            .iter()
+            .enumerate()
+            .map(|(i, it)| (it.key(), i))
+            .collect();
     }
 
     pub fn selected_item(&self) -> Option<&Item> {
@@ -153,42 +234,62 @@ impl Library {
     /// Scan `dir`, then read every sidecar in the background. `select` is selected once
     /// listed (the first photo otherwise).
     pub fn open_folder(&mut self, dir: PathBuf, select: Option<PathBuf>, cx: &mut Context<Self>) {
-        self.writer.flush();
+        self.flush(cx);
         self.generation += 1;
         self.jobs.clear();
+        self.refresh.clear();
         self.drop_thumbs(cx);
         self.items.clear();
-        self.selected = None;
+        self.index.clear();
+        self.set_single(None);
         self.wanted = [0..0, 0..0];
         self.dir = Some(dir.clone());
         self.loading = true;
         let generation = self.generation;
         let store = self.store.clone();
+        let catalog = self.catalog.clone();
         cx.notify();
         self.scan = Some(cx.spawn(async move |this, cx| {
             let scan_dir = dir.clone();
             let listed = cx
-                .background_spawn(async move { aigle_library::scan(&scan_dir) })
+                .background_spawn(async move {
+                    let entries = aigle_library::scan(&scan_dir)?;
+                    let paths: Vec<PathBuf> = entries.iter().map(|e| e.path.clone()).collect();
+                    let copies = catalog.copies_of(&paths).unwrap_or_else(|e| {
+                        tracing::warn!("{e}");
+                        Vec::new()
+                    });
+                    Ok((entries, copies))
+                })
                 .await;
             let paths = match this.update(cx, |l, cx| l.listed(generation, listed, select, cx)) {
                 Ok(Some(p)) => p,
                 _ => return,
             };
             let mut warnings = Vec::new();
-            for (start, chunk) in (0..).step_by(META_CHUNK).zip(paths.chunks(META_CHUNK)) {
+            for chunk in paths.chunks(META_CHUNK) {
                 let store = store.clone();
                 let chunk = chunk.to_vec();
                 let read = cx
                     .background_spawn(async move {
-                        chunk.iter().map(|p| store.read(p)).collect::<Vec<_>>()
+                        chunk
+                            .into_iter()
+                            .map(|p| {
+                                let r = store.read(&p);
+                                (p, r)
+                            })
+                            .collect::<Vec<_>>()
                     })
                     .await;
                 let ok = this.update(cx, |l, cx| {
                     if l.generation != generation {
                         return false;
                     }
-                    for (i, r) in (start..).zip(read) {
-                        let Some(it) = l.items.get_mut(i) else { break };
+                    for (path, r) in read {
+                        let Some(i) = l.index_of(&PhotoKey::master(path)) else {
+                            continue;
+                        };
+                        let it = &mut l.items[i];
                         if it.meta.is_some() {
                             continue;
                         }
@@ -239,14 +340,14 @@ impl Library {
     fn listed(
         &mut self,
         generation: u64,
-        listed: std::io::Result<Vec<PhotoEntry>>,
+        listed: std::io::Result<(Vec<PhotoEntry>, Vec<VirtualCopy>)>,
         select: Option<PathBuf>,
         cx: &mut Context<Self>,
     ) -> Option<Vec<PathBuf>> {
         if self.generation != generation {
             return None;
         }
-        let entries = match listed {
+        let (entries, copies) = match listed {
             Ok(e) => e,
             Err(e) => {
                 self.loading = false;
@@ -257,22 +358,28 @@ impl Library {
                 return None;
             }
         };
-        self.items = entries
-            .into_iter()
-            .map(|entry| Item {
-                entry,
-                meta: None,
-                thumb: None,
-                shown: None,
-                thumb_of: None,
-                failed_for: None,
-            })
-            .collect();
-        self.selected = select
-            .and_then(|p| self.index_of(&p))
+        let paths: Vec<PathBuf> = entries.iter().map(|e| e.path.clone()).collect();
+        let mut copies = copies.into_iter().peekable();
+        let mut items = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let path = entry.path.clone();
+            items.push(Item::new(entry.clone(), None, None));
+            while let Some(c) = copies.next_if(|c| c.path == path) {
+                let info = CopyInfo {
+                    id: c.id,
+                    name: c.name,
+                };
+                items.push(Item::new(entry.clone(), Some(info), Some(c.meta)));
+            }
+        }
+        self.items = items;
+        self.reindex();
+        let first = select
+            .and_then(|p| self.index_of(&PhotoKey::master(p)))
             .or((!self.items.is_empty()).then_some(0));
+        self.set_single(first);
         cx.notify();
-        Some(self.items.iter().map(|it| it.entry.path.clone()).collect())
+        Some(paths)
     }
 
     /// The metadata of a photo by path, read from its sidecar now.
@@ -306,11 +413,81 @@ impl Library {
         self.items[index].meta.clone().unwrap_or_default()
     }
 
+    fn set_single(&mut self, index: Option<usize>) {
+        self.selected = index;
+        self.anchor = index;
+        self.selection = index.into_iter().collect();
+    }
+
+    /// Select only `index`.
     pub fn select(&mut self, index: usize, cx: &mut Context<Self>) {
-        if index < self.items.len() && self.selected != Some(index) {
-            self.selected = Some(index);
+        if index < self.items.len() && (self.selected != Some(index) || self.selection.len() != 1) {
+            self.set_single(Some(index));
             cx.notify();
         }
+    }
+
+    /// Add `index` to the selection or take it out (Ctrl-click); the primary photo stays
+    /// unless it is the one taken out.
+    pub fn toggle_select(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.items.len() {
+            return;
+        }
+        if self.selection.remove(&index) {
+            if self.selected == Some(index) {
+                self.selected = self.selection.iter().next().copied();
+            }
+            if self.selected.is_none() {
+                self.set_single(Some(index));
+            }
+        } else {
+            self.selection.insert(index);
+            if self.selected.is_none() {
+                self.selected = Some(index);
+            }
+        }
+        self.anchor = Some(index);
+        cx.notify();
+    }
+
+    /// Select the range from the anchor to `index` (Shift-click), keeping the primary photo
+    /// in it.
+    pub fn extend_select(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.items.len() {
+            return;
+        }
+        let from = self.anchor.unwrap_or(index);
+        self.selection = (from.min(index)..=from.max(index)).collect();
+        match self.selected {
+            Some(s) if self.selection.contains(&s) => {}
+            _ => self.selected = Some(from),
+        }
+        cx.notify();
+    }
+
+    pub fn select_all(&mut self, cx: &mut Context<Self>) {
+        if self.items.is_empty() {
+            return;
+        }
+        self.selection = (0..self.items.len()).collect();
+        if self.selected.is_none() {
+            self.selected = Some(0);
+            self.anchor = Some(0);
+        }
+        cx.notify();
+    }
+
+    pub fn is_selected(&self, index: usize) -> bool {
+        self.selection.contains(&index)
+    }
+
+    pub fn selection_len(&self) -> usize {
+        self.selection.len()
+    }
+
+    /// The selected photos in folder order.
+    pub fn selection(&self) -> Vec<usize> {
+        self.selection.iter().copied().collect()
     }
 
     /// Show thumbnails for `range` of `who`; jobs outside every shown range are cancelled.
@@ -426,11 +603,39 @@ impl Library {
         }
     }
 
-    fn save(&self, index: usize) {
-        if let Some(it) = self.items.get(index)
-            && let Some(meta) = &it.meta
-        {
-            self.writer.schedule(it.entry.path.clone(), meta.clone());
+    fn save(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(it) = self.items.get(index) else {
+            return;
+        };
+        let Some(meta) = it.meta.clone() else { return };
+        match &it.copy {
+            None => self.writer.schedule(it.entry.path.clone(), meta),
+            Some(c) => self.schedule_copy(c.id, meta, cx),
+        }
+    }
+
+    /// Store a virtual copy's metadata after the debounce delay, like sidecar writes.
+    fn schedule_copy(&mut self, id: CopyId, meta: PhotoMeta, cx: &mut Context<Self>) {
+        self.pending_copies.insert(id, meta);
+        self.copy_save = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SAVE_DELAY).await;
+            let _ = this.update(cx, |l, cx| l.write_copies(cx));
+        }));
+    }
+
+    fn write_copies(&mut self, cx: &mut Context<Self>) {
+        self.copy_save = None;
+        let mut failed = None;
+        for (id, meta) in self.pending_copies.drain() {
+            if let Err(e) = self.catalog.set_copy_meta(id, &meta) {
+                tracing::warn!("{e}");
+                failed.get_or_insert(e);
+            }
+        }
+        if let Some(e) = failed {
+            cx.emit(LibraryEvent::Notice(
+                rust_i18n::t!("虚拟副本保存失败：{e}", e = e).into_owned(),
+            ));
         }
     }
 
@@ -440,32 +645,27 @@ impl Library {
             && meta.rating != rating
         {
             meta.rating = rating;
-            self.save(index);
+            self.save(index, cx);
             cx.notify();
         }
     }
 
-    /// Set color label `label`, or clear it if the photo already has it.
-    pub fn toggle_label(&mut self, index: usize, label: &str, cx: &mut Context<Self>) {
+    pub fn set_label(&mut self, index: usize, label: Option<&str>, cx: &mut Context<Self>) {
         self.meta_now(index);
-        if let Some(meta) = self.items.get_mut(index).and_then(|it| it.meta.as_mut()) {
-            meta.label = if meta.label.as_deref() == Some(label) {
-                None
-            } else {
-                Some(label.to_string())
-            };
-            self.save(index);
+        if let Some(meta) = self.items.get_mut(index).and_then(|it| it.meta.as_mut())
+            && meta.label.as_deref() != label
+        {
+            meta.label = label.map(str::to_string);
+            self.save(index, cx);
             cx.notify();
         }
     }
 
-    /// The open photo `path` has new edits: save them and refresh its thumbnail shortly.
-    pub fn photo_edited(&mut self, path: &Path, head: &Arc<EditParams>, cx: &mut Context<Self>) {
+    /// The open photo `key` has new edits: save them and refresh its thumbnail shortly.
+    pub fn photo_edited(&mut self, key: &PhotoKey, head: &Arc<EditParams>, cx: &mut Context<Self>) {
         let edits = (**head != EditParams::default()).then(|| (**head).clone());
-        let Some(i) = self.index_of(path) else {
-            let mut meta = self.read_meta(path);
-            meta.edits = edits;
-            self.writer.schedule(path.to_path_buf(), meta);
+        let Some(i) = self.index_of(key) else {
+            self.update_unlisted(key, cx, |m| m.edits = edits);
             return;
         };
         self.meta_now(i);
@@ -476,30 +676,96 @@ impl Library {
             return;
         }
         meta.edits = edits;
-        self.save(i);
+        self.save(i, cx);
         let shown = (**head != EditParams::default()).then(|| head.clone());
         let generation = self.generation;
-        self.refresh = Some(cx.spawn(async move |this, cx| {
+        let refresh_key = key.clone();
+        let task = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SAVE_DELAY).await;
             let _ = this.update(cx, |l, cx| {
-                if l.generation == generation
-                    && let Some(it) = l.items.get_mut(i)
-                {
-                    it.shown = shown;
+                if l.generation != generation {
+                    return;
+                }
+                l.refresh.remove(&refresh_key);
+                if let Some(i) = l.index_of(&refresh_key) {
+                    l.items[i].shown = shown;
                     l.request_thumbs(cx);
                     cx.notify();
                 }
             });
-        }));
+        });
+        self.refresh.insert(key.clone(), task);
         cx.notify();
     }
 
-    /// Store the snapshots of `path`.
-    pub fn set_snapshots(&mut self, path: &Path, snapshots: Vec<Snapshot>) {
-        let Some(i) = self.index_of(path) else {
-            let mut meta = self.read_meta(path);
-            meta.snapshots = snapshots;
-            self.writer.schedule(path.to_path_buf(), meta);
+    /// Change the stored metadata of a photo or copy that is not in the open folder.
+    fn update_unlisted(
+        &mut self,
+        key: &PhotoKey,
+        cx: &mut Context<Self>,
+        change: impl FnOnce(&mut PhotoMeta),
+    ) {
+        match key.copy {
+            None => {
+                let mut meta = self.read_meta(&key.path);
+                change(&mut meta);
+                self.writer.schedule(key.path.clone(), meta);
+            }
+            Some(id) => {
+                let mut meta = self.pending_copies.get(&id).cloned().or_else(|| {
+                    self.catalog
+                        .copy_meta(id)
+                        .inspect_err(|e| tracing::warn!("{e}"))
+                        .ok()
+                        .flatten()
+                });
+                if let Some(meta) = meta.as_mut() {
+                    change(meta);
+                    self.schedule_copy(id, meta.clone(), cx);
+                }
+            }
+        }
+    }
+
+    /// Apply `edit` to the stored edits of `index` (a photo not open in develop), recording
+    /// it in the photo's saved history as `label`.
+    pub fn edit_stored(
+        &mut self,
+        index: usize,
+        label: &str,
+        origin: Origin,
+        edit: impl FnOnce(&EditParams) -> Result<EditParams, aigle_doc::CommandError>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), aigle_doc::CommandError> {
+        let Some(key) = self.items.get(index).map(Item::key) else {
+            return Ok(());
+        };
+        let current = self.meta_now(index).edits.unwrap_or_default();
+        let next = edit(&current)?;
+        if next == current {
+            return Ok(());
+        }
+        let catalog = self.catalog.clone();
+        let (history_key, label, after) = (key.clone(), label.to_string(), next.clone());
+        cx.background_spawn(async move {
+            if let Err(e) = catalog.push_history(&history_key, &current, &label, origin, &after) {
+                tracing::warn!("{e}");
+            }
+        })
+        .detach();
+        self.photo_edited(&key, &Arc::new(next), cx);
+        Ok(())
+    }
+
+    /// Store the snapshots of `key`.
+    pub fn set_snapshots(
+        &mut self,
+        key: &PhotoKey,
+        snapshots: Vec<Snapshot>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(i) = self.index_of(key) else {
+            self.update_unlisted(key, cx, |m| m.snapshots = snapshots);
             return;
         };
         self.meta_now(i);
@@ -507,12 +773,137 @@ impl Library {
             && meta.snapshots != snapshots
         {
             meta.snapshots = snapshots;
-            self.save(i);
+            self.save(i, cx);
         }
     }
 
-    /// Write every pending sidecar change now (closing a photo, quitting).
-    pub fn flush(&self) {
+    /// Make a virtual copy of each photo in `indices` with its current edits, rating and
+    /// label, placed after the photo's other copies. Returns the keys of the new copies.
+    pub fn create_copies(&mut self, indices: &[usize], cx: &mut Context<Self>) -> Vec<PhotoKey> {
+        let base = crate::i18n::t("虚拟副本");
+        let mut created = Vec::new();
+        let mut failed = None;
+        let mut indices = indices.to_vec();
+        indices.sort_unstable_by(|a, b| b.cmp(a));
+        for i in indices {
+            let Some(path) = self.items.get(i).map(|it| it.entry.path.clone()) else {
+                continue;
+            };
+            let src = self.meta_now(i);
+            let meta = PhotoMeta {
+                snapshots: Vec::new(),
+                ..src
+            };
+            let name = crate::presets::unique_name(
+                self.items
+                    .iter()
+                    .filter(|it| it.entry.path == path)
+                    .filter_map(|it| it.copy.as_ref().map(|c| c.name.as_str())),
+                &base,
+            );
+            match self.catalog.create_copy(&path, &name, &meta) {
+                Ok(id) => {
+                    let at = self
+                        .items
+                        .iter()
+                        .rposition(|it| it.entry.path == path)
+                        .map_or(self.items.len(), |p| p + 1);
+                    let entry = self.items[i].entry.clone();
+                    let info = CopyInfo { id, name };
+                    self.items
+                        .insert(at, Item::new(entry, Some(info), Some(meta)));
+                    created.push(PhotoKey {
+                        path,
+                        copy: Some(id),
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("{e}");
+                    failed.get_or_insert(e);
+                }
+            }
+        }
+        if let Some(e) = failed {
+            cx.emit(LibraryEvent::Notice(
+                rust_i18n::t!("无法创建虚拟副本：{e}", e = e).into_owned(),
+            ));
+        }
+        self.items_moved(cx);
+        let new: BTreeSet<usize> = created.iter().filter_map(|k| self.index_of(k)).collect();
+        if let Some(&first) = new.iter().next() {
+            self.selection = new;
+            self.selected = Some(first);
+            self.anchor = Some(first);
+        }
+        cx.notify();
+        created
+    }
+
+    /// Delete the virtual copies among `indices`; photos are left alone. Returns the keys
+    /// of the deleted copies.
+    pub fn remove_copies(&mut self, indices: &[usize], cx: &mut Context<Self>) -> Vec<PhotoKey> {
+        let mut removed = Vec::new();
+        let mut failed = None;
+        for &i in indices {
+            let Some(it) = self.items.get(i) else {
+                continue;
+            };
+            let Some(c) = &it.copy else { continue };
+            self.pending_copies.remove(&c.id);
+            match self.catalog.remove_copy(c.id) {
+                Ok(()) => removed.push(it.key()),
+                Err(e) => {
+                    tracing::warn!("{e}");
+                    failed.get_or_insert(e);
+                }
+            }
+        }
+        if let Some(e) = failed {
+            cx.emit(LibraryEvent::Notice(
+                rust_i18n::t!("无法删除虚拟副本：{e}", e = e).into_owned(),
+            ));
+        }
+        if removed.is_empty() {
+            return removed;
+        }
+        let primary = self
+            .selected_item()
+            .map(|it| PhotoKey::master(&it.entry.path));
+        for key in &removed {
+            if let Some(i) = self.index_of(key) {
+                let it = self.items.remove(i);
+                if let Some(t) = it.thumb {
+                    cx.drop_image(t, None);
+                }
+                self.reindex();
+            }
+        }
+        self.items_moved(cx);
+        let next = primary
+            .and_then(|k| self.index_of(&k))
+            .or((!self.items.is_empty()).then_some(0));
+        self.set_single(next);
+        cx.notify();
+        removed
+    }
+
+    /// After items were inserted or removed: positions of jobs and the selection are stale.
+    fn items_moved(&mut self, cx: &mut Context<Self>) {
+        self.reindex();
+        self.jobs.clear();
+        self.refresh.clear();
+        for it in &mut self.items {
+            it.shown = it.meta.as_ref().and_then(|m| m.edits.clone()).map(Arc::new);
+        }
+        let n = self.items.len();
+        self.selection.retain(|&i| i < n);
+        self.selected = self.selected.filter(|&i| i < n);
+        self.request_thumbs(cx);
+    }
+
+    /// Write every pending sidecar and catalog change now (closing a photo, quitting).
+    pub fn flush(&mut self, cx: &mut Context<Self>) {
+        self.write_copies(cx);
         self.writer.flush();
     }
 }
@@ -531,4 +922,22 @@ pub fn label_color(label: &str) -> Option<u32> {
         .chain(&[("Purple", 0x8e4ec6)])
         .find(|(n, _)| n.eq_ignore_ascii_case(label))
         .map(|(_, c)| *c)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copy_names_keep_the_extension() {
+        assert_eq!(
+            copy_display_name("IMG_1.CR3", "Copy 2"),
+            "IMG_1 (Copy 2).CR3"
+        );
+        assert_eq!(copy_display_name("raw", "Copy 1"), "raw (Copy 1)");
+        assert_eq!(
+            Path::new(&copy_display_name("a.b.nef", "C")).file_stem(),
+            Some(std::ffi::OsStr::new("a.b (C)"))
+        );
+    }
 }

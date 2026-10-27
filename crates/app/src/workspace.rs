@@ -7,26 +7,29 @@ use std::sync::Arc;
 
 use aigle_core::EditParams;
 use aigle_core::params::Aspect;
+use aigle_doc::Origin;
 use aigle_engine_api::{Engine, SourceRef};
+use aigle_library::{Catalog, PhotoKey, PhotoMeta};
 use gpui::{
     App, Context, Entity, FocusHandle, IntoElement, ParentElement, PathPromptOptions, Render,
-    Styled, Subscription, Task, Window, div, prelude::*, px,
+    SharedString, Styled, Subscription, Task, Window, div, prelude::*, px,
 };
 use gpui_component::button::{Button, ButtonGroup};
-use gpui_component::menu::DropdownMenu;
+use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::{ActiveTheme, Selectable, Sizable, TitleBar, WindowExt, h_flex, v_flex};
 
 use crate::actions::*;
 use crate::canvas::{Canvas, Compare};
-use crate::copy_settings::{Clipboard, CopyDialog, CopyEvent, Group};
+use crate::copy_settings::{Clipboard, CopyDialog, CopyEvent, Group, Purpose};
 use crate::export::{self, ExportDialog, ExportEvent, Request, Settings};
 use crate::filmstrip::Filmstrip;
 use crate::grid::Grid;
 use crate::history::HistoryPanel;
 use crate::keybinding_editor::{Closed as KeybindingsClosed, KeybindingEditor};
-use crate::library::{LABELS, Library, LibraryEvent};
+use crate::library::{CopyInfo, LABELS, Library, LibraryEvent};
 use crate::panel::Panel;
 use crate::photo::{Photo, PhotoEvent, Tool};
+use crate::presets::{Preset, PresetsEvent, PresetsPanel};
 use crate::resources::Resources;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,7 +43,18 @@ struct OpenPhoto {
     canvas: Entity<Canvas>,
     panel: Entity<Panel>,
     history: Entity<HistoryPanel>,
+    /// Pending save of the history to the catalog.
+    history_save: Option<Task<()>>,
     _edits: Subscription,
+}
+
+const HISTORY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+
+struct ExportJob {
+    id: u64,
+    total: usize,
+    done: usize,
+    _task: Task<()>,
 }
 
 pub struct Workspace {
@@ -60,8 +74,9 @@ pub struct Workspace {
     /// Groups chosen the last time settings were copied.
     copy_groups: BTreeSet<Group>,
     clipboard: Option<Clipboard>,
-    /// Running exports by file name.
-    exports: Vec<(u64, String, Task<()>)>,
+    presets: Entity<PresetsPanel>,
+    /// Running export batches.
+    exports: Vec<ExportJob>,
     next_export: u64,
     _subs: Vec<Subscription>,
 }
@@ -77,17 +92,39 @@ impl Workspace {
     ) -> Workspace {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        let library = cx.new(|cx| Library::new(engine.clone(), cx));
+        let (catalog, catalog_error) =
+            match crate::data_dir().map(|d| Catalog::open(&d.join("catalog.sqlite3"))) {
+                Some(Ok(c)) => (c, None),
+                Some(Err(e)) => {
+                    tracing::error!("{e}");
+                    (Catalog::in_memory(), Some(e.to_string()))
+                }
+                None => (Catalog::in_memory(), Some("no data folder".to_string())),
+            };
+        let catalog = Arc::new(catalog);
+        let library = cx.new(|cx| Library::new(engine.clone(), catalog, cx));
         let grid = cx.new(|cx| Grid::new(library.clone(), cx));
         let filmstrip = cx.new(|cx| Filmstrip::new(library.clone(), cx));
+        let (store, warnings) =
+            crate::presets::Store::open(crate::config_dir().map(|d| d.join("presets")));
+        for w in &warnings {
+            tracing::warn!("preset {w}");
+        }
+        let presets = cx.new(|_| PresetsPanel::new(store));
         let subs = vec![
             cx.subscribe_in(&library, window, |w, _, e, window, cx| match e {
                 LibraryEvent::Open(i) => w.open_index(*i, window, cx),
                 LibraryEvent::Notice(m) => window.push_notification(m.clone(), cx),
             }),
+            cx.subscribe_in(&presets, window, |w, _, e, window, cx| match e {
+                PresetsEvent::Apply(i) => w.apply_preset(*i, window, cx),
+                PresetsEvent::Create => w.open_new_preset(window, cx),
+                PresetsEvent::Remove(i) => w.remove_preset(*i, window, cx),
+            }),
             cx.observe(&library, |_, _, cx| cx.notify()),
             cx.on_app_quit(|w, cx| {
-                w.library.read(cx).flush();
+                w.save_history(true, cx);
+                w.library.update(cx, |l, cx| l.flush(cx));
                 async {}
             }),
         ];
@@ -108,14 +145,22 @@ impl Workspace {
             copy_dialog: None,
             copy_groups: Group::defaults(),
             clipboard: None,
+            presets,
             exports: Vec::new(),
             next_export: 0,
             _subs: subs,
         };
         match source {
             Some(SourceRef::File(p)) => ws.open_path(p, window, cx),
-            Some(s) => ws.open_source(s, None, Vec::new(), window, cx),
+            Some(s) => ws.open_source(s, None, PhotoMeta::default(), window, cx),
             None => ws.update_title(window, cx),
+        }
+        if let Some(e) = catalog_error {
+            window.push_notification(
+                rust_i18n::t!("无法打开目录数据库，历史记录和虚拟副本不会保存：{e}", e = e)
+                    .into_owned(),
+                cx,
+            );
         }
         ws
     }
@@ -136,71 +181,84 @@ impl Workspace {
             l.open_folder(dir, Some(path.clone()), cx);
             l.read_meta(&path)
         });
-        self.open_source(
-            SourceRef::File(path),
-            initial.edits,
-            initial.snapshots,
-            window,
-            cx,
-        );
+        self.open_source(SourceRef::File(path), None, initial, window, cx);
     }
 
     fn open_index(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let (path, meta) = self.library.update(cx, |l, cx| {
+        let (item, meta) = self.library.update(cx, |l, cx| {
             l.select(index, cx);
-            let path = l.items.get(index).map(|it| it.entry.path.clone());
-            (path, l.meta_now(index))
+            let item = l.items.get(index).map(|it| (it.key(), it.copy.clone()));
+            (item, l.meta_now(index))
         });
-        let Some(path) = path else { return };
-        let already = self
-            .open
-            .as_ref()
-            .is_some_and(|o| o.photo.read(cx).path.as_deref() == Some(path.as_path()));
-        if already {
+        let Some((key, copy)) = item else { return };
+        if self.open_key(cx).as_ref() == Some(&key) {
             self.mode = Mode::Develop;
             self.update_title(window, cx);
             cx.notify();
             return;
         }
-        self.open_source(
-            SourceRef::File(path),
-            meta.edits,
-            meta.snapshots,
-            window,
-            cx,
-        );
+        self.open_source(SourceRef::File(key.path), copy, meta, window, cx);
+    }
+
+    fn open_key(&self, cx: &App) -> Option<PhotoKey> {
+        self.open.as_ref().and_then(|o| o.photo.read(cx).key())
     }
 
     fn open_source(
         &mut self,
         source: SourceRef,
-        edits: Option<aigle_core::EditParams>,
-        snapshots: Vec<aigle_library::Snapshot>,
+        copy: Option<CopyInfo>,
+        meta: PhotoMeta,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.close_photo(cx);
         let engine = self.engine.clone();
-        let photo =
-            cx.new(|cx| Photo::open(&engine, source, edits.unwrap_or_default(), snapshots, cx));
+        let catalog = self.library.read(cx).catalog.clone();
+        let history = match &source {
+            SourceRef::File(p) => {
+                let key = PhotoKey {
+                    path: p.clone(),
+                    copy: copy.as_ref().map(|c| c.id),
+                };
+                catalog
+                    .history(&key)
+                    .inspect_err(|e| tracing::warn!("{e}"))
+                    .ok()
+                    .flatten()
+            }
+            SourceRef::Synthetic { .. } => None,
+        };
+        let photo = cx.new(|cx| {
+            Photo::open(
+                &engine,
+                source,
+                copy,
+                meta.edits.unwrap_or_default(),
+                meta.snapshots,
+                history,
+                cx,
+            )
+        });
         let canvas = cx.new(|cx| Canvas::new(photo.clone(), window, cx));
         let hist = canvas.read(cx).histogram();
         let panel = cx.new(|cx| Panel::new(photo.clone(), hist, window, cx));
         let history = cx.new(|cx| HistoryPanel::new(photo.clone(), cx));
         let library = self.library.clone();
-        let edits = cx.subscribe(&photo, move |_, photo, e, cx| match e {
+        let edits = cx.subscribe(&photo, move |w, photo, e, cx| match e {
             PhotoEvent::Edited => {
                 let p = photo.read(cx);
-                if let Some(path) = p.path.clone() {
+                if let Some(key) = p.key() {
                     let head = p.head().clone();
-                    library.update(cx, |l, cx| l.photo_edited(&path, &head, cx));
+                    library.update(cx, |l, cx| l.photo_edited(&key, &head, cx));
+                    w.schedule_history_save(cx);
                 }
             }
             PhotoEvent::SnapshotsChanged => {
                 let p = photo.read(cx);
-                if let Some(path) = p.path.clone() {
+                if let Some(key) = p.key() {
                     let snapshots = p.snapshots.clone();
-                    library.update(cx, |l, _| l.set_snapshots(&path, snapshots));
+                    library.update(cx, |l, cx| l.set_snapshots(&key, snapshots, cx));
                 }
             }
             _ => {}
@@ -210,6 +268,7 @@ impl Workspace {
             canvas,
             panel,
             history,
+            history_save: None,
             _edits: edits,
         });
         self.mode = Mode::Develop;
@@ -217,9 +276,43 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Save the open photo's history to the catalog shortly after the last edit.
+    fn schedule_history_save(&mut self, cx: &mut Context<Self>) {
+        let Some(o) = &mut self.open else { return };
+        o.history_save = Some(cx.spawn(async move |w, cx| {
+            cx.background_executor().timer(HISTORY_DELAY).await;
+            let _ = w.update(cx, |w, cx| w.save_history(false, cx));
+        }));
+    }
+
+    /// Store the open photo's history: in the background, or `now` (closing, quitting).
+    fn save_history(&mut self, now: bool, cx: &mut Context<Self>) {
+        let Some(o) = &mut self.open else { return };
+        if o.history_save.take().is_none() && !now {
+            return;
+        }
+        let p = o.photo.read(cx);
+        let Some(key) = p.key() else { return };
+        let saved = p.doc.saved_history();
+        let catalog = self.library.read(cx).catalog.clone();
+        let write = move || {
+            if let Err(e) = catalog.set_history(&key, &saved) {
+                tracing::warn!("{e}");
+            }
+        };
+        if now {
+            write();
+        } else {
+            cx.background_spawn(async move { write() }).detach();
+        }
+    }
+
     fn close_photo(&mut self, cx: &mut Context<Self>) {
+        if self.open.as_ref().is_some_and(|o| o.history_save.is_some()) {
+            self.save_history(true, cx);
+        }
         if self.open.take().is_some() {
-            self.library.read(cx).flush();
+            self.library.update(cx, |l, cx| l.flush(cx));
         }
     }
 
@@ -237,17 +330,9 @@ impl Workspace {
     fn set_mode(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
         if mode == Mode::Develop {
             let selected = self.library.read(cx).selected;
-            let open_path = self
-                .open
-                .as_ref()
-                .and_then(|o| o.photo.read(cx).path.clone());
-            let selected_path = self
-                .library
-                .read(cx)
-                .selected_item()
-                .map(|it| it.entry.path.clone());
+            let selected_key = self.library.read(cx).selected_item().map(|it| it.key());
             if let Some(i) = selected
-                && selected_path != open_path
+                && selected_key != self.open_key(cx)
             {
                 self.open_index(i, window, cx);
                 return;
@@ -326,20 +411,33 @@ impl Workspace {
         }
     }
 
-    /// The photo ratings and labels apply to: the selection, which develop keeps on the
-    /// open photo.
+    /// The photos ratings and labels apply to: the grid selection, or the open photo (which
+    /// develop keeps primary).
+    fn marked(&self, cx: &App) -> Vec<usize> {
+        let l = self.library.read(cx);
+        match self.mode {
+            Mode::Library => l.selection(),
+            Mode::Develop => l.selected.into_iter().collect(),
+        }
+    }
+
     fn rate(&mut self, rating: i8, cx: &mut Context<Self>) {
+        let targets = self.marked(cx);
         self.library.update(cx, |l, cx| {
-            if let Some(i) = l.selected {
+            for i in targets {
                 l.set_rating(i, rating, cx);
             }
         });
     }
 
+    /// Set label `n` on the marked photos, or clear it when the primary photo has it.
     fn label(&mut self, n: usize, cx: &mut Context<Self>) {
+        let targets = self.marked(cx);
+        let label = LABELS[n].0;
         self.library.update(cx, |l, cx| {
-            if let Some(i) = l.selected {
-                l.toggle_label(i, LABELS[n].0, cx);
+            let clear = l.selected_item().and_then(|it| it.label()) == Some(label);
+            for i in targets {
+                l.set_label(i, (!clear).then_some(label), cx);
             }
         });
     }
@@ -397,33 +495,49 @@ impl Workspace {
         });
     }
 
-    /// What export applies to: the open photo in develop, the selection in the grid.
-    fn export_request(&mut self, cx: &mut Context<Self>) -> Option<Request> {
-        if self.mode == Mode::Develop
-            && let Some(o) = &self.open
-        {
+    /// What export applies to: the selected photos, the open one with its current edits.
+    /// In develop with a single selection that is just the open photo (which may not be in
+    /// the library, like a synthetic image).
+    fn export_requests(&mut self, cx: &mut Context<Self>) -> Vec<Request> {
+        let open = self.open.as_ref().map(|o| {
             let p = o.photo.read(cx);
-            let source = p.source.clone();
-            return Some(Request {
-                source,
+            Request {
+                source: p.source.clone(),
                 params: p.head().clone(),
                 name: p.name.clone(),
                 folder: p
                     .path
                     .as_ref()
                     .and_then(|f| f.parent().map(Path::to_path_buf)),
-            });
+            }
+        });
+        let selection = self.library.read(cx).selection();
+        let open_key = self.open_key(cx);
+        if self.mode == Mode::Develop
+            && selection.len() <= 1
+            && let Some(r) = open
+        {
+            return vec![r];
         }
-        let index = self.library.read(cx).selected?;
-        let meta = self.library.update(cx, |l, _| l.meta_now(index));
-        let l = self.library.read(cx);
-        let it = l.items.get(index)?;
-        Some(Request {
-            source: SourceRef::File(it.entry.path.clone()),
-            params: Arc::new(meta.edits.unwrap_or_default()),
-            name: it.entry.name.clone(),
-            folder: l.dir.clone(),
-        })
+        selection
+            .into_iter()
+            .filter_map(|index| {
+                let meta = self.library.update(cx, |l, _| l.meta_now(index));
+                let l = self.library.read(cx);
+                let it = l.items.get(index)?;
+                if open_key.as_ref() == Some(&it.key())
+                    && let Some(r) = &open
+                {
+                    return Some(r.clone());
+                }
+                Some(Request {
+                    source: SourceRef::File(it.entry.path.clone()),
+                    params: Arc::new(meta.edits.unwrap_or_default()),
+                    name: it.name(),
+                    folder: l.dir.clone(),
+                })
+            })
+            .collect()
     }
 
     /// The edits that copy reads: the open photo in develop, the selection in the grid.
@@ -438,23 +552,22 @@ impl Workspace {
         Some(Arc::new(meta.edits.unwrap_or_default()))
     }
 
-    fn open_copy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(params) = self.current_edits(cx) else {
-            window.push_notification(crate::i18n::t("没有可拷贝设置的照片"), cx);
-            return;
-        };
+    fn open_groups(
+        &mut self,
+        groups: BTreeSet<Group>,
+        purpose: Purpose,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        done: impl Fn(&mut Workspace, BTreeSet<Group>, String, &mut Window, &mut Context<Self>)
+        + 'static,
+    ) {
         self.export_dialog = None;
-        let dialog = cx.new(|_| CopyDialog::new(self.copy_groups.clone()));
+        let dialog = cx.new(|cx| CopyDialog::new(groups, purpose, window, cx));
         let sub = cx.subscribe_in(&dialog, window, move |w, _, ev, window, cx| {
             let CopyEvent::Done(chosen) = ev;
             w.copy_dialog = None;
-            if let Some(groups) = chosen {
-                w.copy_groups = groups.clone();
-                w.clipboard = Some(Clipboard {
-                    params: params.clone(),
-                    groups: groups.clone(),
-                });
-                window.push_notification(crate::i18n::t("已拷贝设置"), cx);
+            if let Some((groups, name)) = chosen {
+                done(w, groups.clone(), name.clone(), window, cx);
             }
             window.focus(&w.focus, cx);
             cx.notify();
@@ -463,57 +576,288 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Paste onto the open photo in develop (one undo step), or onto the grid selection.
+    fn open_copy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(params) = self.current_edits(cx) else {
+            window.push_notification(crate::i18n::t("没有可拷贝设置的照片"), cx);
+            return;
+        };
+        let groups = self.copy_groups.clone();
+        self.open_groups(
+            groups,
+            Purpose::Copy,
+            window,
+            cx,
+            move |w, groups, _, window, cx| {
+                w.copy_groups = groups.clone();
+                w.clipboard = Some(Clipboard {
+                    params: params.clone(),
+                    groups,
+                });
+                window.push_notification(crate::i18n::t("已拷贝设置"), cx);
+            },
+        );
+    }
+
+    /// Paste `clip` onto the library photos `targets`; the open photo among them gets it as
+    /// an undoable command, the others in their sidecars or copies.
+    fn apply_to(
+        &mut self,
+        targets: &[PhotoKey],
+        label: &str,
+        origin: Origin,
+        clip: &Clipboard,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let open = self.open_key(cx);
+        let mut failed = None;
+        for key in targets {
+            if open.as_ref() == Some(key)
+                && let Some(o) = &self.open
+            {
+                o.photo.update(cx, |ph, cx| {
+                    ph.apply_ops(origin.clone(), label, clip.ops(), cx)
+                });
+                continue;
+            }
+            let Some(i) = self.library.read(cx).index_of(key) else {
+                continue;
+            };
+            let r = self.library.update(cx, |l, cx| {
+                l.edit_stored(i, label, origin.clone(), |e| clip.paste_onto(e), cx)
+            });
+            if let Err(e) = r {
+                failed.get_or_insert(e.to_string());
+            }
+        }
+        if let Some(e) = failed {
+            window.push_notification(e, cx);
+        }
+    }
+
+    fn selected_keys(&self, cx: &App) -> Vec<PhotoKey> {
+        let l = self.library.read(cx);
+        l.selection()
+            .into_iter()
+            .filter_map(|i| l.items.get(i).map(|it| it.key()))
+            .collect()
+    }
+
+    /// Paste `clip` onto the open photo in develop, or onto every selected photo in the grid.
+    fn edit_targets(
+        &mut self,
+        label: &str,
+        origin: Origin,
+        clip: &Clipboard,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.mode {
+            Mode::Develop => {
+                if let Some(o) = &self.open {
+                    o.photo
+                        .update(cx, |p, cx| p.apply_ops(origin, label, clip.ops(), cx));
+                }
+            }
+            Mode::Library => {
+                let targets = self.selected_keys(cx);
+                self.apply_to(&targets, label, origin, clip, window, cx);
+            }
+        }
+    }
+
     fn paste(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(clip) = self.clipboard.clone() else {
             window.push_notification(crate::i18n::t("尚未拷贝设置"), cx);
             return;
         };
-        let target = match self.mode {
-            Mode::Develop => self.open.as_ref().map(|o| o.photo.clone()),
-            Mode::Library => {
-                let selected = self
-                    .library
-                    .read(cx)
-                    .selected_item()
-                    .map(|it| it.entry.path.clone());
-                self.open
-                    .as_ref()
-                    .filter(|o| {
-                        selected.is_some() && o.photo.read(cx).path.as_ref() == selected.as_ref()
-                    })
-                    .map(|o| o.photo.clone())
-            }
+        self.edit_targets(&crate::i18n::t("粘贴设置"), Origin::User, &clip, window, cx);
+    }
+
+    /// Copy chosen groups of the primary photo onto the other selected photos.
+    fn open_sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(params) = self.current_edits(cx) else {
+            window.push_notification(crate::i18n::t("没有可拷贝设置的照片"), cx);
+            return;
         };
-        if let Some(photo) = target {
-            photo.update(cx, |p, cx| {
-                p.command(
-                    crate::i18n::t("粘贴设置"),
-                    clip.ops(),
-                    None,
-                    aigle_engine_api::Interaction::Final,
+        let source = match (self.mode, &self.open) {
+            (Mode::Develop, Some(_)) => self.open_key(cx),
+            _ => self.library.read(cx).selected_item().map(|it| it.key()),
+        };
+        let targets: Vec<PhotoKey> = self
+            .selected_keys(cx)
+            .into_iter()
+            .filter(|k| Some(k) != source.as_ref())
+            .collect();
+        if targets.is_empty() {
+            window.push_notification(crate::i18n::t("请先选择要同步到的照片"), cx);
+            return;
+        }
+        let groups = self.copy_groups.clone();
+        let purpose = Purpose::Sync(targets.len());
+        self.open_groups(
+            groups,
+            purpose,
+            window,
+            cx,
+            move |w, groups, _, window, cx| {
+                w.copy_groups = groups.clone();
+                let clip = Clipboard {
+                    params: params.clone(),
+                    groups,
+                };
+                w.apply_to(
+                    &targets,
+                    &crate::i18n::t("同步设置"),
+                    Origin::User,
+                    &clip,
+                    window,
                     cx,
                 );
-            });
-            return;
-        }
-        if self.mode != Mode::Library {
-            return;
-        }
-        let Some(index) = self.library.read(cx).selected else {
+            },
+        );
+    }
+
+    fn apply_preset(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(preset) = self
+            .presets
+            .read(cx)
+            .store
+            .items
+            .get(index)
+            .map(|(_, p)| p.clone())
+        else {
             return;
         };
-        let (path, meta) = self.library.update(cx, |l, _| {
-            let path = l.items.get(index).map(|it| it.entry.path.clone());
-            (path, l.meta_now(index))
+        let label = format!("{} · {}", crate::i18n::t("预设"), preset.name);
+        let clip = preset.clipboard();
+        self.edit_targets(&label, Origin::Preset, &clip, window, cx);
+    }
+
+    fn open_new_preset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(params) = self.current_edits(cx) else {
+            window.push_notification(crate::i18n::t("没有可拷贝设置的照片"), cx);
+            return;
+        };
+        let presets = self.presets.clone();
+        self.open_groups(
+            Group::defaults(),
+            Purpose::Preset,
+            window,
+            cx,
+            move |_, groups, name, window, cx| {
+                let r = presets.update(cx, |p, cx| {
+                    let name = if name.is_empty() {
+                        crate::presets::unique_name(p.store.names(), &crate::i18n::t("预设"))
+                    } else {
+                        name
+                    };
+                    cx.notify();
+                    p.store.save(Preset {
+                        name,
+                        groups,
+                        params: (*params).clone(),
+                    })
+                });
+                if let Err(e) = r {
+                    window.push_notification(
+                        rust_i18n::t!("无法保存预设：{e}", e = e).into_owned(),
+                        cx,
+                    );
+                }
+            },
+        );
+    }
+
+    fn remove_preset(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let r = self.presets.update(cx, |p, cx| {
+            cx.notify();
+            p.store.remove(index)
         });
-        let Some(path) = path else { return };
-        match clip.paste_onto(&meta.edits.unwrap_or_default()) {
-            Ok(next) => self
-                .library
-                .update(cx, |l, cx| l.photo_edited(&path, &Arc::new(next), cx)),
-            Err(e) => window.push_notification(e.to_string(), cx),
+        if let Err(e) = r {
+            window.push_notification(rust_i18n::t!("无法删除预设：{e}", e = e).into_owned(), cx);
         }
+    }
+
+    /// Make virtual copies of the open photo (opening the copy) or of the grid selection.
+    fn create_virtual_copy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let indices: Vec<usize> = match self.mode {
+            Mode::Develop => {
+                let key = self.open_key(cx);
+                key.and_then(|k| self.library.read(cx).index_of(&k))
+                    .into_iter()
+                    .collect()
+            }
+            Mode::Library => self.library.read(cx).selection(),
+        };
+        if indices.is_empty() {
+            window.push_notification(crate::i18n::t("没有可创建虚拟副本的照片"), cx);
+            return;
+        }
+        let created = self
+            .library
+            .update(cx, |l, cx| l.create_copies(&indices, cx));
+        if self.mode == Mode::Develop
+            && let Some(i) = created
+                .first()
+                .and_then(|k| self.library.read(cx).index_of(k))
+        {
+            self.open_index(i, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Delete the virtual copies among the open photo (develop) or the grid selection, after
+    /// asking. Photos themselves are never deleted.
+    fn remove_virtual_copies(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let keys: Vec<PhotoKey> = match self.mode {
+            Mode::Develop => self.open_key(cx).into_iter().collect(),
+            Mode::Library => self.selected_keys(cx),
+        };
+        let keys: Vec<PhotoKey> = keys.into_iter().filter(|k| k.copy.is_some()).collect();
+        if keys.is_empty() {
+            window.push_notification(crate::i18n::t("所选照片中没有虚拟副本"), cx);
+            return;
+        }
+        let message = rust_i18n::t!("删除 {} 个虚拟副本？", arg0 = keys.len()).into_owned();
+        let detail = crate::i18n::t("虚拟副本的调整将会丢失，原照片不受影响。");
+        let (delete, cancel) = (crate::i18n::t("删除"), crate::i18n::t("取消"));
+        let answer = window.prompt(
+            gpui::PromptLevel::Warning,
+            &message,
+            Some(&detail),
+            &[delete.as_str(), cancel.as_str()],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if answer.await != Ok(0) {
+                return anyhow::Ok(());
+            }
+            this.update_in(cx, |w, window, cx| {
+                let indices: Vec<usize> = keys
+                    .iter()
+                    .filter_map(|k| w.library.read(cx).index_of(k))
+                    .collect();
+                let removed = w.library.update(cx, |l, cx| l.remove_copies(&indices, cx));
+                let open = w.open_key(cx);
+                if open.as_ref().is_some_and(|k| removed.contains(k)) {
+                    if let Some(o) = &mut w.open {
+                        o.history_save = None;
+                    }
+                    w.close_photo(cx);
+                    let next = w.library.read(cx).selected;
+                    match (w.mode, next) {
+                        (Mode::Develop, Some(i)) => w.open_index(i, window, cx),
+                        _ => {
+                            w.mode = Mode::Library;
+                            w.update_title(window, cx);
+                        }
+                    }
+                }
+                cx.notify();
+            })
+        })
+        .detach();
     }
 
     fn open_keybindings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -553,18 +897,20 @@ impl Workspace {
     }
 
     fn open_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(request) = self.export_request(cx) else {
+        let requests = self.export_requests(cx);
+        if requests.is_empty() {
             window.push_notification(crate::i18n::t("没有可导出的照片"), cx);
             return;
-        };
+        }
+        self.copy_dialog = None;
         let settings = self.export_settings.clone();
-        let dialog = cx.new(|cx| ExportDialog::new(request, settings, window, cx));
+        let dialog = cx.new(|cx| ExportDialog::new(requests, settings, window, cx));
         let sub = cx.subscribe_in(&dialog, window, |w, _, ev, window, cx| {
             let ExportEvent::Done(chosen) = ev;
             w.export_dialog = None;
-            if let Some((request, settings, path)) = chosen {
+            if let Some((jobs, settings)) = chosen {
                 w.export_settings = settings.clone();
-                w.start_export(request, settings, path.clone(), window, cx);
+                w.start_export(jobs.clone(), settings.clone(), window, cx);
             }
             window.focus(&w.focus, cx);
             cx.notify();
@@ -573,43 +919,72 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Export `jobs` one after another in the background.
     fn start_export(
         &mut self,
-        request: &Request,
-        settings: &Settings,
-        path: PathBuf,
+        jobs: Vec<(Request, PathBuf)>,
+        settings: Settings,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let job = export::run(&self.engine, request, settings, path);
         let id = self.next_export;
         self.next_export += 1;
-        let shown = name.clone();
+        let total = jobs.len();
+        let engine = self.engine.clone();
         let task = cx.spawn_in(window, async move |this, cx| {
-            let r = job.await;
+            let mut last = None;
+            let mut failures = Vec::new();
+            for (request, path) in jobs {
+                let shown = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                match export::run(&engine, &request, &settings, path).await {
+                    Ok(done) => last = Some((shown, done)),
+                    Err(e) => failures.push((shown, e.to_string())),
+                }
+                let ok = this.update(cx, |w, cx| {
+                    if let Some(e) = w.exports.iter_mut().find(|e| e.id == id) {
+                        e.done += 1;
+                    }
+                    cx.notify();
+                });
+                if ok.is_err() {
+                    return;
+                }
+            }
             let _ = this.update_in(cx, |w, window, cx| {
-                w.exports.retain(|(i, _, _)| *i != id);
-                let msg = match r {
-                    Ok(done) => rust_i18n::t!(
+                w.exports.retain(|e| e.id != id);
+                let msg = match (total, last, failures.first()) {
+                    (1, Some((shown, done)), None) => rust_i18n::t!(
                         "已导出 {shown}（{}×{}）",
                         arg0 = done.width,
                         arg1 = done.height,
                         shown = shown
                     )
                     .into_owned(),
-                    Err(e) => {
+                    (1, _, Some((shown, e))) => {
                         rust_i18n::t!("导出 {shown} 失败：{e}", shown = shown, e = e).into_owned()
                     }
+                    (_, _, None) => rust_i18n::t!("已导出 {} 张照片", arg0 = total).into_owned(),
+                    (_, _, Some((shown, e))) => rust_i18n::t!(
+                        "{} 张照片导出失败；{shown}：{e}",
+                        arg0 = failures.len(),
+                        shown = shown,
+                        e = e
+                    )
+                    .into_owned(),
                 };
                 window.push_notification(msg, cx);
                 cx.notify();
             });
         });
-        self.exports.push((id, name, task));
+        self.exports.push(ExportJob {
+            id,
+            total,
+            done: 0,
+            _task: task,
+        });
         cx.notify();
     }
 
@@ -631,6 +1006,14 @@ impl Workspace {
         };
         let show_history = self.show_history;
         let can_paste = self.clipboard.is_some();
+        let ws = cx.entity().downgrade();
+        let preset_names: Vec<SharedString> = self
+            .presets
+            .read(cx)
+            .store
+            .names()
+            .map(|n| SharedString::from(n.to_string()))
+            .collect();
         let mask_overlay = self
             .open
             .as_ref()
@@ -684,6 +1067,31 @@ impl Workspace {
                                 Box::new(PasteSettings),
                                 !can_paste,
                             )
+                            .menu(crate::i18n::t("同步设置…"), Box::new(SyncSettings))
+                            .separator()
+                            .menu(crate::i18n::t("创建虚拟副本"), Box::new(CreateVirtualCopy))
+                            .menu(crate::i18n::t("删除虚拟副本…"), Box::new(RemoveVirtualCopy))
+                            .separator()
+                            .menu(crate::i18n::t("新建预设…"), Box::new(NewPreset))
+                            .submenu(crate::i18n::t("应用预设"), window, cx, {
+                                let names = preset_names.clone();
+                                let ws = ws.clone();
+                                move |menu, _, _| {
+                                    if names.is_empty() {
+                                        return menu.label(crate::i18n::t("暂无预设"));
+                                    }
+                                    names.iter().enumerate().fold(menu, |menu, (i, n)| {
+                                        let ws = ws.clone();
+                                        menu.item(PopupMenuItem::new(n.clone()).on_click(
+                                            move |_, window, cx| {
+                                                let _ = ws.update(cx, |w, cx| {
+                                                    w.apply_preset(i, window, cx)
+                                                });
+                                            },
+                                        ))
+                                    })
+                                }
+                            })
                             .separator()
                             .submenu(crate::i18n::t("工具"), window, cx, move |menu, _, _| {
                                 menu.menu_with_check_and_disabled(
@@ -802,12 +1210,16 @@ impl Workspace {
                     ),
             )
             .when(!self.exports.is_empty(), |row| {
+                let (done, total) = self
+                    .exports
+                    .iter()
+                    .fold((0, 0), |(d, t), e| (d + e.done, t + e.total));
                 row.child(
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
                         .child(
-                            rust_i18n::t!("正在导出 {} 张", arg0 = self.exports.len()).into_owned(),
+                            rust_i18n::t!("正在导出 {}/{}", arg0 = done, arg1 = total).into_owned(),
                         ),
                 )
             })
@@ -846,13 +1258,21 @@ impl Workspace {
                     .min_h_0()
                     .when(self.show_history, |d| {
                         d.child(
-                            div()
+                            v_flex()
                                 .w(px(200.0))
                                 .h_full()
                                 .flex_none()
                                 .border_r_1()
                                 .border_color(border)
-                                .child(o.history.clone()),
+                                .child(self.presets.clone())
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_h_0()
+                                        .border_t_1()
+                                        .border_color(border)
+                                        .child(o.history.clone()),
+                                ),
                         )
                     })
                     .child(div().flex_1().h_full().min_w_0().child(o.canvas.clone()))
@@ -926,6 +1346,21 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &Redo, _, cx| w.with_photo(cx, Photo::redo)))
             .on_action(cx.listener(|w, _: &CopySettings, window, cx| w.open_copy(window, cx)))
             .on_action(cx.listener(|w, _: &PasteSettings, window, cx| w.paste(window, cx)))
+            .on_action(cx.listener(|w, _: &SyncSettings, window, cx| w.open_sync(window, cx)))
+            .on_action(cx.listener(|w, _: &NewPreset, window, cx| w.open_new_preset(window, cx)))
+            .on_action(
+                cx.listener(|w, _: &CreateVirtualCopy, window, cx| {
+                    w.create_virtual_copy(window, cx)
+                }),
+            )
+            .on_action(cx.listener(|w, _: &RemoveVirtualCopy, window, cx| {
+                w.remove_virtual_copies(window, cx)
+            }))
+            .on_action(
+                cx.listener(|w, _: &SelectAll, _, cx| {
+                    w.library.update(cx, |l, cx| l.select_all(cx))
+                }),
+            )
             .on_action(
                 cx.listener(|w, _: &ToggleZoom, _, cx| w.with_canvas(cx, Canvas::toggle_zoom)),
             )
