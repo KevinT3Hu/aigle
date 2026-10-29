@@ -3,11 +3,18 @@
 //! Native code is always optimised, even in dev builds, because unoptimised decoders are
 //! unusably slow. OpenMP is off: the engine scheduler owns the CPU (doc 05 §5). The
 //! reentrant build is used (no `LIBRAW_NOTHREADS`): one instance per decode worker.
-//! zlib is required (deflate DNG); libjpeg is not used (lossy DNG is not supported yet).
+//! zlib is required (deflate DNG). The system libjpeg, found with pkg-config, decodes lossy
+//! DNG and Kodak JPEG raws (on Debian/Ubuntu: `apt install libjpeg-turbo8-dev` or
+//! `libjpeg62-turbo-dev`). LibRaw reports libjpeg errors by throwing a C++ exception through
+//! libjpeg's frames, which needs libjpeg built with unwind tables (the default on x86-64 and
+//! aarch64 Linux).
 
 use std::path::Path;
 
 fn main() {
+    let jpeg = pkg_config::Config::new()
+        .probe("libjpeg")
+        .unwrap_or_else(|e| panic!("libjpeg not found ({e}); install libjpeg-turbo8-dev"));
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let vendor = root.join("vendor/LibRaw");
 
@@ -32,8 +39,12 @@ fn main() {
         .warnings(false)
         .include(&vendor)
         .define("USE_ZLIB", None)
+        .define("USE_JPEG", None)
         .flag_if_supported("-w")
         .files(&sources);
+    for p in &jpeg.include_paths {
+        build.include(p);
+    }
     build.compile("aigle_libraw");
 
     println!("cargo:rustc-link-lib=z");
