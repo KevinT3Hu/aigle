@@ -53,14 +53,14 @@ impl Draft {
             .collect::<Result<Vec<_>>>()?;
         let unique: BTreeSet<_> = keys.iter().collect();
         if unique.len() != keys.len() {
-            bail!("{}", t("快捷键重复"));
+            bail!("{}", t("keybindings.duplicate"));
         }
         if keys.iter().enumerate().any(|(i, key)| {
             keys.iter()
                 .enumerate()
                 .any(|(j, other)| i != j && other.starts_with(&format!("{key} ")))
         }) {
-            bail!("{}", t("同一命令的快捷键不能互为前缀"));
+            bail!("{}", t("keybindings.prefix_conflict"));
         }
         Ok(keys)
     }
@@ -84,7 +84,7 @@ impl Draft {
     fn assign(&mut self, action: &str, keys: Vec<String>, replace: bool) -> Result<()> {
         let conflicts = self.conflicts(action, &keys);
         if !replace && !conflicts.is_empty() {
-            bail!("{}", t("请先解决快捷键冲突"));
+            bail!("{}", t("keybindings.resolve_conflicts"));
         }
         self.bindings.retain(|key, owner| {
             owner != action && !conflicts.iter().any(|(conflict, _)| conflict == key)
@@ -98,66 +98,34 @@ impl Draft {
 
 fn description(action: &str) -> (String, String) {
     let short = action.strip_prefix("aigle::").unwrap_or(action);
-    let (label, group) = match short {
-        "Open" => ("打开照片…", "文件"),
-        "OpenFolder" => ("打开文件夹…", "文件"),
-        "Export" => ("导出…", "文件"),
-        "Quit" => ("退出", "文件"),
-        "ShowGrid" => ("图库", "导航"),
-        "ShowDevelop" => ("修图", "导航"),
-        "OpenSelected" => ("打开所选照片 / 完成裁剪", "导航"),
-        "Left" => ("上一张 / 向左", "导航"),
-        "Right" => ("下一张 / 向右", "导航"),
-        "Up" => ("向上", "导航"),
-        "Down" => ("向下", "导航"),
-        "Undo" => ("撤销", "编辑"),
-        "Redo" => ("重做", "编辑"),
-        "CopySettings" => ("拷贝设置…", "编辑"),
-        "PasteSettings" => ("粘贴设置", "编辑"),
-        "SyncSettings" => ("同步设置…", "编辑"),
-        "NewPreset" => ("新建预设…", "编辑"),
-        "CreateVirtualCopy" => ("创建虚拟副本", "编辑"),
-        "RemoveVirtualCopy" => ("删除虚拟副本…", "编辑"),
-        "SelectAll" => ("全选", "导航"),
-        "ToggleCrop" => ("裁剪与拉直", "编辑"),
-        "AutoTone" => ("自动色调", "编辑"),
-        "ToggleMonochrome" => ("黑白", "编辑"),
-        "ToggleMask" => ("蒙版", "编辑"),
-        "ToggleSpot" => ("污点去除", "编辑"),
-        "ToggleRedEye" => ("红眼校正", "编辑"),
-        "DeleteRetouch" => ("删除所选污点 / 红眼校正", "编辑"),
-        "ToggleWbPicker" => ("白平衡吸管", "编辑"),
-        "SwapAspect" => ("横竖互换", "编辑"),
-        "Cancel" => ("取消", "编辑"),
-        "ToggleZoom" => ("缩放 / 适合窗口", "视图"),
-        "ToggleBefore" => ("原图", "视图"),
-        "ToggleSplit" => ("分屏对比", "视图"),
-        "ToggleSoftProof" => ("软打样", "视图"),
-        "ToggleGamutWarning" => ("色域警告", "视图"),
-        "ProofSrgb" => ("软打样：sRGB", "视图"),
-        "ProofDisplayP3" => ("软打样：Display P3", "视图"),
-        "ProofAdobeRgb" => ("软打样：Adobe RGB", "视图"),
-        "ToggleInfo" => ("拍摄参数", "视图"),
-        "ToggleHistory" => ("历史记录", "视图"),
-        "ToggleOverlay" => ("蒙版叠加", "视图"),
-        "LanguageEnglish" => ("英语", "语言"),
-        "LanguageChinese" => ("简体中文", "语言"),
-        "DisplayAuto" => ("显示器配置文件：自动", "设置"),
-        "DisplaySrgb" => ("显示器配置文件：sRGB", "设置"),
-        "EditKeybindings" => ("编辑快捷键…", "设置"),
-        "ReloadKeybindings" => ("重新加载快捷键", "设置"),
-        _ if short.starts_with("Rate") => {
-            return (format!("{} {}", t("评分"), &short[4..]), t("评分与标签"));
+    let group = match short {
+        "Open" | "OpenFolder" | "Export" | "Quit" => "action_group.file",
+        "ShowGrid" | "ShowDevelop" | "OpenSelected" | "Left" | "Right" | "Up" | "Down"
+        | "SelectAll" => "action_group.navigation",
+        "Undo" | "Redo" | "CopySettings" | "PasteSettings" | "SyncSettings" | "NewPreset"
+        | "CreateVirtualCopy" | "RemoveVirtualCopy" | "ToggleCrop" | "AutoTone"
+        | "ToggleMonochrome" | "ToggleMask" | "ToggleSpot" | "ToggleRedEye" | "DeleteRetouch"
+        | "ToggleWbPicker" | "SwapAspect" | "Cancel" => "action_group.edit",
+        "ToggleZoom" | "ToggleBefore" | "ToggleSplit" | "ToggleSoftProof"
+        | "ToggleGamutWarning" | "ProofSrgb" | "ProofDisplayP3" | "ProofAdobeRgb"
+        | "ToggleInfo" | "ToggleHistory" | "ToggleOverlay" => "action_group.view",
+        "LanguageEnglish" | "LanguageChinese" => "action_group.language",
+        "DisplayAuto" | "DisplaySrgb" | "EditKeybindings" | "ReloadKeybindings" => {
+            "action_group.settings"
         }
-        _ if short.starts_with("Label") => {
-            return (
-                format!("{} {}", t("颜色标签"), &short[5..]),
-                t("评分与标签"),
-            );
+        _ => {
+            for prefix in ["Rate", "Label"] {
+                if let Some(n) = short.strip_prefix(prefix) {
+                    return (
+                        format!("{} {n}", t(&format!("action.{prefix}"))),
+                        t("action_group.ratings"),
+                    );
+                }
+            }
+            return (short.to_owned(), t("action_group.other"));
         }
-        _ => return (short.to_owned(), t("其他")),
     };
-    (t(label), t(group))
+    (t(&format!("action.{short}")), t(group))
 }
 
 fn matches(action: &str, draft: &Draft, query: &str) -> bool {
@@ -194,7 +162,7 @@ impl EventEmitter<Closed> for KeybindingEditor {}
 
 impl KeybindingEditor {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder(t("搜索命令或快捷键…")));
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder(t("keybindings.search")));
         let shortcut = cx.new(|cx| InputState::new(window, cx).placeholder("ctrl-k ctrl-s, alt-s"));
         let mut actions: Vec<_> = cx
             .all_action_names()
@@ -307,7 +275,7 @@ impl KeybindingEditor {
         match keymap::save(self.draft.bindings.clone(), cx) {
             Ok(()) => cx.emit(Closed),
             Err(error) => {
-                self.error = Some(format!("{}: {error:#}", t("无法保存快捷键")));
+                self.error = Some(format!("{}: {error:#}", t("keybindings.save_failed")));
                 cx.notify();
             }
         }
@@ -377,7 +345,12 @@ impl Render for KeybindingEditor {
                             .gap_2()
                             .child(div().flex_1().min_w_0().text_sm().child(label))
                             .when(changed, |row| {
-                                row.child(div().text_xs().text_color(muted).child(t("已修改")))
+                                row.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(muted)
+                                        .child(t("keybindings.modified")),
+                                )
                             }),
                     )
                     .child(
@@ -387,7 +360,7 @@ impl Render for KeybindingEditor {
                             .text_color(muted)
                             .child(div().flex_1().child(group))
                             .child(if keys.is_empty() {
-                                t("未绑定")
+                                t("keybindings.unbound")
                             } else {
                                 keys.join(" / ")
                             }),
@@ -400,7 +373,7 @@ impl Render for KeybindingEditor {
                     .p_4()
                     .text_sm()
                     .text_color(muted)
-                    .child(t("没有匹配的命令")),
+                    .child(t("keybindings.no_match")),
             );
         }
         let mut detail = v_flex()
@@ -422,20 +395,20 @@ impl Render for KeybindingEditor {
                     .text_color(muted)
                     .child(format!("{group} · {selected}")),
             )
-            .child(div().text_sm().child(t("按键")))
+            .child(div().text_sm().child(t("keybindings.keys")))
             .child(Input::new(&self.shortcut).small().disabled(self.recording))
             .child(
                 div()
                     .text_xs()
                     .text_color(muted)
-                    .child(t("用逗号分隔多个快捷键，用空格分隔组合键序列。")),
+                    .child(t("keybindings.syntax_help")),
             )
             .child(
                 Button::new("record-shortcut")
                     .label(if self.recording {
-                        t("完成录制")
+                        t("keybindings.finish_recording")
                     } else {
-                        t("录制快捷键")
+                        t("keybindings.record")
                     })
                     .small()
                     .selected(self.recording)
@@ -458,14 +431,14 @@ impl Render for KeybindingEditor {
                     div()
                         .text_xs()
                         .text_color(muted)
-                        .child(t("按下快捷键或序列，然后点击完成录制；Esc 取消录制。")),
+                        .child(t("keybindings.record_help")),
                 )
             })
             .child(div().text_xs().text_color(muted).child(format!(
                 "{}: {}",
-                t("默认快捷键"),
+                t("keybindings.defaults"),
                 if defaults.is_empty() {
-                    t("未绑定")
+                    t("keybindings.unbound")
                 } else {
                     defaults.join(" / ")
                 }
@@ -475,7 +448,7 @@ impl Render for KeybindingEditor {
                     .gap_2()
                     .child(
                         Button::new("unbind-action")
-                            .label(t("解除绑定"))
+                            .label(t("keybindings.unbind"))
                             .small()
                             .disabled(self.recording)
                             .on_click(cx.listener(|editor, _, window, cx| {
@@ -489,7 +462,7 @@ impl Render for KeybindingEditor {
                     )
                     .child(
                         Button::new("reset-action")
-                            .label(t("恢复默认"))
+                            .label(t("keybindings.reset"))
                             .small()
                             .disabled(self.recording)
                             .on_click(cx.listener(|editor, _, window, cx| {
@@ -504,7 +477,12 @@ impl Render for KeybindingEditor {
                     ),
             );
         if has_conflicts {
-            detail = detail.child(div().text_sm().text_color(danger).child(t("快捷键冲突")));
+            detail = detail.child(
+                div()
+                    .text_sm()
+                    .text_color(danger)
+                    .child(t("keybindings.conflict")),
+            );
             for (key, owner) in conflicts {
                 detail = detail.child(
                     div()
@@ -515,7 +493,7 @@ impl Render for KeybindingEditor {
             }
             detail = detail.child(
                 Button::new("replace-conflicts")
-                    .label(t("替换冲突绑定"))
+                    .label(t("keybindings.replace"))
                     .small()
                     .disabled(self.recording)
                     .on_click(cx.listener(|editor, _, _, cx| {
@@ -525,7 +503,7 @@ impl Render for KeybindingEditor {
         } else {
             detail = detail.child(
                 Button::new("assign-shortcut")
-                    .label(t("应用此绑定"))
+                    .label(t("keybindings.assign"))
                     .small()
                     .disabled(invalid || self.recording)
                     .on_click(cx.listener(|editor, _, _, cx| {
@@ -538,7 +516,7 @@ impl Render for KeybindingEditor {
                 div()
                     .text_xs()
                     .text_color(danger)
-                    .child(t("快捷键格式无效")),
+                    .child(t("keybindings.invalid")),
             );
         }
         if let Some(error) = &self.error {
@@ -559,7 +537,7 @@ impl Render for KeybindingEditor {
                     )
                     .child(
                         Button::new("modified-only")
-                            .label(t("仅显示已修改"))
+                            .label(t("keybindings.modified_only"))
                             .small()
                             .selected(self.modified_only)
                             .on_click(cx.listener(|editor, _, _, cx| {
@@ -571,7 +549,7 @@ impl Render for KeybindingEditor {
             .child(
                 div().text_xs().text_color(muted).child(
                     rust_i18n::t!(
-                        "显示 %{count} 个命令，%{modified} 个已修改",
+                        "keybindings.summary",
                         count = filtered.len(),
                         modified = modified
                     )
@@ -610,7 +588,7 @@ impl Render for KeybindingEditor {
                     .gap_2()
                     .child(
                         Button::new("reset-all-bindings")
-                            .label(t("全部恢复默认"))
+                            .label(t("keybindings.reset_all"))
                             .small()
                             .disabled(self.recording)
                             .on_click(cx.listener(|editor, _, window, cx| {
@@ -625,19 +603,19 @@ impl Render for KeybindingEditor {
                             })),
                     )
                     .child(div().flex_1().text_xs().text_color(muted).child(if dirty {
-                        t("有未保存的更改")
+                        t("keybindings.unsaved")
                     } else {
-                        t("更改将在保存后生效")
+                        t("keybindings.apply_note")
                     }))
                     .child(
                         Button::new("cancel-keybindings")
-                            .label(t("取消"))
+                            .label(t("common.cancel"))
                             .small()
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(Closed))),
                     )
                     .child(
                         Button::new("save-keybindings")
-                            .label(t("保存"))
+                            .label(t("common.save"))
                             .small()
                             .primary()
                             .disabled(!dirty || invalid || has_conflicts || self.recording)

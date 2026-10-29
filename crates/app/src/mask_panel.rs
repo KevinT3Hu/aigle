@@ -29,21 +29,21 @@ enum Key {
 
 fn local_label(name: &str) -> &'static str {
     match name {
-        "exposure" => "曝光",
-        "temperature" => "色温",
-        "tint" => "色调",
-        "contrast" => "对比度",
-        "highlights" => "高光",
-        "shadows" => "阴影",
-        "whites" => "白色色阶",
-        "blacks" => "黑色色阶",
-        "texture" => "纹理",
-        "clarity" => "清晰度",
-        "dehaze" => "去朦胧",
-        "saturation" => "饱和度",
-        "hue" => "色相",
-        "sharpness" => "锐化程度",
-        "noise" => "降噪",
+        "exposure" => "param.local.exposure",
+        "temperature" => "param.local.temperature",
+        "tint" => "param.local.tint",
+        "contrast" => "param.local.contrast",
+        "highlights" => "param.local.highlights",
+        "shadows" => "param.local.shadows",
+        "whites" => "param.local.whites",
+        "blacks" => "param.local.blacks",
+        "texture" => "param.local.texture",
+        "clarity" => "param.local.clarity",
+        "dehaze" => "param.local.dehaze",
+        "saturation" => "param.local.saturation",
+        "hue" => "param.local.hue",
+        "sharpness" => "param.local.sharpness",
+        "noise" => "param.local.noise",
         _ => "",
     }
 }
@@ -73,11 +73,11 @@ fn local_value(a: &LocalParams, name: &str) -> f32 {
 impl MaskPanel {
     pub fn new(photo: Entity<Photo>, window: &mut Window, cx: &mut Context<Self>) -> MaskPanel {
         let mut defs: Vec<(Key, &'static str, f32, f32, f32, f32)> = vec![
-            (Key::BrushSize, "大小", 0.2, 20.0, 0.1, 3.0),
-            (Key::BrushFeather, "羽化", 0.0, 100.0, 1.0, 50.0),
-            (Key::BrushFlow, "流量", 1.0, 100.0, 1.0, 100.0),
-            (Key::Opacity, "不透明度", 0.0, 100.0, 1.0, 100.0),
-            (Key::Feather, "羽化", 0.0, 100.0, 1.0, 50.0),
+            (Key::BrushSize, "masks.size", 0.2, 20.0, 0.1, 3.0),
+            (Key::BrushFeather, "masks.feather", 0.0, 100.0, 1.0, 50.0),
+            (Key::BrushFlow, "masks.flow", 1.0, 100.0, 1.0, 100.0),
+            (Key::Opacity, "masks.opacity", 0.0, 100.0, 1.0, 100.0),
+            (Key::Feather, "masks.feather", 0.0, 100.0, 1.0, 50.0),
         ];
         for (i, s) in LocalParams::SPECS.iter().enumerate() {
             defs.push((
@@ -222,8 +222,7 @@ impl MaskPanel {
             }
             _ => return,
         };
-        let label =
-            rust_i18n::t!("蒙版 · {}", arg0 = crate::i18n::t(self.knobs[i].label)).into_owned();
+        let label = crate::i18n::join(&["masks.title", self.knobs[i].label]);
         self.photo.update(cx, |p, cx| {
             p.command(&label, vec![op], Some(gesture), hint, cx)
         });
@@ -258,7 +257,7 @@ impl MaskPanel {
                                     let path =
                                         format!("masks.{i}.adjust.{}", LocalParams::SPECS[j].name);
                                     p.command(
-                                        crate::i18n::t("蒙版 · 重置"),
+                                        crate::i18n::join(&["masks.title", "common.reset"]),
                                         vec![ParamOp::Set {
                                             path: path.as_str().into(),
                                             value: Value::Null,
@@ -283,7 +282,7 @@ impl MaskPanel {
             .label(format!("+ {}", kind.label()))
             .small()
             .selected(pending == Some(kind))
-            .tooltip(crate::i18n::t("然后在画面上拖动放置"))
+            .tooltip(crate::i18n::t("masks.place_tooltip"))
             .on_click(move |_, _, cx| {
                 photo.update(cx, |p, cx| {
                     p.pending_mask = if p.pending_mask == Some(kind) {
@@ -317,7 +316,11 @@ impl MaskPanel {
                 .child(div().flex_1().truncate().child(m.name.clone()))
                 .child(div().text_color(muted).child(tools::kind_label(&m.shape)))
                 .when(m.invert, |d| {
-                    d.child(div().text_color(muted).child(crate::i18n::t("反相")))
+                    d.child(
+                        div()
+                            .text_color(muted)
+                            .child(crate::i18n::t("masks.invert")),
+                    )
                 })
         }))
     }
@@ -345,7 +348,7 @@ impl Render for MaskPanel {
         let mut body = v_flex().gap_4().p_3().child(
             v_flex()
                 .gap_2()
-                .child(title(crate::i18n::t("蒙版")))
+                .child(title(crate::i18n::t("masks.title")))
                 .child(
                     h_flex()
                         .gap_1()
@@ -359,7 +362,7 @@ impl Render for MaskPanel {
                         div()
                             .text_xs()
                             .text_color(muted)
-                            .child(crate::i18n::t("还没有蒙版。选择一种类型后在画面上拖动。")),
+                            .child(crate::i18n::t("masks.empty")),
                     )
                 })
                 .child(self.list(&masks, cx)),
@@ -383,7 +386,7 @@ impl Render for MaskPanel {
             .flex_wrap()
             .child(
                 Button::new("mask-invert")
-                    .label(crate::i18n::t("反相"))
+                    .label(crate::i18n::t("masks.invert"))
                     .small()
                     .selected(invert)
                     .on_click({
@@ -392,7 +395,7 @@ impl Render for MaskPanel {
                             photo.update(cx, |p, cx| {
                                 if let Some((i, _)) = p.selected() {
                                     p.command(
-                                        crate::i18n::t("蒙版 · 反相"),
+                                        crate::i18n::join(&["masks.title", "masks.invert"]),
                                         vec![ParamOp::set(&format!("masks.{i}.invert"), !invert)],
                                         None,
                                         Interaction::Final,
@@ -405,10 +408,10 @@ impl Render for MaskPanel {
             )
             .child(
                 Button::new("mask-overlay")
-                    .label(crate::i18n::t("显示叠加"))
+                    .label(crate::i18n::t("masks.show_overlay"))
                     .small()
                     .selected(overlay)
-                    .tooltip(crate::keymap::hint("用红色显示蒙版范围（O）", cx))
+                    .tooltip(crate::keymap::hint("masks.overlay_tooltip", cx))
                     .on_click({
                         let photo = photo.clone();
                         move |_, _, cx| {
@@ -421,7 +424,7 @@ impl Render for MaskPanel {
             )
             .child(
                 Button::new("mask-delete")
-                    .label(crate::i18n::t("删除"))
+                    .label(crate::i18n::t("common.delete"))
                     .small()
                     .on_click({
                         let photo = photo.clone();
@@ -432,7 +435,7 @@ impl Render for MaskPanel {
         if is_brush {
             tools_row = tools_row.child(
                 Button::new("brush-erase")
-                    .label(crate::i18n::t("擦除"))
+                    .label(crate::i18n::t("masks.erase"))
                     .small()
                     .selected(erase)
                     .on_click(move |_, _, cx| {
@@ -445,7 +448,7 @@ impl Render for MaskPanel {
         }
         let mut shape = v_flex()
             .gap_2()
-            .child(title(crate::i18n::t("形状")))
+            .child(title(crate::i18n::t("masks.shape")))
             .child(tools_row)
             .child(self.knob(Key::Opacity, cx));
         if matches!(sel.shape, MaskShape::Radial { .. }) {
@@ -458,7 +461,9 @@ impl Render for MaskPanel {
                 .child(self.knob(Key::BrushFlow, cx));
         }
         body = body.child(shape);
-        let mut adjust = v_flex().gap_2().child(title(crate::i18n::t("调整")));
+        let mut adjust = v_flex()
+            .gap_2()
+            .child(title(crate::i18n::t("masks.adjustments")));
         for i in 0..LocalParams::SPECS.len() {
             adjust = adjust.child(self.knob(Key::Local(i), cx));
         }

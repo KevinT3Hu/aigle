@@ -246,21 +246,21 @@ pub enum NewMask {
 impl NewMask {
     pub fn label(self) -> String {
         match self {
-            NewMask::Linear => crate::i18n::t("线性渐变"),
-            NewMask::Radial => crate::i18n::t("径向渐变"),
-            NewMask::Brush => crate::i18n::t("画笔"),
+            NewMask::Linear => crate::i18n::t("masks.kind.linear"),
+            NewMask::Radial => crate::i18n::t("masks.kind.radial"),
+            NewMask::Brush => crate::i18n::t("masks.kind.brush"),
         }
     }
 }
 
 pub fn kind_label(s: &MaskShape) -> String {
     match s {
-        MaskShape::Linear { .. } => crate::i18n::t("线性渐变"),
-        MaskShape::Radial { .. } => crate::i18n::t("径向渐变"),
-        MaskShape::Brush { .. } => crate::i18n::t("画笔"),
-        MaskShape::Semantic { .. } => crate::i18n::t("智能"),
-        MaskShape::Range { .. } => crate::i18n::t("范围"),
-        MaskShape::Combine { .. } => crate::i18n::t("组合"),
+        MaskShape::Linear { .. } => crate::i18n::t("masks.kind.linear"),
+        MaskShape::Radial { .. } => crate::i18n::t("masks.kind.radial"),
+        MaskShape::Brush { .. } => crate::i18n::t("masks.kind.brush"),
+        MaskShape::Semantic { .. } => crate::i18n::t("masks.kind.semantic"),
+        MaskShape::Range { .. } => crate::i18n::t("masks.kind.range"),
+        MaskShape::Combine { .. } => crate::i18n::t("masks.kind.combined"),
     }
 }
 
@@ -282,7 +282,7 @@ pub fn new_mask(p: &EditParams, k: NewMask, at: Pt) -> LocalAdjustment {
     };
     LocalAdjustment {
         id,
-        name: rust_i18n::t!("蒙版 {n}", n = n).into_owned(),
+        name: rust_i18n::t!("masks.default_name", n = n).into_owned(),
         shape,
         invert: false,
         opacity: 1.0,

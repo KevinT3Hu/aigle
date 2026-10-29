@@ -46,12 +46,19 @@ impl RetouchPanel {
     pub fn new(photo: Entity<Photo>, window: &mut Window, cx: &mut Context<Self>) -> RetouchPanel {
         let (rmin, rmax) = (MIN_RADIUS * PCT, MAX_RADIUS * PCT);
         let defs: [(Key, &'static str, f32, f32, f32, f32); 6] = [
-            (Key::SpotSize, "大小", rmin, 10.0, 0.05, 1.5),
-            (Key::SpotFeather, "羽化", 0.0, 100.0, 1.0, 50.0),
-            (Key::SpotOpacity, "不透明度", 0.0, 100.0, 1.0, 100.0),
-            (Key::EyeSize, "大小", rmin, rmax.min(10.0), 0.05, 1.2),
-            (Key::EyePupil, "瞳孔范围", 0.0, 100.0, 1.0, 50.0),
-            (Key::EyeDarken, "变暗", 0.0, 100.0, 1.0, 50.0),
+            (Key::SpotSize, "retouch.size", rmin, 10.0, 0.05, 1.5),
+            (Key::SpotFeather, "retouch.feather", 0.0, 100.0, 1.0, 50.0),
+            (Key::SpotOpacity, "retouch.opacity", 0.0, 100.0, 1.0, 100.0),
+            (
+                Key::EyeSize,
+                "retouch.size",
+                rmin,
+                rmax.min(10.0),
+                0.05,
+                1.2,
+            ),
+            (Key::EyePupil, "retouch.pupil", 0.0, 100.0, 1.0, 50.0),
+            (Key::EyeDarken, "retouch.darken", 0.0, 100.0, 1.0, 50.0),
         ];
         let knobs = defs
             .into_iter()
@@ -159,7 +166,7 @@ impl RetouchPanel {
                     };
                     (
                         ParamOp::set(&format!("spots.{idx}.{field}"), value),
-                        crate::i18n::t("污点去除"),
+                        "tool.spot",
                     )
                 }
                 _ => {
@@ -171,7 +178,7 @@ impl RetouchPanel {
                     };
                     (
                         ParamOp::set(&format!("red_eye.{idx}.{field}"), value),
-                        crate::i18n::t("红眼校正"),
+                        "tool.red_eye",
                     )
                 }
             }
@@ -185,7 +192,7 @@ impl RetouchPanel {
             }
         };
         self.photo.update(cx, |p, cx| {
-            p.command(&label, vec![op], Some(gesture), hint, cx)
+            p.command(label, vec![op], Some(gesture), hint, cx)
         });
         if hint == Interaction::Final {
             self.gesture = None;
@@ -219,8 +226,8 @@ impl RetouchPanel {
     fn mode_button(&self, mode: SpotMode, current: SpotMode) -> Button {
         let photo = self.photo.clone();
         let label = match mode {
-            SpotMode::Heal => crate::i18n::t("修复"),
-            SpotMode::Clone => crate::i18n::t("仿制"),
+            SpotMode::Heal => crate::i18n::t("retouch.heal"),
+            SpotMode::Clone => crate::i18n::t("retouch.clone"),
         };
         Button::new(SharedString::from(format!("spot-{mode:?}")))
             .label(label)
@@ -233,7 +240,7 @@ impl RetouchPanel {
                         && s.mode != mode
                     {
                         p.command(
-                            crate::i18n::t("污点去除 · 方式"),
+                            crate::i18n::join(&["tool.spot", "retouch.mode"]),
                             vec![ParamOp::set(
                                 &format!("spots.{i}.mode"),
                                 serde_json::to_value(mode).expect("serialisable"),
@@ -262,7 +269,7 @@ impl RetouchPanel {
         let photo = self.photo.clone();
         v_flex()
             .gap_2()
-            .child(title(crate::i18n::t("污点去除")))
+            .child(title(crate::i18n::t("tool.spot")))
             .child(
                 h_flex()
                     .gap_1()
@@ -270,9 +277,9 @@ impl RetouchPanel {
                     .child(self.mode_button(SpotMode::Clone, mode)),
             )
             .child(div().text_xs().text_color(muted).child(if count == 0 {
-                crate::i18n::t("点击污点去除，拖动可手动选择源区域。")
+                crate::i18n::t("retouch.spot_help")
             } else {
-                rust_i18n::t!("共 {n} 处", n = count).into_owned()
+                rust_i18n::t!("retouch.count", n = count).into_owned()
             }))
             .child(self.knob(Key::SpotSize, cx))
             .child(self.knob(Key::SpotFeather, cx))
@@ -284,7 +291,7 @@ impl RetouchPanel {
                         let photo = photo.clone();
                         d.child(
                             Button::new("spot-delete")
-                                .label(crate::i18n::t("删除"))
+                                .label(crate::i18n::t("common.delete"))
                                 .small()
                                 .on_click(move |_, _, cx| {
                                     photo.update(cx, |p, cx| p.delete_spot(i, cx))
@@ -294,12 +301,12 @@ impl RetouchPanel {
                     .when(count > 0, |d| {
                         d.child(
                             Button::new("spot-clear")
-                                .label(crate::i18n::t("全部清除"))
+                                .label(crate::i18n::t("retouch.clear_all"))
                                 .small()
                                 .on_click(move |_, _, cx| {
                                     photo.update(cx, |p, cx| {
                                         p.command(
-                                            crate::i18n::t("清除污点"),
+                                            "retouch.clear_spots",
                                             vec![tools::spots_op(&[])],
                                             None,
                                             Interaction::Final,
@@ -322,11 +329,11 @@ impl RetouchPanel {
         let photo = self.photo.clone();
         let mut body = v_flex()
             .gap_2()
-            .child(title(crate::i18n::t("红眼校正")))
+            .child(title(crate::i18n::t("tool.red_eye")))
             .child(div().text_xs().text_color(muted).child(if count == 0 {
-                crate::i18n::t("点击瞳孔，或从瞳孔中心拖出范围。")
+                crate::i18n::t("retouch.eye_help")
             } else {
-                rust_i18n::t!("共 {n} 处", n = count).into_owned()
+                rust_i18n::t!("retouch.count", n = count).into_owned()
             }));
         if selected.is_some() {
             body = body
@@ -341,7 +348,7 @@ impl RetouchPanel {
                     let photo = photo.clone();
                     d.child(
                         Button::new("eye-delete")
-                            .label(crate::i18n::t("删除"))
+                            .label(crate::i18n::t("common.delete"))
                             .small()
                             .on_click(move |_, _, cx| {
                                 photo.update(cx, |p, cx| p.delete_eye(i, cx))
@@ -351,12 +358,12 @@ impl RetouchPanel {
                 .when(count > 0, |d| {
                     d.child(
                         Button::new("eye-clear")
-                            .label(crate::i18n::t("全部清除"))
+                            .label(crate::i18n::t("retouch.clear_all"))
                             .small()
                             .on_click(move |_, _, cx| {
                                 photo.update(cx, |p, cx| {
                                     p.command(
-                                        crate::i18n::t("清除红眼校正"),
+                                        "retouch.clear_eyes",
                                         vec![tools::eyes_op(&[])],
                                         None,
                                         Interaction::Final,

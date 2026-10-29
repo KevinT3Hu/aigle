@@ -553,7 +553,7 @@ impl Canvas {
                 let q = m.to_image(p);
                 let k = crop::ratio(photo.head().geometry.aspect, f.w, f.h);
                 let r = crop::drag(&f, d.start, h, q.x - d.from.x, q.y - d.from.y, k);
-                (crate::i18n::t("裁剪"), crop_ops(&f.crop_of(r)))
+                ("crop.crop", crop_ops(&f.crop_of(r)))
             }
             None => {
                 let a0 = f32::from(d.from_window.y - d.pivot.y)
@@ -567,7 +567,7 @@ impl Canvas {
                 }
                 let angle = (d.start_angle + delta).clamp(-45.0, 45.0);
                 (
-                    crate::i18n::t("拉直"),
+                    "crop.straighten",
                     vec![ParamOp::set("geometry.angle", angle)],
                 )
             }
@@ -575,7 +575,7 @@ impl Canvas {
         let gesture = d.gesture;
         self.photo.update(cx, |ph, cx| {
             ph.command(
-                &label,
+                label,
                 ops.clone(),
                 Some(gesture),
                 Interaction::Continuous,
@@ -583,7 +583,7 @@ impl Canvas {
             )
         });
         if let Some(d) = &mut self.crop_drag {
-            d.last = Some((label, ops));
+            d.last = Some((label.to_owned(), ops));
         }
     }
 
@@ -636,7 +636,7 @@ impl Canvas {
             let ok = self.photo.update(cx, |p, cx| {
                 p.pending_mask = None;
                 let ok = p.command(
-                    crate::i18n::t("添加蒙版"),
+                    "masks.add",
                     vec![ParamOp::AddMask { mask: first }],
                     Some(gesture),
                     Interaction::Continuous,
@@ -661,7 +661,7 @@ impl Canvas {
                 from: at,
                 last_src: src,
                 gesture,
-                label: crate::i18n::t("添加蒙版"),
+                label: "masks.add".into(),
                 last: None,
             });
             return true;
@@ -679,7 +679,7 @@ impl Canvas {
                 from: at,
                 last_src: src,
                 gesture,
-                label: crate::i18n::t("调整蒙版"),
+                label: "masks.edit".into(),
                 last: None,
             });
             return true;
@@ -702,7 +702,7 @@ impl Canvas {
             let ops = tools::shape_ops(index, &shape);
             self.photo.update(cx, |p, cx| {
                 p.command(
-                    crate::i18n::t("画笔"),
+                    "masks.kind.brush",
                     ops.clone(),
                     Some(gesture),
                     Interaction::Continuous,
@@ -716,7 +716,7 @@ impl Canvas {
                 from: at,
                 last_src: src,
                 gesture,
-                label: crate::i18n::t("画笔"),
+                label: "masks.kind.brush".into(),
                 last: Some(ops),
             });
             return true;
@@ -878,7 +878,7 @@ impl Canvas {
                         spots.push(s);
                     }
                 }
-                (crate::i18n::t("污点去除"), tools::spots_op(&spots))
+                ("tool.spot", tools::spots_op(&spots))
             }
             (RetouchKind::Eye, part) => {
                 let mut eyes = d.eyes.clone();
@@ -891,7 +891,7 @@ impl Canvas {
                         tools::radius_to(&sp, d.from, at).clamp(MIN_RADIUS, MAX_RADIUS),
                     )),
                 }
-                (crate::i18n::t("红眼校正"), tools::eyes_op(&eyes))
+                ("tool.red_eye", tools::eyes_op(&eyes))
             }
         };
         let ops = vec![op];
@@ -916,8 +916,8 @@ impl Canvas {
             return;
         };
         let label = match d.kind {
-            RetouchKind::Spot => crate::i18n::t("污点去除"),
-            RetouchKind::Eye => crate::i18n::t("红眼校正"),
+            RetouchKind::Spot => "tool.spot",
+            RetouchKind::Eye => "tool.red_eye",
         };
         match (d.last, d.part, d.kind) {
             (Some(ops), _, _) => {
@@ -1138,9 +1138,9 @@ impl Canvas {
     fn status(&self, cx: &App) -> String {
         let photo = self.photo.read(cx);
         match &photo.load {
-            aigle_engine_api::LoadState::Loading => return crate::i18n::t("正在加载…"),
+            aigle_engine_api::LoadState::Loading => return crate::i18n::t("canvas.loading"),
             aigle_engine_api::LoadState::Failed(e) => {
-                return rust_i18n::t!("无法打开：{e}", e = e).into_owned();
+                return rust_i18n::t!("canvas.open_failed", e = e).into_owned();
             }
             aigle_engine_api::LoadState::Ready(_) => {}
         }
@@ -1149,39 +1149,35 @@ impl Canvas {
             .map(|(crop, out, _)| format!("{:.0}%", self.state.scale(crop, out) * 100.0))
             .unwrap_or_default();
         let q = match self.frame.as_ref().map(|(f, _)| f.quality) {
-            Some(Quality::Draft) => crate::i18n::t("草稿"),
-            Some(Quality::Refined) => crate::i18n::t("精细"),
+            Some(Quality::Draft) => crate::i18n::t("canvas.quality.draft"),
+            Some(Quality::Refined) => crate::i18n::t("canvas.quality.refined"),
             Some(Quality::Full) => "1:1".into(),
-            None => crate::i18n::t("渲染中"),
+            None => crate::i18n::t("canvas.rendering"),
         };
         let before = match self.compare {
-            Compare::Off => String::new(),
-            Compare::Before => crate::i18n::t(" · 原图"),
-            Compare::Split => crate::i18n::t(" · 分屏对比"),
+            Compare::Off => None,
+            Compare::Before => Some(crate::i18n::t("canvas.before")),
+            Compare::Split => Some(crate::i18n::t("canvas.split")),
         };
         let hint = if photo.wb_pick {
-            crate::keymap::hint(" · 吸管：点击应为中性灰的位置，Esc 取消", cx)
+            Some(crate::keymap::hint("canvas.hint.wb_pick", cx))
         } else {
             match photo.tool {
-                Tool::Crop => crate::keymap::hint(
-                    " · 裁剪：拖动边角调整，框外拖动旋转，双击框内或 Enter 完成",
-                    cx,
-                ),
+                Tool::Crop => Some(crate::keymap::hint("canvas.hint.crop", cx)),
                 Tool::Mask if photo.pending_mask.is_some() => {
-                    crate::i18n::t(" · 在画面上拖动以放置蒙版")
+                    Some(crate::i18n::t("canvas.hint.place_mask"))
                 }
-                Tool::Mask => crate::keymap::hint(" · 蒙版：拖动控制点调整，O 显示叠加", cx),
-                Tool::Spot => crate::keymap::hint(
-                    " · 污点去除：点击自动取样，拖动手动选择源，Delete 删除",
-                    cx,
-                ),
-                Tool::RedEye => {
-                    crate::keymap::hint(" · 红眼校正：点击或拖出眼睛范围，Delete 删除", cx)
-                }
-                Tool::None => String::new(),
+                Tool::Mask => Some(crate::keymap::hint("canvas.hint.mask", cx)),
+                Tool::Spot => Some(crate::keymap::hint("canvas.hint.spot", cx)),
+                Tool::RedEye => Some(crate::keymap::hint("canvas.hint.red_eye", cx)),
+                Tool::None => None,
             }
         };
-        format!("{zoom} · {q}{before}{hint}")
+        [Some(zoom), Some(q), before, hint]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ")
     }
 }
 
@@ -1505,8 +1501,8 @@ impl Render for Canvas {
                         .text_color(rgb(0xe8e8e8))
                         .child(s)
                 };
-                d.child(tag(crate::i18n::t("原图")).right(px(w - x + 8.0)))
-                    .child(tag(crate::i18n::t("调整后")).left(px(x + 8.0)))
+                d.child(tag(crate::i18n::t("canvas.before")).right(px(w - x + 8.0)))
+                    .child(tag(crate::i18n::t("canvas.after")).left(px(x + 8.0)))
             })
             .child(
                 div()

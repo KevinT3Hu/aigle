@@ -165,7 +165,7 @@ fn cell(
                     d.child(
                         div()
                             .text_color(theme.muted_foreground)
-                            .child(crate::i18n::t("已调整")),
+                            .child(crate::i18n::t("grid.edited")),
                     )
                 }),
         );
@@ -183,12 +183,9 @@ impl Render for Grid {
         };
         if n == 0 {
             let msg = match (folder, loading) {
-                (false, _) => crate::keymap::hint(
-                    "打开一个文件夹浏览照片（Ctrl+Shift+O），或打开单张照片（Ctrl+O）",
-                    cx,
-                ),
-                (true, true) => crate::i18n::t("正在读取文件夹…"),
-                (true, false) => crate::i18n::t("此文件夹中没有可打开的照片"),
+                (false, _) => crate::keymap::hint("grid.empty_hint", cx),
+                (true, true) => crate::i18n::t("grid.reading"),
+                (true, false) => crate::i18n::t("grid.no_photos"),
             };
             return div()
                 .size_full()

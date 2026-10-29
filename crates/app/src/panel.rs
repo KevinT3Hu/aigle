@@ -26,7 +26,12 @@ use crate::meta;
 use crate::photo::{Photo, PhotoEvent, Tool};
 use crate::retouch_panel::RetouchPanel;
 
-const PANEL_TABS: [&str; 4] = ["调整", "修饰", "蒙版", "信息"];
+const PANEL_TABS: [&str; 4] = [
+    "panel.tab.adjust",
+    "panel.tab.retouch",
+    "panel.tab.masks",
+    "panel.tab.info",
+];
 const MASK_TAB: usize = 2;
 const GROUPS: [&[usize]; 2] = [&[0, 1, 2, 3], &[4, 5, 6, 7]];
 
@@ -66,13 +71,13 @@ impl Section {
     pub fn paths(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.rows
             .iter()
-            .map(|(p, _)| *p)
+            .copied()
             .chain(self.extra.reset_paths().iter().copied())
     }
 
     /// The colour mixer is replaced by the black & white mix in monochrome.
     fn hidden(&self, p: &EditParams) -> bool {
-        let first = self.rows.first().map(|(path, _)| *path).unwrap_or("");
+        let first = self.rows.first().copied().unwrap_or("");
         if p.bw.monochrome {
             first.starts_with("mixer.")
         } else {
@@ -84,8 +89,8 @@ impl Section {
 pub struct Section {
     pub title: &'static str,
     pub extra: Extra,
-    /// (path, label).
-    pub rows: &'static [(&'static str, &'static str)],
+    /// Parameter paths of the sliders; see [`label_key`].
+    pub rows: &'static [&'static str],
 }
 
 pub struct GroupDef {
@@ -93,7 +98,12 @@ pub struct GroupDef {
     pub sections: &'static [Section],
 }
 
-const fn section(title: &'static str, rows: &'static [(&'static str, &'static str)]) -> Section {
+/// Catalog key of the label of the slider for `path`.
+pub fn label_key(path: &str) -> String {
+    format!("param.{path}")
+}
+
+const fn section(title: &'static str, rows: &'static [&'static str]) -> Section {
     Section {
         title,
         extra: Extra::None,
@@ -103,244 +113,240 @@ const fn section(title: &'static str, rows: &'static [(&'static str, &'static st
 
 pub const TOOL_GROUPS: &[GroupDef] = &[
     GroupDef {
-        title: "基本",
+        title: "group.basic",
         sections: &[
             Section {
-                title: "配置文件",
+                title: "section.profile",
                 extra: Extra::CameraProfile,
                 rows: &[],
             },
             Section {
-                title: "白平衡",
+                title: "section.white_balance",
                 extra: Extra::WhiteBalance,
-                rows: &[("wb.temperature", "色温"), ("wb.tint", "色调")],
+                rows: &["wb.temperature", "wb.tint"],
             },
             section(
-                "影调",
+                "section.tone",
                 &[
-                    ("light.exposure", "曝光"),
-                    ("light.contrast", "对比度"),
-                    ("light.highlights", "高光"),
-                    ("light.shadows", "阴影"),
-                    ("light.whites", "白色色阶"),
-                    ("light.blacks", "黑色色阶"),
+                    "light.exposure",
+                    "light.contrast",
+                    "light.highlights",
+                    "light.shadows",
+                    "light.whites",
+                    "light.blacks",
                 ],
             ),
             section(
-                "偏好",
+                "section.presence",
                 &[
-                    ("presence.texture", "纹理"),
-                    ("presence.clarity", "清晰度"),
-                    ("presence.dehaze", "去朦胧"),
-                    ("presence.vibrance", "自然饱和度"),
-                    ("presence.saturation", "饱和度"),
+                    "presence.texture",
+                    "presence.clarity",
+                    "presence.dehaze",
+                    "presence.vibrance",
+                    "presence.saturation",
                 ],
             ),
         ],
     },
     GroupDef {
-        title: "曲线",
+        title: "group.curves",
         sections: &[
             Section {
-                title: "点曲线",
+                title: "section.point_curve",
                 extra: Extra::PointCurve,
                 rows: &[],
             },
             section(
-                "参数曲线",
+                "section.parametric_curve",
                 &[
-                    ("curve.parametric.highlights", "高光"),
-                    ("curve.parametric.lights", "亮调"),
-                    ("curve.parametric.darks", "暗调"),
-                    ("curve.parametric.shadows", "阴影"),
+                    "curve.parametric.highlights",
+                    "curve.parametric.lights",
+                    "curve.parametric.darks",
+                    "curve.parametric.shadows",
                 ],
             ),
         ],
     },
     GroupDef {
-        title: "颜色",
+        title: "group.color",
         sections: &[
             Section {
-                title: "处理方式",
+                title: "section.treatment",
                 extra: Extra::Treatment,
                 rows: &[],
             },
             section(
-                "黑白混合",
+                "section.bw_mix",
                 &[
-                    ("bw.red", "红色"),
-                    ("bw.orange", "橙色"),
-                    ("bw.yellow", "黄色"),
-                    ("bw.green", "绿色"),
-                    ("bw.aqua", "浅绿色"),
-                    ("bw.blue", "蓝色"),
-                    ("bw.purple", "紫色"),
-                    ("bw.magenta", "洋红"),
+                    "bw.red",
+                    "bw.orange",
+                    "bw.yellow",
+                    "bw.green",
+                    "bw.aqua",
+                    "bw.blue",
+                    "bw.purple",
+                    "bw.magenta",
                 ],
             ),
             section(
-                "色相",
+                "section.mixer_hue",
                 &[
-                    ("mixer.red.hue", "红色"),
-                    ("mixer.orange.hue", "橙色"),
-                    ("mixer.yellow.hue", "黄色"),
-                    ("mixer.green.hue", "绿色"),
-                    ("mixer.aqua.hue", "浅绿色"),
-                    ("mixer.blue.hue", "蓝色"),
-                    ("mixer.purple.hue", "紫色"),
-                    ("mixer.magenta.hue", "洋红"),
+                    "mixer.red.hue",
+                    "mixer.orange.hue",
+                    "mixer.yellow.hue",
+                    "mixer.green.hue",
+                    "mixer.aqua.hue",
+                    "mixer.blue.hue",
+                    "mixer.purple.hue",
+                    "mixer.magenta.hue",
                 ],
             ),
             section(
-                "饱和度",
+                "section.mixer_saturation",
                 &[
-                    ("mixer.red.saturation", "红色"),
-                    ("mixer.orange.saturation", "橙色"),
-                    ("mixer.yellow.saturation", "黄色"),
-                    ("mixer.green.saturation", "绿色"),
-                    ("mixer.aqua.saturation", "浅绿色"),
-                    ("mixer.blue.saturation", "蓝色"),
-                    ("mixer.purple.saturation", "紫色"),
-                    ("mixer.magenta.saturation", "洋红"),
+                    "mixer.red.saturation",
+                    "mixer.orange.saturation",
+                    "mixer.yellow.saturation",
+                    "mixer.green.saturation",
+                    "mixer.aqua.saturation",
+                    "mixer.blue.saturation",
+                    "mixer.purple.saturation",
+                    "mixer.magenta.saturation",
                 ],
             ),
             section(
-                "明亮度",
+                "section.mixer_luminance",
                 &[
-                    ("mixer.red.luminance", "红色"),
-                    ("mixer.orange.luminance", "橙色"),
-                    ("mixer.yellow.luminance", "黄色"),
-                    ("mixer.green.luminance", "绿色"),
-                    ("mixer.aqua.luminance", "浅绿色"),
-                    ("mixer.blue.luminance", "蓝色"),
-                    ("mixer.purple.luminance", "紫色"),
-                    ("mixer.magenta.luminance", "洋红"),
+                    "mixer.red.luminance",
+                    "mixer.orange.luminance",
+                    "mixer.yellow.luminance",
+                    "mixer.green.luminance",
+                    "mixer.aqua.luminance",
+                    "mixer.blue.luminance",
+                    "mixer.purple.luminance",
+                    "mixer.magenta.luminance",
                 ],
             ),
         ],
     },
     GroupDef {
-        title: "分级",
+        title: "group.grading",
         sections: &[
             section(
-                "阴影",
+                "section.grading_shadows",
                 &[
-                    ("grading.shadows.hue", "色相"),
-                    ("grading.shadows.saturation", "饱和度"),
-                    ("grading.shadows.luminance", "明亮度"),
+                    "grading.shadows.hue",
+                    "grading.shadows.saturation",
+                    "grading.shadows.luminance",
                 ],
             ),
             section(
-                "中间调",
+                "section.grading_midtones",
                 &[
-                    ("grading.midtones.hue", "色相"),
-                    ("grading.midtones.saturation", "饱和度"),
-                    ("grading.midtones.luminance", "明亮度"),
+                    "grading.midtones.hue",
+                    "grading.midtones.saturation",
+                    "grading.midtones.luminance",
                 ],
             ),
             section(
-                "高光",
+                "section.grading_highlights",
                 &[
-                    ("grading.highlights.hue", "色相"),
-                    ("grading.highlights.saturation", "饱和度"),
-                    ("grading.highlights.luminance", "明亮度"),
+                    "grading.highlights.hue",
+                    "grading.highlights.saturation",
+                    "grading.highlights.luminance",
                 ],
             ),
             section(
-                "全局",
+                "section.grading_global",
                 &[
-                    ("grading.global.hue", "色相"),
-                    ("grading.global.saturation", "饱和度"),
-                    ("grading.global.luminance", "明亮度"),
+                    "grading.global.hue",
+                    "grading.global.saturation",
+                    "grading.global.luminance",
                 ],
             ),
             section(
-                "混合",
-                &[("grading.blending", "混合"), ("grading.balance", "平衡")],
+                "section.grading_blending",
+                &["grading.blending", "grading.balance"],
             ),
         ],
     },
     GroupDef {
-        title: "细节",
+        title: "group.detail",
         sections: &[
             section(
-                "锐化",
+                "section.sharpening",
                 &[
-                    ("detail.sharpen.amount", "数量"),
-                    ("detail.sharpen.radius", "半径"),
-                    ("detail.sharpen.detail", "细节"),
-                    ("detail.sharpen.masking", "蒙版"),
+                    "detail.sharpen.amount",
+                    "detail.sharpen.radius",
+                    "detail.sharpen.detail",
+                    "detail.sharpen.masking",
                 ],
             ),
             section(
-                "降噪",
+                "section.noise_reduction",
                 &[
-                    ("detail.noise.luma", "明亮度"),
-                    ("detail.noise.detail", "明亮度细节"),
-                    ("detail.noise.contrast", "明亮度对比"),
-                    ("detail.noise.chroma", "颜色"),
-                    ("detail.noise.chroma_detail", "颜色细节"),
+                    "detail.noise.luma",
+                    "detail.noise.detail",
+                    "detail.noise.contrast",
+                    "detail.noise.chroma",
+                    "detail.noise.chroma_detail",
                 ],
             ),
             section(
-                "去边",
+                "section.defringe",
                 &[
-                    ("detail.defringe.purple_amount", "紫色数量"),
-                    ("detail.defringe.purple_hue", "紫色色相"),
-                    ("detail.defringe.green_amount", "绿色数量"),
-                    ("detail.defringe.green_hue", "绿色色相"),
+                    "detail.defringe.purple_amount",
+                    "detail.defringe.purple_hue",
+                    "detail.defringe.green_amount",
+                    "detail.defringe.green_hue",
                 ],
             ),
         ],
     },
     GroupDef {
-        title: "光学",
+        title: "group.optics",
         sections: &[
             Section {
-                title: "镜头校正",
+                title: "section.lens_correction",
                 extra: Extra::LensProfile,
-                rows: &[
-                    ("lens.distortion", "畸变"),
-                    ("lens.tca", "色差"),
-                    ("lens.vignetting", "暗角"),
-                ],
+                rows: &["lens.distortion", "lens.tca", "lens.vignetting"],
             },
             section(
-                "变换",
+                "section.transform",
                 &[
-                    ("geometry.angle", "角度"),
-                    ("geometry.perspective_vertical", "垂直透视"),
-                    ("geometry.perspective_horizontal", "水平透视"),
+                    "geometry.angle",
+                    "geometry.perspective_vertical",
+                    "geometry.perspective_horizontal",
                 ],
             ),
         ],
     },
     GroupDef {
-        title: "效果",
+        title: "group.effects",
         sections: &[
             section(
-                "暗角",
+                "section.vignette",
                 &[
-                    ("effects.vignette.amount", "数量"),
-                    ("effects.vignette.midpoint", "中点"),
-                    ("effects.vignette.roundness", "圆度"),
-                    ("effects.vignette.feather", "羽化"),
+                    "effects.vignette.amount",
+                    "effects.vignette.midpoint",
+                    "effects.vignette.roundness",
+                    "effects.vignette.feather",
                 ],
             ),
             section(
-                "颗粒",
+                "section.grain",
                 &[
-                    ("effects.grain.amount", "数量"),
-                    ("effects.grain.size", "大小"),
-                    ("effects.grain.roughness", "粗糙度"),
+                    "effects.grain.amount",
+                    "effects.grain.size",
+                    "effects.grain.roughness",
                 ],
             ),
         ],
     },
     GroupDef {
-        title: "RAW 处理",
+        title: "group.raw",
         sections: &[Section {
-            title: "解码",
+            title: "section.decoding",
             extra: Extra::RawSettings,
             rows: &[],
         }],
@@ -348,22 +354,29 @@ pub const TOOL_GROUPS: &[GroupDef] = &[
 ];
 
 const DEMOSAIC: [(Demosaic, &str); 3] = [
-    (Demosaic::Auto, "自动"),
+    (Demosaic::Auto, "panel.raw.demosaic.auto"),
     (Demosaic::Rcd, "RCD"),
     (Demosaic::Amaze, "AMaZE"),
 ];
 
 const HIGHLIGHTS: [(HighlightRecon, &str); 4] = [
-    (HighlightRecon::ColorPropagation, "颜色传播"),
-    (HighlightRecon::InpaintOpposed, "反向修补"),
-    (HighlightRecon::Guided, "引导式"),
-    (HighlightRecon::Off, "关闭"),
+    (
+        HighlightRecon::ColorPropagation,
+        "panel.raw.highlight_recon.color_propagation",
+    ),
+    (
+        HighlightRecon::InpaintOpposed,
+        "panel.raw.highlight_recon.inpaint_opposed",
+    ),
+    (HighlightRecon::Guided, "panel.raw.highlight_recon.guided"),
+    (HighlightRecon::Off, "panel.raw.highlight_recon.off"),
 ];
 
 struct Row {
     path: &'static str,
-    label: &'static str,
-    /// History label, e.g. "饱和度 · 蓝色".
+    /// Catalog key of the label.
+    label: String,
+    /// History label, e.g. `section.mixer_saturation · param.mixer.blue.saturation`.
     history: String,
     state: Entity<SliderState>,
     decimals: usize,
@@ -433,7 +446,7 @@ impl Panel {
     ) -> Panel {
         let mut rows = Vec::new();
         for s in TOOL_GROUPS.iter().flat_map(|t| t.sections) {
-            for &(path, label) in s.rows {
+            for &path in s.rows {
                 let spec = EditParams::default()
                     .spec(path)
                     .expect("panel paths are scalar params");
@@ -450,10 +463,11 @@ impl Panel {
                 let sub = cx.subscribe_in(&state, window, move |p, _, ev, _, cx| {
                     p.on_slider(i, ev, cx)
                 });
+                let label = label_key(path);
                 rows.push(Row {
                     path,
+                    history: crate::i18n::join(&[s.title, &label]),
                     label,
-                    history: format!("{} · {label}", s.title),
                     state,
                     decimals: decimals(spec.step),
                     _sub: sub,
@@ -599,17 +613,13 @@ impl Panel {
         } else {
             resets(&[path])
         };
-        let label = rust_i18n::t!(
-            "重置 {}",
-            arg0 = crate::i18n::history_label(&self.rows[i].history)
-        )
-        .into_owned();
+        let label = crate::i18n::reset_label(&self.rows[i].history);
         self.send(&label, ops, None, Interaction::Final, cx);
     }
 
     fn as_shot(&mut self, cx: &mut Context<Self>) {
         self.send(
-            crate::i18n::t("白平衡 · 原照设置"),
+            crate::i18n::join(&["section.white_balance", "panel.wb.as_shot"]),
             resets(&WB_PATHS),
             None,
             Interaction::Final,
@@ -629,16 +639,15 @@ impl Panel {
                         ParamOp::set("wb.mode", "auto"),
                     ];
                     p.send(
-                        crate::i18n::t("白平衡 · 自动"),
+                        crate::i18n::join(&["section.white_balance", "panel.wb.auto"]),
                         ops,
                         None,
                         Interaction::Final,
                         cx,
                     );
                     if let Some(why) = wb.low_confidence_reason {
-                        p.error = Some(
-                            rust_i18n::t!("自动白平衡置信度低：{why}", why = why).into_owned(),
-                        );
+                        p.error =
+                            Some(rust_i18n::t!("panel.wb.low_confidence", why = why).into_owned());
                     }
                 }
                 Err(e) => p.error = Some(e.to_string()),
@@ -657,7 +666,10 @@ impl Panel {
                             let profile = LensProfile::Resolved(m.data_ref);
                             let value = serde_json::to_value(profile).expect("serialisable");
                             p.send(
-                                crate::i18n::t("镜头校正 · 启用配置文件"),
+                                crate::i18n::join(&[
+                                    "section.lens_correction",
+                                    "panel.lens.enable_profile",
+                                ]),
                                 vec![ParamOp::set("lens.profile", value)],
                                 None,
                                 Interaction::Final,
@@ -665,7 +677,7 @@ impl Panel {
                             );
                             p.lens_name = Some(format!("{} {}", m.lens_maker, m.lens_model));
                         }
-                        None => p.error = Some(crate::i18n::t("镜头数据库中没有匹配的镜头")),
+                        None => p.error = Some(crate::i18n::t("panel.lens.no_match")),
                     },
                     Err(e) => p.error = Some(e.to_string()),
                 }
@@ -676,7 +688,7 @@ impl Panel {
 
     fn lens_off(&mut self, cx: &mut Context<Self>) {
         self.send(
-            crate::i18n::t("镜头校正 · 关闭"),
+            crate::i18n::join(&["section.lens_correction", "panel.lens.disable"]),
             resets(&["lens.profile"]),
             None,
             Interaction::Final,
@@ -704,7 +716,7 @@ impl Panel {
     fn reset_section(&mut self, group: usize, section: usize, cx: &mut Context<Self>) {
         let s = &TOOL_GROUPS[group].sections[section];
         let paths: Vec<&str> = s.paths().collect();
-        let label = rust_i18n::t!("重置 {}", arg0 = crate::i18n::t(s.title)).into_owned();
+        let label = crate::i18n::reset_label(s.title);
         self.send(&label, resets(&paths), None, Interaction::Final, cx);
     }
 
@@ -714,7 +726,7 @@ impl Panel {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some(crate::i18n::t("导入").into()),
+            prompt: Some(crate::i18n::t("panel.profile.import_prompt").into()),
         });
         let engine = self.photo.read(cx).engine.clone();
         self.import_job = Some(cx.spawn(async move |this, cx| {
@@ -735,7 +747,8 @@ impl Panel {
                 let imported = match r {
                     Ok(i) => i,
                     Err(e) => {
-                        p.error = Some(rust_i18n::t!("导入失败：{e}", e = e).into_owned());
+                        p.error =
+                            Some(rust_i18n::t!("panel.profile.import_failed", e = e).into_owned());
                         cx.notify();
                         return;
                     }
@@ -745,7 +758,7 @@ impl Panel {
                         let value = serde_json::to_value(CameraProfile::Dcp(imported.data_ref))
                             .expect("serialisable");
                         p.set_json(
-                            &crate::i18n::t("配置文件 · 导入 DCP"),
+                            &crate::i18n::join(&["section.profile", "panel.profile.import_dcp"]),
                             "profile.camera",
                             value,
                             cx,
@@ -760,7 +773,7 @@ impl Panel {
                             && !made_for.to_lowercase().contains(&model.to_lowercase())
                         {
                             p.error = Some(
-                                rust_i18n::t!("此 DCP 是为 {made_for} 制作的", made_for = made_for)
+                                rust_i18n::t!("panel.profile.dcp_made_for", made_for = made_for)
                                     .into_owned(),
                             );
                         }
@@ -769,7 +782,7 @@ impl Panel {
                     ImportKind::LookLut => {
                         let value = serde_json::to_value(imported.data_ref).expect("serialisable");
                         p.set_json(
-                            &crate::i18n::t("配置文件 · 导入 LUT"),
+                            &crate::i18n::join(&["section.profile", "panel.profile.import_lut"]),
                             "profile.look",
                             value,
                             cx,
@@ -817,11 +830,11 @@ impl Panel {
             return div()
                 .text_xs()
                 .text_color(muted)
-                .child(crate::i18n::t("仅适用于 RAW 文件"))
+                .child(crate::i18n::t("panel.raw.raw_only"))
                 .into_any_element();
         }
         let raw = photo.head().raw.clone();
-        let history = |s: &str| format!("{} · {}", crate::i18n::t("解码"), crate::i18n::t(s));
+        let history = |s: &str| crate::i18n::join(&["section.decoding", s]);
         let heading = |s: &str| div().text_xs().child(crate::i18n::t(s));
         let note = |s: &str| div().text_xs().text_color(muted).child(crate::i18n::t(s));
         let demosaic = DEMOSAIC
@@ -859,38 +872,36 @@ impl Panel {
             .child(toggle(
                 "raw-ca",
                 "raw.ca_correction",
-                "自动色差校正",
+                "panel.raw.ca_correction",
                 raw.ca_correction,
             ))
             .child(toggle(
                 "raw-hot-pixels",
                 "raw.hot_pixels",
-                "坏点去除",
+                "panel.raw.hot_pixels",
                 raw.hot_pixels,
             ));
         v_flex()
             .gap_2()
-            .child(heading("去马赛克"))
+            .child(heading("panel.raw.demosaic"))
             .child(self.choices(
                 "raw-demosaic",
                 "raw.demosaic",
-                history("去马赛克"),
+                history("panel.raw.demosaic"),
                 demosaic,
                 cx,
             ))
-            .child(note(
-                "RCD 与 AMaZE 仅用于拜耳传感器；X-Trans 始终使用 Markesteijn。",
-            ))
-            .child(heading("高光重建"))
+            .child(note("panel.raw.demosaic_note"))
+            .child(heading("panel.raw.highlight_recon"))
             .child(self.choices(
                 "raw-highlights",
                 "raw.highlight_recon",
-                history("高光重建"),
+                history("panel.raw.highlight_recon"),
                 highlights,
                 cx,
             ))
             .child(toggles)
-            .child(note("自动色差校正仅用于拜耳传感器。"))
+            .child(note("panel.raw.ca_note"))
             .into_any_element()
     }
 
@@ -901,36 +912,39 @@ impl Panel {
         let profile = photo.head().profile.clone();
         let matrix = matches!(profile.camera, CameraProfile::Matrix(_));
         let camera_status = if matrix {
-            crate::i18n::t("标准颜色矩阵")
+            crate::i18n::t("panel.profile.matrix_status")
         } else {
             self.profile_name
                 .clone()
-                .unwrap_or_else(|| crate::i18n::t("已导入的 DCP"))
+                .unwrap_or_else(|| crate::i18n::t("panel.profile.imported_dcp"))
         };
         let look_status = match &profile.look {
-            None => crate::i18n::t("无"),
+            None => crate::i18n::t("panel.profile.no_look"),
             Some(_) => self
                 .look_name
                 .clone()
-                .unwrap_or_else(|| crate::i18n::t("已导入的 LUT")),
+                .unwrap_or_else(|| crate::i18n::t("panel.profile.imported_lut")),
         };
         let status = |s: String| div().text_xs().text_color(muted).child(s);
         let heading = |s: &str| div().text_xs().child(crate::i18n::t(s));
         v_flex()
             .gap_2()
             .when(is_raw, |d| {
-                d.child(heading("相机"))
+                d.child(heading("panel.profile.camera"))
                     .child(
                         h_flex()
                             .gap_1()
                             .child(
                                 Button::new("profile-matrix")
-                                    .label(crate::i18n::t("标准"))
+                                    .label(crate::i18n::t("panel.profile.standard"))
                                     .small()
                                     .selected(matrix)
                                     .on_click(cx.listener(|p, _, _, cx| {
                                         p.send(
-                                            crate::i18n::t("配置文件 · 标准"),
+                                            crate::i18n::join(&[
+                                                "section.profile",
+                                                "panel.profile.standard",
+                                            ]),
                                             resets(&["profile.camera"]),
                                             None,
                                             Interaction::Final,
@@ -940,7 +954,7 @@ impl Panel {
                             )
                             .child(
                                 Button::new("profile-dcp")
-                                    .label(crate::i18n::t("导入 DCP…"))
+                                    .label(crate::i18n::t("panel.profile.choose_dcp"))
                                     .small()
                                     .selected(!matrix)
                                     .on_click(
@@ -950,24 +964,27 @@ impl Panel {
                     )
                     .child(status(camera_status))
             })
-            .child(heading("外观 LUT"))
+            .child(heading("panel.profile.look"))
             .child(
                 h_flex()
                     .gap_1()
                     .child(
                         Button::new("profile-lut")
-                            .label(crate::i18n::t("导入 LUT…"))
+                            .label(crate::i18n::t("panel.profile.choose_lut"))
                             .small()
                             .on_click(cx.listener(|p, _, _, cx| p.import(ImportKind::LookLut, cx))),
                     )
                     .when(profile.look.is_some(), |d| {
                         d.child(
                             Button::new("profile-lut-off")
-                                .label(crate::i18n::t("移除"))
+                                .label(crate::i18n::t("panel.profile.remove"))
                                 .small()
                                 .on_click(cx.listener(|p, _, _, cx| {
                                     p.send(
-                                        crate::i18n::t("配置文件 · 移除 LUT"),
+                                        crate::i18n::join(&[
+                                            "section.profile",
+                                            "panel.profile.remove_lut",
+                                        ]),
                                         resets(&["profile.look"]),
                                         None,
                                         Interaction::Final,
@@ -1002,10 +1019,10 @@ impl Panel {
                 Some(
                     h_flex()
                         .gap_1()
-                        .child(button("treatment-color", "彩色", false))
+                        .child(button("treatment-color", "panel.treatment.color", false))
                         .child(
-                            button("treatment-bw", "黑白", true)
-                                .tooltip(crate::keymap::hint("转换为黑白（V）", cx)),
+                            button("treatment-bw", "panel.treatment.bw", true)
+                                .tooltip(crate::keymap::hint("panel.treatment.bw_tooltip", cx)),
                         )
                         .into_any_element(),
                 )
@@ -1018,23 +1035,23 @@ impl Panel {
                         .gap_2()
                         .child(
                             Button::new("wb-pick")
-                                .label(crate::i18n::t("吸管"))
+                                .label(crate::i18n::t("panel.wb.picker"))
                                 .small()
                                 .selected(picking)
-                                .tooltip(crate::keymap::hint("点击画面中应为中性灰的位置（W）", cx))
+                                .tooltip(crate::keymap::hint("panel.wb.picker_tooltip", cx))
                                 .on_click(cx.listener(move |p, _, _, cx| {
                                     p.photo.update(cx, |ph, cx| ph.set_wb_pick(!picking, cx))
                                 })),
                         )
                         .child(
                             Button::new("wb-as-shot")
-                                .label(crate::i18n::t("原照设置"))
+                                .label(crate::i18n::t("panel.wb.as_shot"))
                                 .small()
                                 .on_click(cx.listener(|p, _, _, cx| p.as_shot(cx))),
                         )
                         .child(
                             Button::new("wb-auto")
-                                .label(crate::i18n::t("自动"))
+                                .label(crate::i18n::t("panel.wb.auto"))
                                 .small()
                                 .on_click(cx.listener(|p, _, _, cx| p.auto_wb(cx))),
                         )
@@ -1047,9 +1064,9 @@ impl Panel {
                     LensProfile::Resolved(_)
                 );
                 let status = match (on, &self.lens_name) {
-                    (false, _) => crate::i18n::t("未启用配置文件").to_string(),
+                    (false, _) => crate::i18n::t("panel.lens.profile_off"),
                     (true, Some(n)) => n.clone(),
-                    (true, None) => crate::i18n::t("已启用配置文件").to_string(),
+                    (true, None) => crate::i18n::t("panel.lens.profile_on"),
                 };
                 Some(
                     v_flex()
@@ -1059,13 +1076,13 @@ impl Panel {
                                 .gap_2()
                                 .child(
                                     Button::new("lens-match")
-                                        .label(crate::i18n::t("自动匹配"))
+                                        .label(crate::i18n::t("panel.lens.auto_match"))
                                         .small()
                                         .on_click(cx.listener(|p, _, _, cx| p.match_lens(cx))),
                                 )
                                 .child(
                                     Button::new("lens-off")
-                                        .label(crate::i18n::t("关闭"))
+                                        .label(crate::i18n::t("panel.lens.disable"))
                                         .small()
                                         .on_click(cx.listener(|p, _, _, cx| p.lens_off(cx))),
                                 ),
@@ -1098,7 +1115,7 @@ impl Panel {
                             p.reset(i, cx);
                         }
                     }))
-                    .child(crate::i18n::t(r.label))
+                    .child(crate::i18n::t(&r.label))
                     .child(div().text_color(cx.theme().muted_foreground).child(value)),
             )
             .child(
@@ -1110,8 +1127,8 @@ impl Panel {
         let aspect = self.photo.read(cx).head().geometry.aspect;
         let photo = self.photo.clone();
         let presets: [(&str, Aspect); 7] = [
-            ("自由", Aspect::Free),
-            ("原始", Aspect::Original),
+            ("crop.aspect.free", Aspect::Free),
+            ("crop.aspect.original", Aspect::Original),
             ("1:1", Aspect::Ratio { w: 1, h: 1 }),
             ("4:5", Aspect::Ratio { w: 4, h: 5 }),
             ("3:2", Aspect::Ratio { w: 3, h: 2 }),
@@ -1145,11 +1162,11 @@ impl Panel {
         v_flex()
             .gap_4()
             .p_3()
-            .child(title(crate::i18n::t("裁剪与拉直")))
+            .child(title(crate::i18n::t("action.ToggleCrop")))
             .child(
                 v_flex()
                     .gap_2()
-                    .child(title(crate::i18n::t("长宽比")))
+                    .child(title(crate::i18n::t("crop.aspect_ratio")))
                     .child(
                         h_flex()
                             .gap_1()
@@ -1171,9 +1188,9 @@ impl Panel {
                                 let photo = photo.clone();
                                 d.child(
                                     Button::new("aspect-swap")
-                                        .label(crate::i18n::t("横竖互换"))
+                                        .label(crate::i18n::t("crop.swap"))
                                         .small()
-                                        .tooltip(crate::keymap::hint("交换长宽比的方向（X）", cx))
+                                        .tooltip(crate::keymap::hint("crop.swap_tooltip", cx))
                                         .on_click(move |_, _, cx| {
                                             photo.update(cx, |p, cx| {
                                                 p.set_aspect(Aspect::Ratio { w: h, h: w }, cx)
@@ -1186,44 +1203,49 @@ impl Panel {
             .child(
                 v_flex()
                     .gap_2()
-                    .child(title(crate::i18n::t("拉直")))
+                    .child(title(crate::i18n::t("crop.straighten")))
                     .child(self.render_row(angle, cx))
                     .child(
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(crate::i18n::t(
-                                "在裁剪框外拖动也可以旋转；裁剪框会自动缩小以避免空白角。",
-                            )),
+                            .child(crate::i18n::t("crop.rotate_note")),
                     ),
             )
             .child(
-                v_flex().gap_2().child(title(crate::i18n::t("方向"))).child(
-                    h_flex()
-                        .gap_1()
-                        .flex_wrap()
-                        .child(button(
-                            "rot-ccw",
-                            crate::i18n::t("向左旋转"),
-                            |p, cx| p.rotate_quarter(false, cx),
-                        ))
-                        .child(button("rot-cw", crate::i18n::t("向右旋转"), |p, cx| {
-                            p.rotate_quarter(true, cx)
-                        }))
-                        .child(button("mirror", crate::i18n::t("水平翻转"), Photo::mirror)),
-                ),
+                v_flex()
+                    .gap_2()
+                    .child(title(crate::i18n::t("crop.orientation")))
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .flex_wrap()
+                            .child(button(
+                                "rot-ccw",
+                                crate::i18n::t("crop.rotate_left"),
+                                |p, cx| p.rotate_quarter(false, cx),
+                            ))
+                            .child(button(
+                                "rot-cw",
+                                crate::i18n::t("crop.rotate_right"),
+                                |p, cx| p.rotate_quarter(true, cx),
+                            ))
+                            .child(button("mirror", crate::i18n::t("crop.flip"), Photo::mirror)),
+                    ),
             )
             .child(
                 h_flex()
                     .gap_1()
                     .child(button(
                         "crop-reset",
-                        crate::i18n::t("重置"),
+                        crate::i18n::t("common.reset"),
                         Photo::reset_crop,
                     ))
-                    .child(button("crop-done", crate::i18n::t("完成"), |p, cx| {
-                        p.set_tool(Tool::None, cx)
-                    })),
+                    .child(button(
+                        "crop-done",
+                        crate::i18n::t("common.done"),
+                        |p, cx| p.set_tool(Tool::None, cx),
+                    )),
             )
             .when_some(self.error.clone(), |d, e| {
                 d.child(div().text_xs().text_color(cx.theme().danger).child(e))
@@ -1238,7 +1260,7 @@ impl Panel {
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child(crate::i18n::t("照片尚未加载")),
+                    .child(crate::i18n::t("panel.info.not_loaded")),
             );
         };
         let muted = cx.theme().muted_foreground;
@@ -1248,7 +1270,7 @@ impl Panel {
                     .text_sm()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .mb_1()
-                    .child(crate::i18n::t(&s.title)),
+                    .child(s.title),
             );
             for (k, v) in s.rows {
                 sec = sec.child(
@@ -1256,13 +1278,7 @@ impl Panel {
                         .gap_3()
                         .items_start()
                         .text_xs()
-                        .child(
-                            div()
-                                .w(px(76.0))
-                                .flex_none()
-                                .text_color(muted)
-                                .child(crate::i18n::t(&k)),
-                        )
+                        .child(div().w(px(76.0)).flex_none().text_color(muted).child(k))
                         .child(div().flex_1().min_w_0().child(v)),
                 );
             }
@@ -1299,7 +1315,7 @@ impl Panel {
                         .when(modified, |d| {
                             d.child(
                                 Button::new(SharedString::from(format!("reset-{group}-{j}")))
-                                    .label(crate::i18n::t("重置"))
+                                    .label(crate::i18n::t("common.reset"))
                                     .xsmall()
                                     .ghost()
                                     .on_click(cx.listener(move |p, _, _, cx| {
@@ -1454,7 +1470,7 @@ mod tests {
     fn panel_paths_are_unique_scalar_params() {
         let mut seen = std::collections::HashSet::new();
         for s in TOOL_GROUPS.iter().flat_map(|t| t.sections) {
-            for (path, _) in s.rows {
+            for path in s.rows {
                 assert!(EditParams::default().spec(path).is_some(), "{path}");
                 assert!(seen.insert(*path), "{path} appears twice");
             }

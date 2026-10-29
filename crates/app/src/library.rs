@@ -168,12 +168,11 @@ impl Library {
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 let msg = if e.is_read_only() {
-                    rust_i18n::t!("文件夹不可写，{name} 的修改未保存", name = name).into_owned()
+                    rust_i18n::t!("library.folder_read_only", name = name).into_owned()
                 } else if matches!(e, aigle_library::Error::Conflict(_)) {
-                    rust_i18n::t!("{name} 的 XMP 已被其他程序修改，未覆盖", name = name)
-                        .into_owned()
+                    rust_i18n::t!("library.xmp_conflict", name = name).into_owned()
                 } else {
-                    rust_i18n::t!("{name} 的 XMP 保存失败：{e}", name = name, e = e).into_owned()
+                    rust_i18n::t!("library.xmp_save_failed", name = name, e = e).into_owned()
                 };
                 if this
                     .update(cx, |_, cx| cx.emit(LibraryEvent::Notice(msg)))
@@ -326,11 +325,12 @@ impl Library {
                 }
                 if let Some(w) = warnings.first() {
                     let more = if warnings.len() > 1 {
-                        rust_i18n::t!("（另有 {} 条）", arg0 = warnings.len() - 1).into_owned()
+                        rust_i18n::t!("library.more_warnings", arg0 = warnings.len() - 1)
+                            .into_owned()
                     } else {
                         String::new()
                     };
-                    cx.emit(LibraryEvent::Notice(format!("XMP：{w}{more}")));
+                    cx.emit(LibraryEvent::Notice(format!("XMP: {w}{more}")));
                 }
                 cx.notify();
             });
@@ -352,7 +352,7 @@ impl Library {
             Err(e) => {
                 self.loading = false;
                 cx.emit(LibraryEvent::Notice(
-                    rust_i18n::t!("无法读取文件夹：{e}", e = e).into_owned(),
+                    rust_i18n::t!("library.read_folder_failed", e = e).into_owned(),
                 ));
                 cx.notify();
                 return None;
@@ -634,7 +634,7 @@ impl Library {
         }
         if let Some(e) = failed {
             cx.emit(LibraryEvent::Notice(
-                rust_i18n::t!("虚拟副本保存失败：{e}", e = e).into_owned(),
+                rust_i18n::t!("library.copy_save_failed", e = e).into_owned(),
             ));
         }
     }
@@ -780,7 +780,7 @@ impl Library {
     /// Make a virtual copy of each photo in `indices` with its current edits, rating and
     /// label, placed after the photo's other copies. Returns the keys of the new copies.
     pub fn create_copies(&mut self, indices: &[usize], cx: &mut Context<Self>) -> Vec<PhotoKey> {
-        let base = crate::i18n::t("虚拟副本");
+        let base = crate::i18n::t("library.virtual_copy");
         let mut created = Vec::new();
         let mut failed = None;
         let mut indices = indices.to_vec();
@@ -825,7 +825,7 @@ impl Library {
         }
         if let Some(e) = failed {
             cx.emit(LibraryEvent::Notice(
-                rust_i18n::t!("无法创建虚拟副本：{e}", e = e).into_owned(),
+                rust_i18n::t!("library.copy_create_failed", e = e).into_owned(),
             ));
         }
         self.items_moved(cx);
@@ -860,7 +860,7 @@ impl Library {
         }
         if let Some(e) = failed {
             cx.emit(LibraryEvent::Notice(
-                rust_i18n::t!("无法删除虚拟副本：{e}", e = e).into_owned(),
+                rust_i18n::t!("library.copy_delete_failed", e = e).into_owned(),
             ));
         }
         if removed.is_empty() {

@@ -53,7 +53,7 @@ const HISTORY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 fn set_display(mode: crate::display::Mode, window: &mut Window, cx: &mut App) {
     if let Err(error) = crate::display::set_mode(mode, cx) {
         window.push_notification(
-            format!("{}: {error}", crate::i18n::t("无法保存显示器设置")),
+            format!("{}: {error}", crate::i18n::t("display.save_failed")),
             cx,
         );
     }
@@ -166,8 +166,7 @@ impl Workspace {
         }
         if let Some(e) = catalog_error {
             window.push_notification(
-                rust_i18n::t!("无法打开目录数据库，历史记录和虚拟副本不会保存：{e}", e = e)
-                    .into_owned(),
+                rust_i18n::t!("library.catalog_open_failed", e = e).into_owned(),
                 cx,
             );
         }
@@ -366,7 +365,7 @@ impl Workspace {
             files: !folder,
             directories: folder,
             multiple: false,
-            prompt: Some(crate::i18n::t("打开").into()),
+            prompt: Some(crate::i18n::t("library.open_prompt").into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(paths))) = rx.await
@@ -459,7 +458,7 @@ impl Workspace {
     ) {
         if let Err(error) = crate::i18n::save_language(language) {
             window.push_notification(
-                format!("{}: {error}", crate::i18n::t("无法保存语言设置")),
+                format!("{}: {error}", crate::i18n::t("language.save_failed")),
                 cx,
             );
         }
@@ -587,7 +586,7 @@ impl Workspace {
 
     fn open_copy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(params) = self.current_edits(cx) else {
-            window.push_notification(crate::i18n::t("没有可拷贝设置的照片"), cx);
+            window.push_notification(crate::i18n::t("copy_settings.no_source"), cx);
             return;
         };
         let groups = self.copy_groups.clone();
@@ -602,7 +601,7 @@ impl Workspace {
                     params: params.clone(),
                     groups,
                 });
-                window.push_notification(crate::i18n::t("已拷贝设置"), cx);
+                window.push_notification(crate::i18n::t("copy_settings.copied"), cx);
             },
         );
     }
@@ -677,16 +676,16 @@ impl Workspace {
 
     fn paste(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(clip) = self.clipboard.clone() else {
-            window.push_notification(crate::i18n::t("尚未拷贝设置"), cx);
+            window.push_notification(crate::i18n::t("copy_settings.nothing_copied"), cx);
             return;
         };
-        self.edit_targets(&crate::i18n::t("粘贴设置"), Origin::User, &clip, window, cx);
+        self.edit_targets("action.PasteSettings", Origin::User, &clip, window, cx);
     }
 
     /// Copy chosen groups of the primary photo onto the other selected photos.
     fn open_sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(params) = self.current_edits(cx) else {
-            window.push_notification(crate::i18n::t("没有可拷贝设置的照片"), cx);
+            window.push_notification(crate::i18n::t("copy_settings.no_source"), cx);
             return;
         };
         let source = match (self.mode, &self.open) {
@@ -699,7 +698,7 @@ impl Workspace {
             .filter(|k| Some(k) != source.as_ref())
             .collect();
         if targets.is_empty() {
-            window.push_notification(crate::i18n::t("请先选择要同步到的照片"), cx);
+            window.push_notification(crate::i18n::t("copy_settings.no_targets"), cx);
             return;
         }
         let groups = self.copy_groups.clone();
@@ -717,7 +716,7 @@ impl Workspace {
                 };
                 w.apply_to(
                     &targets,
-                    &crate::i18n::t("同步设置"),
+                    "history.sync_settings",
                     Origin::User,
                     &clip,
                     window,
@@ -738,14 +737,14 @@ impl Workspace {
         else {
             return;
         };
-        let label = format!("{} · {}", crate::i18n::t("预设"), preset.name);
+        let label = crate::i18n::join(&["history.preset", &preset.name]);
         let clip = preset.clipboard();
         self.edit_targets(&label, Origin::Preset, &clip, window, cx);
     }
 
     fn open_new_preset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(params) = self.current_edits(cx) else {
-            window.push_notification(crate::i18n::t("没有可拷贝设置的照片"), cx);
+            window.push_notification(crate::i18n::t("copy_settings.no_source"), cx);
             return;
         };
         let presets = self.presets.clone();
@@ -757,7 +756,10 @@ impl Workspace {
             move |_, groups, name, window, cx| {
                 let r = presets.update(cx, |p, cx| {
                     let name = if name.is_empty() {
-                        crate::presets::unique_name(p.store.names(), &crate::i18n::t("预设"))
+                        crate::presets::unique_name(
+                            p.store.names(),
+                            &crate::i18n::t("presets.default_name"),
+                        )
                     } else {
                         name
                     };
@@ -770,7 +772,7 @@ impl Workspace {
                 });
                 if let Err(e) = r {
                     window.push_notification(
-                        rust_i18n::t!("无法保存预设：{e}", e = e).into_owned(),
+                        rust_i18n::t!("presets.save_failed", e = e).into_owned(),
                         cx,
                     );
                 }
@@ -784,7 +786,10 @@ impl Workspace {
             p.store.remove(index)
         });
         if let Err(e) = r {
-            window.push_notification(rust_i18n::t!("无法删除预设：{e}", e = e).into_owned(), cx);
+            window.push_notification(
+                rust_i18n::t!("presets.delete_failed", e = e).into_owned(),
+                cx,
+            );
         }
     }
 
@@ -800,7 +805,7 @@ impl Workspace {
             Mode::Library => self.library.read(cx).selection(),
         };
         if indices.is_empty() {
-            window.push_notification(crate::i18n::t("没有可创建虚拟副本的照片"), cx);
+            window.push_notification(crate::i18n::t("library.no_copy_source"), cx);
             return;
         }
         let created = self
@@ -825,12 +830,15 @@ impl Workspace {
         };
         let keys: Vec<PhotoKey> = keys.into_iter().filter(|k| k.copy.is_some()).collect();
         if keys.is_empty() {
-            window.push_notification(crate::i18n::t("所选照片中没有虚拟副本"), cx);
+            window.push_notification(crate::i18n::t("library.no_virtual_copies"), cx);
             return;
         }
-        let message = rust_i18n::t!("删除 {} 个虚拟副本？", arg0 = keys.len()).into_owned();
-        let detail = crate::i18n::t("虚拟副本的调整将会丢失，原照片不受影响。");
-        let (delete, cancel) = (crate::i18n::t("删除"), crate::i18n::t("取消"));
+        let message = rust_i18n::t!("library.delete_copies_prompt", arg0 = keys.len()).into_owned();
+        let detail = crate::i18n::t("library.delete_copies_detail");
+        let (delete, cancel) = (
+            crate::i18n::t("common.delete"),
+            crate::i18n::t("common.cancel"),
+        );
         let answer = window.prompt(
             gpui::PromptLevel::Warning,
             &message,
@@ -893,7 +901,7 @@ impl Workspace {
                 editor.update(cx, |editor, cx| editor.focus_search(window, cx));
             }
             dialog
-                .title(crate::i18n::t("快捷键"))
+                .title(crate::i18n::t("keybindings.title"))
                 .w(px(820.0))
                 .max_w(window.viewport_size().width - px(48.0))
                 .margin_top(px(24.0))
@@ -908,7 +916,7 @@ impl Workspace {
     fn open_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let requests = self.export_requests(cx);
         if requests.is_empty() {
-            window.push_notification(crate::i18n::t("没有可导出的照片"), cx);
+            window.push_notification(crate::i18n::t("export.nothing"), cx);
             return;
         }
         self.copy_dialog = None;
@@ -966,18 +974,18 @@ impl Workspace {
                 w.exports.retain(|e| e.id != id);
                 let msg = match (total, last, failures.first()) {
                     (1, Some((shown, done)), None) => rust_i18n::t!(
-                        "已导出 {shown}（{}×{}）",
+                        "export.done_one",
                         arg0 = done.width,
                         arg1 = done.height,
                         shown = shown
                     )
                     .into_owned(),
                     (1, _, Some((shown, e))) => {
-                        rust_i18n::t!("导出 {shown} 失败：{e}", shown = shown, e = e).into_owned()
+                        rust_i18n::t!("export.failed_one", shown = shown, e = e).into_owned()
                     }
-                    (_, _, None) => rust_i18n::t!("已导出 {} 张照片", arg0 = total).into_owned(),
+                    (_, _, None) => rust_i18n::t!("export.done_many", arg0 = total).into_owned(),
                     (_, _, Some((shown, e))) => rust_i18n::t!(
-                        "{} 张照片导出失败；{shown}：{e}",
+                        "export.failed_many",
                         arg0 = failures.len(),
                         shown = shown,
                         e = e
@@ -1044,10 +1052,12 @@ impl Workspace {
             let l = self.library.read(cx);
             match (&self.open, develop) {
                 (Some(o), true) => o.photo.read(cx).name.clone(),
-                _ if l.dir.is_some() => {
-                    rust_i18n::t!("{} · {} 张", arg0 = l.folder_name(), arg1 = l.items.len())
-                        .into_owned()
-                }
+                _ if l.dir.is_some() => rust_i18n::t!(
+                    "toolbar.title_count",
+                    arg0 = l.folder_name(),
+                    arg1 = l.items.len()
+                )
+                .into_owned(),
                 _ => String::new(),
             }
         };
@@ -1063,45 +1073,65 @@ impl Workspace {
             .pr_2()
             .child(
                 Button::new("file-menu")
-                    .label(crate::i18n::t("文件"))
+                    .label(crate::i18n::t("menu.file"))
                     .small()
                     .dropdown_menu(move |menu, _, _| {
                         menu.action_context(file_focus.clone())
-                            .menu(crate::i18n::t("打开照片…"), Box::new(Open))
-                            .menu(crate::i18n::t("打开文件夹…"), Box::new(OpenFolder))
+                            .menu(crate::i18n::t("action.Open"), Box::new(Open))
+                            .menu(crate::i18n::t("action.OpenFolder"), Box::new(OpenFolder))
                             .separator()
-                            .menu(crate::i18n::t("导出…"), Box::new(Export))
+                            .menu(crate::i18n::t("action.Export"), Box::new(Export))
                             .separator()
-                            .menu(crate::i18n::t("退出"), Box::new(Quit))
+                            .menu(crate::i18n::t("action.Quit"), Box::new(Quit))
                     }),
             )
             .child(
                 Button::new("edit-menu")
-                    .label(crate::i18n::t("编辑"))
+                    .label(crate::i18n::t("menu.edit"))
                     .small()
                     .dropdown_menu(move |menu, window, cx| {
                         menu.action_context(edit_focus.clone())
-                            .menu_with_disabled(crate::i18n::t("撤销"), Box::new(Undo), !can_undo)
-                            .menu_with_disabled(crate::i18n::t("重做"), Box::new(Redo), !can_redo)
-                            .separator()
-                            .menu(crate::i18n::t("拷贝设置…"), Box::new(CopySettings))
                             .menu_with_disabled(
-                                crate::i18n::t("粘贴设置"),
+                                crate::i18n::t("action.Undo"),
+                                Box::new(Undo),
+                                !can_undo,
+                            )
+                            .menu_with_disabled(
+                                crate::i18n::t("action.Redo"),
+                                Box::new(Redo),
+                                !can_redo,
+                            )
+                            .separator()
+                            .menu(
+                                crate::i18n::t("action.CopySettings"),
+                                Box::new(CopySettings),
+                            )
+                            .menu_with_disabled(
+                                crate::i18n::t("action.PasteSettings"),
                                 Box::new(PasteSettings),
                                 !can_paste,
                             )
-                            .menu(crate::i18n::t("同步设置…"), Box::new(SyncSettings))
+                            .menu(
+                                crate::i18n::t("action.SyncSettings"),
+                                Box::new(SyncSettings),
+                            )
                             .separator()
-                            .menu(crate::i18n::t("创建虚拟副本"), Box::new(CreateVirtualCopy))
-                            .menu(crate::i18n::t("删除虚拟副本…"), Box::new(RemoveVirtualCopy))
+                            .menu(
+                                crate::i18n::t("action.CreateVirtualCopy"),
+                                Box::new(CreateVirtualCopy),
+                            )
+                            .menu(
+                                crate::i18n::t("action.RemoveVirtualCopy"),
+                                Box::new(RemoveVirtualCopy),
+                            )
                             .separator()
-                            .menu(crate::i18n::t("新建预设…"), Box::new(NewPreset))
-                            .submenu(crate::i18n::t("应用预设"), window, cx, {
+                            .menu(crate::i18n::t("action.NewPreset"), Box::new(NewPreset))
+                            .submenu(crate::i18n::t("menu.apply_preset"), window, cx, {
                                 let names = preset_names.clone();
                                 let ws = ws.clone();
                                 move |menu, _, _| {
                                     if names.is_empty() {
-                                        return menu.label(crate::i18n::t("暂无预设"));
+                                        return menu.label(crate::i18n::t("presets.empty"));
                                     }
                                     names.iter().enumerate().fold(menu, |menu, (i, n)| {
                                         let ws = ws.clone();
@@ -1117,78 +1147,96 @@ impl Workspace {
                             })
                             .separator()
                             .menu_with_disabled(
-                                crate::i18n::t("自动色调"),
+                                crate::i18n::t("action.AutoTone"),
                                 Box::new(AutoTone),
                                 !develop,
                             )
                             .menu_with_check_and_disabled(
-                                crate::i18n::t("黑白"),
+                                crate::i18n::t("action.ToggleMonochrome"),
                                 monochrome,
                                 Box::new(ToggleMonochrome),
                                 !develop,
                             )
                             .separator()
-                            .submenu(crate::i18n::t("工具"), window, cx, move |menu, _, _| {
-                                menu.menu_with_check_and_disabled(
-                                    crate::i18n::t("裁剪与拉直"),
-                                    tool == Tool::Crop,
-                                    Box::new(ToggleCrop),
-                                    !develop,
-                                )
-                                .menu_with_check_and_disabled(
-                                    crate::i18n::t("蒙版"),
-                                    tool == Tool::Mask,
-                                    Box::new(ToggleMask),
-                                    !develop,
-                                )
-                                .menu_with_check_and_disabled(
-                                    crate::i18n::t("污点去除"),
-                                    tool == Tool::Spot,
-                                    Box::new(ToggleSpot),
-                                    !develop,
-                                )
-                                .menu_with_check_and_disabled(
-                                    crate::i18n::t("红眼校正"),
-                                    tool == Tool::RedEye,
-                                    Box::new(ToggleRedEye),
-                                    !develop,
-                                )
-                                .menu_with_disabled(
-                                    crate::i18n::t("白平衡吸管"),
-                                    Box::new(ToggleWbPicker),
-                                    !develop,
-                                )
-                            })
+                            .submenu(
+                                crate::i18n::t("menu.tools"),
+                                window,
+                                cx,
+                                move |menu, _, _| {
+                                    menu.menu_with_check_and_disabled(
+                                        crate::i18n::t("action.ToggleCrop"),
+                                        tool == Tool::Crop,
+                                        Box::new(ToggleCrop),
+                                        !develop,
+                                    )
+                                    .menu_with_check_and_disabled(
+                                        crate::i18n::t("action.ToggleMask"),
+                                        tool == Tool::Mask,
+                                        Box::new(ToggleMask),
+                                        !develop,
+                                    )
+                                    .menu_with_check_and_disabled(
+                                        crate::i18n::t("action.ToggleSpot"),
+                                        tool == Tool::Spot,
+                                        Box::new(ToggleSpot),
+                                        !develop,
+                                    )
+                                    .menu_with_check_and_disabled(
+                                        crate::i18n::t("action.ToggleRedEye"),
+                                        tool == Tool::RedEye,
+                                        Box::new(ToggleRedEye),
+                                        !develop,
+                                    )
+                                    .menu_with_disabled(
+                                        crate::i18n::t("action.ToggleWbPicker"),
+                                        Box::new(ToggleWbPicker),
+                                        !develop,
+                                    )
+                                },
+                            )
                     }),
             )
             .child(
                 Button::new("view-menu")
-                    .label(crate::i18n::t("视图"))
+                    .label(crate::i18n::t("menu.view"))
                     .small()
                     .dropdown_menu(move |menu, window, cx| {
                         menu.action_context(view_focus.clone())
-                            .menu_with_check(crate::i18n::t("图库"), !develop, Box::new(ShowGrid))
-                            .menu_with_check(crate::i18n::t("修图"), develop, Box::new(ShowDevelop))
+                            .menu_with_check(
+                                crate::i18n::t("action.ShowGrid"),
+                                !develop,
+                                Box::new(ShowGrid),
+                            )
+                            .menu_with_check(
+                                crate::i18n::t("action.ShowDevelop"),
+                                develop,
+                                Box::new(ShowDevelop),
+                            )
                             .separator()
-                            .submenu(crate::i18n::t("对比"), window, cx, move |menu, _, _| {
-                                menu.menu_with_check_and_disabled(
-                                    crate::i18n::t("原图"),
-                                    compare == Compare::Before,
-                                    Box::new(ToggleBefore),
-                                    !develop,
-                                )
-                                .menu_with_check_and_disabled(
-                                    crate::i18n::t("分屏对比"),
-                                    compare == Compare::Split,
-                                    Box::new(ToggleSplit),
-                                    !develop,
-                                )
-                            })
-                            .submenu(crate::i18n::t("软打样"), window, cx, {
+                            .submenu(
+                                crate::i18n::t("menu.compare"),
+                                window,
+                                cx,
+                                move |menu, _, _| {
+                                    menu.menu_with_check_and_disabled(
+                                        crate::i18n::t("action.ToggleBefore"),
+                                        compare == Compare::Before,
+                                        Box::new(ToggleBefore),
+                                        !develop,
+                                    )
+                                    .menu_with_check_and_disabled(
+                                        crate::i18n::t("action.ToggleSplit"),
+                                        compare == Compare::Split,
+                                        Box::new(ToggleSplit),
+                                        !develop,
+                                    )
+                                },
+                            )
+                            .submenu(crate::i18n::t("menu.soft_proof"), window, cx, {
                                 let (proof, target) = (proof.clone(), proof_target.clone());
                                 move |menu, _, _| {
                                     let menu = menu.menu_with_check_and_disabled(
-                                        crate::i18n::t("软打样"),
+                                        crate::i18n::t("action.ToggleSoftProof"),
                                         proof.is_some(),
                                         Box::new(ToggleSoftProof),
                                         !develop,
@@ -1220,7 +1268,7 @@ impl Workspace {
                                         },
                                     );
                                     menu.separator().menu_with_check_and_disabled(
-                                        crate::i18n::t("色域警告"),
+                                        crate::i18n::t("action.ToggleGamutWarning"),
                                         gamut_warning,
                                         Box::new(ToggleGamutWarning),
                                         !develop,
@@ -1228,37 +1276,37 @@ impl Workspace {
                                 }
                             })
                             .menu_with_disabled(
-                                crate::i18n::t("缩放 / 适合窗口"),
+                                crate::i18n::t("action.ToggleZoom"),
                                 Box::new(ToggleZoom),
                                 !develop,
                             )
                             .separator()
                             .menu_with_check_and_disabled(
-                                crate::i18n::t("历史记录"),
+                                crate::i18n::t("action.ToggleHistory"),
                                 show_history,
                                 Box::new(ToggleHistory),
                                 !develop,
                             )
                             .menu_with_check_and_disabled(
-                                crate::i18n::t("拍摄参数"),
+                                crate::i18n::t("action.ToggleInfo"),
                                 show_info,
                                 Box::new(ToggleInfo),
                                 !develop,
                             )
                             .menu_with_check_and_disabled(
-                                crate::i18n::t("蒙版叠加"),
+                                crate::i18n::t("action.ToggleOverlay"),
                                 mask_overlay,
                                 Box::new(ToggleOverlay),
                                 tool != Tool::Mask,
                             )
                             .separator()
-                            .submenu(crate::i18n::t("显示器配置文件"), window, cx, {
+                            .submenu(crate::i18n::t("menu.display_profile"), window, cx, {
                                 let display = display.clone();
                                 move |menu, _, _| {
                                     let display = display.clone();
                                     let menu = menu
                                         .menu_with_check(
-                                            crate::i18n::t("自动（系统配置文件）"),
+                                            crate::i18n::t("display.auto"),
                                             display.mode == crate::display::Mode::Auto,
                                             Box::new(DisplayAuto),
                                         )
@@ -1270,37 +1318,52 @@ impl Workspace {
                                         .separator();
                                     match (&display.detected, &display.problem) {
                                         (Some(d), _) => menu.label(
-                                            rust_i18n::t!("检测到：{name}", name = d.name)
+                                            rust_i18n::t!("display.detected", name = d.name)
                                                 .into_owned(),
                                         ),
                                         (None, Some(_)) => {
-                                            menu.label(crate::i18n::t("未检测到显示器配置文件"))
+                                            menu.label(crate::i18n::t("display.none"))
                                         }
-                                        (None, None) => menu.label(crate::i18n::t("正在检测…")),
+                                        (None, None) => {
+                                            menu.label(crate::i18n::t("display.detecting"))
+                                        }
                                     }
                                 }
                             })
                             .separator()
-                            .submenu(crate::i18n::t("快捷键"), window, cx, |menu, _, _| {
-                                menu.menu(crate::i18n::t("编辑快捷键…"), Box::new(EditKeybindings))
+                            .submenu(
+                                crate::i18n::t("menu.keybindings"),
+                                window,
+                                cx,
+                                |menu, _, _| {
+                                    menu.menu(
+                                        crate::i18n::t("action.EditKeybindings"),
+                                        Box::new(EditKeybindings),
+                                    )
                                     .menu(
-                                        crate::i18n::t("重新加载快捷键"),
+                                        crate::i18n::t("action.ReloadKeybindings"),
                                         Box::new(ReloadKeybindings),
                                     )
-                            })
+                                },
+                            )
                             .separator()
-                            .submenu(crate::i18n::t("语言"), window, cx, move |menu, _, _| {
-                                menu.menu_with_check(
-                                    "English",
-                                    language == crate::i18n::Language::English,
-                                    Box::new(LanguageEnglish),
-                                )
-                                .menu_with_check(
-                                    "简体中文",
-                                    language == crate::i18n::Language::Chinese,
-                                    Box::new(LanguageChinese),
-                                )
-                            })
+                            .submenu(
+                                crate::i18n::t("menu.language"),
+                                window,
+                                cx,
+                                move |menu, _, _| {
+                                    menu.menu_with_check(
+                                        crate::i18n::t("language.name.en"),
+                                        language == crate::i18n::Language::English,
+                                        Box::new(LanguageEnglish),
+                                    )
+                                    .menu_with_check(
+                                        crate::i18n::t("language.name.zh_cn"),
+                                        language == crate::i18n::Language::Chinese,
+                                        Box::new(LanguageChinese),
+                                    )
+                                },
+                            )
                     }),
             )
             .child(
@@ -1308,21 +1371,18 @@ impl Workspace {
                     .small()
                     .child(
                         Button::new("grid")
-                            .label(crate::i18n::t("图库"))
+                            .label(crate::i18n::t("action.ShowGrid"))
                             .selected(!develop)
-                            .tooltip(crate::keymap::hint("缩略图网格（G）", cx))
+                            .tooltip(crate::keymap::hint("toolbar.grid_tooltip", cx))
                             .on_click(cx.listener(|w, _, window, cx| {
                                 w.set_mode(Mode::Library, window, cx)
                             })),
                     )
                     .child(
                         Button::new("develop")
-                            .label(crate::i18n::t("修图"))
+                            .label(crate::i18n::t("action.ShowDevelop"))
                             .selected(develop)
-                            .tooltip(crate::keymap::hint(
-                                "修图（D，或在网格中按 Enter / 双击）",
-                                cx,
-                            ))
+                            .tooltip(crate::keymap::hint("toolbar.develop_tooltip", cx))
                             .on_click(cx.listener(|w, _, window, cx| {
                                 w.set_mode(Mode::Develop, window, cx)
                             })),
@@ -1338,7 +1398,8 @@ impl Workspace {
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
                         .child(
-                            rust_i18n::t!("正在导出 {}/{}", arg0 = done, arg1 = total).into_owned(),
+                            rust_i18n::t!("toolbar.exporting", arg0 = done, arg1 = total)
+                                .into_owned(),
                         ),
                 )
             })
@@ -1361,10 +1422,7 @@ impl Workspace {
                 .flex_1()
                 .justify_center()
                 .text_color(cx.theme().muted_foreground)
-                .child(crate::keymap::hint(
-                    "在图库中选择一张照片，或打开一张照片（Ctrl+O）",
-                    cx,
-                ))
+                .child(crate::keymap::hint("develop.empty_hint", cx))
                 .into_any_element();
         };
         let has_strip = !self.library.read(cx).items.is_empty();
@@ -1562,9 +1620,9 @@ impl Render for Workspace {
             )
             .on_action(cx.listener(|_, _: &ReloadKeybindings, window, cx| {
                 match crate::keymap::reload(cx) {
-                    Ok(()) => window.push_notification(crate::i18n::t("快捷键已重新加载"), cx),
+                    Ok(()) => window.push_notification(crate::i18n::t("keybindings.reloaded"), cx),
                     Err(error) => window.push_notification(
-                        format!("{}: {error:#}", crate::i18n::t("快捷键操作失败")),
+                        format!("{}: {error:#}", crate::i18n::t("keybindings.failed")),
                         cx,
                     ),
                 };

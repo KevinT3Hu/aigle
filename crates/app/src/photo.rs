@@ -349,9 +349,9 @@ impl Photo {
         };
         ops.extend(reorient_ops(&head, r));
         let label = if cw {
-            crate::i18n::t("向右旋转 90°")
+            "history.rotate_right"
         } else {
-            crate::i18n::t("向左旋转 90°")
+            "history.rotate_left"
         };
         self.command(label, ops, None, Interaction::Final, cx);
     }
@@ -369,13 +369,7 @@ impl Photo {
         ));
         ops.push(ParamOp::set("geometry.angle", -g.scalars.angle));
         ops.extend(reorient_ops(&head, Reorient::Mirror));
-        self.command(
-            crate::i18n::t("水平翻转"),
-            ops,
-            None,
-            Interaction::Final,
-            cx,
-        );
+        self.command("crop.flip", ops, None, Interaction::Final, cx);
     }
 
     /// Lock the crop to `aspect`, refitting the crop around its centre.
@@ -391,7 +385,7 @@ impl Photo {
             ops.extend(crop_ops(&f.crop_of(r)));
         }
         self.command(
-            crate::i18n::t("裁剪 · 长宽比"),
+            crate::i18n::join(&["crop.crop", "crop.aspect_ratio"]),
             ops,
             None,
             Interaction::Final,
@@ -404,13 +398,7 @@ impl Photo {
             .iter()
             .map(|p| ParamOp::Reset { path: (*p).into() })
             .collect();
-        self.command(
-            crate::i18n::t("重置裁剪"),
-            ops,
-            None,
-            Interaction::Final,
-            cx,
-        );
+        self.command("history.reset_crop", ops, None, Interaction::Final, cx);
     }
 
     /// The selected mask, if it still exists, with its index.
@@ -462,7 +450,7 @@ impl Photo {
                 spots.push(s);
                 let i = spots.len() - 1;
                 if p.command(
-                    crate::i18n::t("污点去除"),
+                    "tool.spot",
                     vec![tools::spots_op(&spots)],
                     None,
                     Interaction::Final,
@@ -482,7 +470,7 @@ impl Photo {
         }
         spots.remove(i);
         if self.command(
-            crate::i18n::t("删除污点"),
+            "history.delete_spot",
             vec![tools::spots_op(&spots)],
             None,
             Interaction::Final,
@@ -499,7 +487,7 @@ impl Photo {
         }
         eyes.remove(i);
         if self.command(
-            crate::i18n::t("删除红眼校正"),
+            "history.delete_red_eye",
             vec![tools::eyes_op(&eyes)],
             None,
             Interaction::Final,
@@ -532,7 +520,7 @@ impl Photo {
 
     pub fn delete_mask(&mut self, id: MaskId, cx: &mut Context<Self>) {
         if self.command(
-            crate::i18n::t("删除蒙版"),
+            "history.delete_mask",
             vec![ParamOp::RemoveMask { id }],
             None,
             Interaction::Final,
@@ -634,7 +622,7 @@ impl Photo {
 
     /// Save the head as a new snapshot.
     pub fn add_snapshot(&mut self, cx: &mut Context<Self>) {
-        let name = snapshot_name(&self.snapshots, &crate::i18n::t("快照"));
+        let name = snapshot_name(&self.snapshots, &crate::i18n::t("history.snapshot"));
         self.snapshots.push(Snapshot {
             name,
             params: (**self.head()).clone(),
@@ -656,7 +644,7 @@ impl Photo {
         let Some(s) = self.snapshots.get(index) else {
             return;
         };
-        let label = format!("{} · {}", crate::i18n::t("快照"), s.name);
+        let label = crate::i18n::join(&["history.snapshot", &s.name]);
         let ops = vec![ParamOp::ReplaceAll {
             params: Box::new(s.params.clone()),
         }];
@@ -678,11 +666,14 @@ impl Photo {
             return;
         }
         let on = !self.head().bw.monochrome;
-        let label = crate::i18n::t(if on {
-            "处理方式 · 黑白"
-        } else {
-            "处理方式 · 彩色"
-        });
+        let label = crate::i18n::join(&[
+            "section.treatment",
+            if on {
+                "panel.treatment.bw"
+            } else {
+                "panel.treatment.color"
+            },
+        ]);
         self.command(
             label,
             vec![ParamOp::set("bw.monochrome", on)],
@@ -714,18 +705,12 @@ impl Photo {
                 Ok(a) => match (a.histogram, a.clipping) {
                     (Some(hist), Some(clip)) => {
                         let ops = crate::auto_tone::ops(&hist, &clip);
-                        p.command(
-                            crate::i18n::t("自动色调"),
-                            ops,
-                            None,
-                            Interaction::Final,
-                            cx,
-                        );
+                        p.command("action.AutoTone", ops, None, Interaction::Final, cx);
                     }
-                    _ => cx.emit(PhotoEvent::Notice(crate::i18n::t("自动色调：分析失败"))),
+                    _ => cx.emit(PhotoEvent::Notice(crate::i18n::t("auto_tone.failed"))),
                 },
                 Err(e) => cx.emit(PhotoEvent::Notice(
-                    rust_i18n::t!("自动色调：分析失败：{e}", e = e).into_owned(),
+                    rust_i18n::t!("auto_tone.failed_with", e = e).into_owned(),
                 )),
             });
         }));
@@ -742,15 +727,13 @@ impl Photo {
                 let wb = match r {
                     Ok(wb) => wb,
                     Err(_) => {
-                        cx.emit(PhotoEvent::Notice(crate::i18n::t(
-                            "吸管：所选位置过曝、过暗或不在图像内",
-                        )));
+                        cx.emit(PhotoEvent::Notice(crate::i18n::t("wb_picker.invalid")));
                         return;
                     }
                 };
                 let cmd = EditCommand::user(
                     p.doc.rev(),
-                    crate::i18n::t("白平衡 · 吸管"),
+                    crate::i18n::join(&["section.white_balance", "panel.wb.picker"]),
                     vec![
                         ParamOp::set("wb.temperature", wb.temperature),
                         ParamOp::set("wb.tint", wb.tint),
@@ -760,9 +743,7 @@ impl Photo {
                 if let Err(e) = p.edit(cmd, Interaction::Final, cx) {
                     cx.emit(PhotoEvent::Notice(e.to_string()));
                 } else if wb.low_confidence_reason.is_some() {
-                    cx.emit(PhotoEvent::Notice(crate::i18n::t(
-                        "吸管：所选颜色超出白平衡范围，已取最接近的值",
-                    )));
+                    cx.emit(PhotoEvent::Notice(crate::i18n::t("wb_picker.clamped")));
                 }
             });
         }));

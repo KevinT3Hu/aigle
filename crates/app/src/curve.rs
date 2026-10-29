@@ -1,4 +1,4 @@
-//! Point-curve editor of the 曲线 tab (doc 02 §6.4).
+//! Point-curve editor of the curves tab (doc 02 §6.4).
 //!
 //! Click on the graph to add a point on the curve, drag points to shape it, double-click a
 //! point or drag it out of the graph to remove it. One drag is one gesture: `Continuous`
@@ -43,12 +43,13 @@ impl Channel {
         }
     }
 
-    fn label(self) -> String {
+    /// Catalog key of the channel name, or the name itself.
+    fn label(self) -> &'static str {
         match self {
-            Channel::Rgb => "RGB".into(),
-            Channel::Red => crate::i18n::t("红"),
-            Channel::Green => crate::i18n::t("绿"),
-            Channel::Blue => crate::i18n::t("蓝"),
+            Channel::Rgb => "RGB",
+            Channel::Red => "curve_editor.channel.red",
+            Channel::Green => "curve_editor.channel.green",
+            Channel::Blue => "curve_editor.channel.blue",
         }
     }
 
@@ -232,7 +233,7 @@ impl CurveEditor {
     }
 
     fn label(&self) -> String {
-        rust_i18n::t!("点曲线 · {}", arg0 = self.channel.label()).into_owned()
+        crate::i18n::join(&["section.point_curve", self.channel.label()])
     }
 
     fn send(
@@ -328,11 +329,11 @@ impl CurveEditor {
     fn readout(&self, points: &[CurvePoint]) -> Option<String> {
         let i = self.drag.as_ref().map(|d| d.index).or(self.hover)?;
         if self.drag.as_ref().is_some_and(|d| d.removed) {
-            return Some(crate::i18n::t("松开以删除此点"));
+            return Some(crate::i18n::t("curve_editor.release_to_delete"));
         }
         let q = points.get(i)?;
         let v = |t: f32| (t * 255.0).round() as i32;
-        Some(rust_i18n::t!("输入 {} · 输出 {}", arg0 = v(q.x), arg1 = v(q.y)).into_owned())
+        Some(rust_i18n::t!("curve_editor.readout", arg0 = v(q.x), arg1 = v(q.y)).into_owned())
     }
 }
 
@@ -450,7 +451,7 @@ impl Render for CurveEditor {
             .gap_1()
             .children(Channel::ALL.map(|ch| {
                 Button::new(SharedString::from(format!("curve-channel-{ch:?}")))
-                    .label(ch.label())
+                    .label(crate::i18n::t(ch.label()))
                     .xsmall()
                     .selected(ch == self.channel)
                     .on_click(cx.listener(move |c, _, _, cx| {
@@ -462,7 +463,7 @@ impl Render for CurveEditor {
             .child(div().flex_1())
             .child(
                 Button::new("curve-reset")
-                    .label(crate::i18n::t("重置"))
+                    .label(crate::i18n::t("common.reset"))
                     .xsmall()
                     .on_click(cx.listener(|c, _, _, cx| c.reset(cx))),
             );
@@ -494,8 +495,7 @@ impl Render for CurveEditor {
                 .size_full(),
             );
 
-        let hint =
-            readout.unwrap_or_else(|| crate::i18n::t("单击添加点，拖动调整；双击点或拖出图表删除"));
+        let hint = readout.unwrap_or_else(|| crate::i18n::t("curve_editor.help"));
         let mut body = v_flex()
             .gap_2()
             .child(channels)

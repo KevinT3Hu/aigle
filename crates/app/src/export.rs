@@ -35,8 +35,8 @@ impl Format {
     const ALL: [(Format, &'static str); 5] = [
         (Format::Jpeg, "JPEG"),
         (Format::Png, "PNG"),
-        (Format::Tiff8, "TIFF 8 位"),
-        (Format::Tiff16, "TIFF 16 位"),
+        (Format::Tiff8, "export.format.tiff8"),
+        (Format::Tiff16, "export.format.tiff16"),
         (Format::WebP, "WebP"),
     ];
 
@@ -118,7 +118,7 @@ impl Settings {
 }
 
 const SIZES: [(Option<u32>, &str); 5] = [
-    (None, "原尺寸"),
+    (None, "export.size.full"),
     (Some(6000), "6000"),
     (Some(4096), "4096"),
     (Some(2048), "2048"),
@@ -271,17 +271,19 @@ impl ExportDialog {
             s
         });
         let artist = cx.new(|cx| {
-            let mut s = InputState::new(window, cx).placeholder(crate::i18n::t("使用相机中的信息"));
+            let mut s =
+                InputState::new(window, cx).placeholder(crate::i18n::t("export.from_camera"));
             s.set_value(settings.artist.clone(), window, cx);
             s
         });
         let copyright = cx.new(|cx| {
-            let mut s = InputState::new(window, cx).placeholder(crate::i18n::t("使用相机中的信息"));
+            let mut s =
+                InputState::new(window, cx).placeholder(crate::i18n::t("export.from_camera"));
             s.set_value(settings.copyright.clone(), window, cx);
             s
         });
         let preset_name =
-            cx.new(|cx| InputState::new(window, cx).placeholder(crate::i18n::t("预设名称")));
+            cx.new(|cx| InputState::new(window, cx).placeholder(crate::i18n::t("presets.name")));
         let bind =
             |input: &Entity<InputState>, set: fn(&mut Settings, String), cx: &mut Context<Self>| {
                 cx.subscribe(input, move |d, input, ev: &InputEvent, cx| {
@@ -381,7 +383,7 @@ impl ExportDialog {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some(crate::i18n::t("选择").into()),
+            prompt: Some(crate::i18n::t("export.choose").into()),
         });
         self.prompt = Some(cx.spawn(async move |this, cx| {
             let chosen = rx.await;
@@ -423,7 +425,7 @@ impl ExportDialog {
     fn save_preset(&mut self, cx: &mut Context<Self>) {
         let name = self.preset_name.read(cx).value().trim().to_string();
         if name.is_empty() {
-            self.error = Some(crate::i18n::t("请输入预设名称"));
+            self.error = Some(crate::i18n::t("export.preset_name_required"));
             cx.notify();
             return;
         }
@@ -448,7 +450,7 @@ impl ExportDialog {
     fn store_presets(&mut self, cx: &mut Context<Self>) {
         self.error = save_presets(self.presets_path.as_deref(), &self.presets)
             .err()
-            .map(|e| rust_i18n::t!("无法保存预设：{e}", e = e).into_owned());
+            .map(|e| rust_i18n::t!("presets.save_failed", e = e).into_owned());
         cx.notify();
     }
 
@@ -493,7 +495,7 @@ impl ExportDialog {
                         .label("×")
                         .xsmall()
                         .ghost()
-                        .tooltip(crate::i18n::t("删除预设"))
+                        .tooltip(crate::i18n::t("presets.delete"))
                         .on_click(cx.listener(move |d, _, _, cx| d.remove_preset(i, cx))),
                 )
         });
@@ -506,7 +508,7 @@ impl ExportDialog {
                     .child(div().flex_1().child(Input::new(&self.preset_name).small()))
                     .child(
                         Button::new("export-preset-save")
-                            .label(crate::i18n::t("存为预设"))
+                            .label(crate::i18n::t("export.save_preset"))
                             .small()
                             .on_click(cx.listener(|d, _, _, cx| d.save_preset(cx))),
                     ),
@@ -553,8 +555,8 @@ impl Render for ExportDialog {
         let busy = self.prompt.is_some();
         let batch = self.batch();
         let title = match &self.requests[..] {
-            [one] => rust_i18n::t!("导出 {}", arg0 = one.name).into_owned(),
-            many => rust_i18n::t!("导出 {} 张照片", arg0 = many.len()).into_owned(),
+            [one] => rust_i18n::t!("export.title_one", arg0 = one.name).into_owned(),
+            many => rust_i18n::t!("export.title_many", arg0 = many.len()).into_owned(),
         };
         let example = self.requests.first().map(|r| {
             format!(
@@ -583,9 +585,9 @@ impl Render for ExportDialog {
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child(title),
             )
-            .child(label(crate::i18n::t("导出预设")))
+            .child(label(crate::i18n::t("export.presets")))
             .child(self.render_presets(cx))
-            .child(label(crate::i18n::t("格式")))
+            .child(label(crate::i18n::t("export.format")))
             .child(self.choice(
                 "fmt",
                 Format::ALL.to_vec(),
@@ -597,12 +599,12 @@ impl Render for ExportDialog {
                 d.child(
                     h_flex()
                         .justify_between()
-                        .child(label(crate::i18n::t("质量")))
+                        .child(label(crate::i18n::t("export.quality")))
                         .child(div().text_xs().child(s.quality.to_string())),
                 )
                 .child(Slider::new(&self.quality))
             })
-            .child(label(crate::i18n::t("长边（像素）")))
+            .child(label(crate::i18n::t("export.long_edge")))
             .child(self.choice(
                 "size",
                 SIZES.to_vec(),
@@ -610,7 +612,7 @@ impl Render for ExportDialog {
                 |s, v| s.long_edge = v,
                 cx,
             ))
-            .child(label(crate::i18n::t("色彩空间")))
+            .child(label(crate::i18n::t("export.color_space")))
             .child(self.choice(
                 "cs",
                 vec![
@@ -627,31 +629,37 @@ impl Render for ExportDialog {
             .when(
                 s.output == DisplayProfileId::ProPhoto && s.format != Format::Tiff16,
                 |d| {
-                    d.child(div().text_xs().text_color(muted).child(crate::i18n::t(
-                        "ProPhoto RGB 建议使用 16 位 TIFF，8 位输出可能出现色带。",
-                    )))
+                    d.child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(crate::i18n::t("export.prophoto_note")),
+                    )
                 },
             )
-            .child(label(crate::i18n::t("输出锐化")))
+            .child(label(crate::i18n::t("export.sharpening")))
             .child(self.choice(
                 "sharpen",
                 vec![
-                    (OutputSharpening::Off, "关"),
-                    (OutputSharpening::Low, "低"),
-                    (OutputSharpening::Standard, "标准"),
-                    (OutputSharpening::High, "高"),
+                    (OutputSharpening::Off, "export.sharpening.off"),
+                    (OutputSharpening::Low, "export.sharpening.low"),
+                    (OutputSharpening::Standard, "export.sharpening.standard"),
+                    (OutputSharpening::High, "export.sharpening.high"),
                 ],
                 s.sharpening,
                 |s, v| s.sharpening = v,
                 cx,
             ))
-            .child(label(crate::i18n::t("元数据")))
+            .child(label(crate::i18n::t("export.metadata")))
             .child(self.choice(
                 "meta",
                 vec![
-                    (MetadataPolicy::All, "全部"),
-                    (MetadataPolicy::CopyrightOnly, "仅版权"),
-                    (MetadataPolicy::Strip, "不含"),
+                    (MetadataPolicy::All, "export.metadata.all"),
+                    (
+                        MetadataPolicy::CopyrightOnly,
+                        "export.metadata.copyright_only",
+                    ),
+                    (MetadataPolicy::Strip, "export.metadata.none"),
                 ],
                 s.metadata,
                 |s, v| s.metadata = v,
@@ -665,27 +673,25 @@ impl Render for ExportDialog {
                             v_flex()
                                 .flex_1()
                                 .gap_1()
-                                .child(label(crate::i18n::t("作者")))
+                                .child(label(crate::i18n::t("export.artist")))
                                 .child(Input::new(&self.artist).small()),
                         )
                         .child(
                             v_flex()
                                 .flex_1()
                                 .gap_1()
-                                .child(label(crate::i18n::t("版权")))
+                                .child(label(crate::i18n::t("export.copyright")))
                                 .child(Input::new(&self.copyright).small()),
                         ),
                 )
             })
-            .child(label(crate::i18n::t(
-                "文件名（{name} 为原文件名，{seq} 为序号）",
-            )))
+            .child(label(crate::i18n::t("export.file_name")))
             .child(Input::new(&self.template).small())
             .when_some(example, |d, e| {
                 d.child(div().text_xs().text_color(muted).truncate().child(e))
             })
             .when(batch, |d| {
-                d.child(label(crate::i18n::t("导出到"))).child(
+                d.child(label(crate::i18n::t("export.destination"))).child(
                     h_flex()
                         .gap_2()
                         .child(
@@ -698,7 +704,7 @@ impl Render for ExportDialog {
                         )
                         .child(
                             Button::new("export-dir")
-                                .label(crate::i18n::t("更改…"))
+                                .label(crate::i18n::t("export.change_dir"))
                                 .small()
                                 .on_click(cx.listener(|d, _, _, cx| d.choose_dir(cx))),
                         ),
@@ -714,16 +720,16 @@ impl Render for ExportDialog {
                     .justify_end()
                     .child(
                         Button::new("export-cancel")
-                            .label(crate::i18n::t("取消"))
+                            .label(crate::i18n::t("common.cancel"))
                             .small()
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(ExportEvent::Done(None)))),
                     )
                     .child(
                         Button::new("export-go")
                             .label(match (busy, batch) {
-                                (true, _) => crate::i18n::t("选择位置…"),
-                                (false, true) => crate::i18n::t("导出"),
-                                (false, false) => crate::i18n::t("导出…"),
+                                (true, _) => crate::i18n::t("export.choose_location"),
+                                (false, true) => crate::i18n::t("export.export"),
+                                (false, false) => crate::i18n::t("action.Export"),
                             })
                             .small()
                             .primary()

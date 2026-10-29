@@ -79,58 +79,58 @@ pub fn lens_name(c: &CameraInfo) -> Option<String> {
 }
 
 fn exposure_program(p: u16) -> Option<String> {
-    Some(match p {
-        1 => crate::i18n::t("手动"),
-        2 => crate::i18n::t("程序自动"),
-        3 => crate::i18n::t("光圈优先"),
-        4 => crate::i18n::t("快门优先"),
-        5 => crate::i18n::t("创意程序"),
-        6 => crate::i18n::t("运动程序"),
-        7 => crate::i18n::t("人像"),
-        8 => crate::i18n::t("风景"),
-        9 => crate::i18n::t("B 门"),
+    Some(crate::i18n::t(match p {
+        1 => "meta.program.manual",
+        2 => "meta.program.normal",
+        3 => "meta.program.aperture_priority",
+        4 => "meta.program.shutter_priority",
+        5 => "meta.program.creative",
+        6 => "meta.program.action",
+        7 => "meta.program.portrait",
+        8 => "meta.program.landscape",
+        9 => "meta.program.bulb",
         _ => return None,
-    })
+    }))
 }
 
 fn metering_mode(m: u16) -> Option<String> {
-    Some(match m {
-        1 => crate::i18n::t("平均"),
-        2 => crate::i18n::t("中央重点"),
-        3 => crate::i18n::t("点测光"),
-        4 => crate::i18n::t("多点"),
-        5 => crate::i18n::t("评价 / 矩阵"),
-        6 => crate::i18n::t("局部"),
+    Some(crate::i18n::t(match m {
+        1 => "meta.metering.average",
+        2 => "meta.metering.center_weighted",
+        3 => "meta.metering.spot",
+        4 => "meta.metering.multi_spot",
+        5 => "meta.metering.evaluative",
+        6 => "meta.metering.partial",
         _ => return None,
-    })
+    }))
 }
 
 fn exposure_mode(m: u16) -> Option<String> {
-    Some(match m {
-        0 => crate::i18n::t("自动曝光"),
-        1 => crate::i18n::t("手动曝光"),
-        2 => crate::i18n::t("自动包围"),
+    Some(crate::i18n::t(match m {
+        0 => "meta.mode.auto",
+        1 => "meta.mode.manual",
+        2 => "meta.mode.bracket",
         _ => return None,
-    })
+    }))
 }
 
 fn white_balance(m: u16) -> Option<String> {
-    Some(match m {
-        0 => crate::i18n::t("自动"),
-        1 => crate::i18n::t("手动"),
+    Some(crate::i18n::t(match m {
+        0 => "meta.wb.auto",
+        1 => "meta.wb.manual",
         _ => return None,
-    })
+    }))
 }
 
 /// EXIF `Flash`: bit 0 = fired; 0x20 = no flash function.
 fn flash(f: u16) -> String {
-    if f & 0x20 != 0 {
-        crate::i18n::t("无闪光功能")
+    crate::i18n::t(if f & 0x20 != 0 {
+        "meta.flash.none"
     } else if f & 1 != 0 {
-        crate::i18n::t("已闪光")
+        "meta.flash.fired"
     } else {
-        crate::i18n::t("未闪光")
-    }
+        "meta.flash.not_fired"
+    })
 }
 
 /// `2016:11:30 13:10:53` → `2016-11-30 13:10:53`, with the UTC offset if known.
@@ -200,18 +200,19 @@ pub fn overlay_lines(info: &ImageInfo) -> Vec<String> {
 pub fn sections(info: &ImageInfo, file: &FileFacts) -> Vec<Section> {
     let mut out = Vec::new();
 
-    let mut rows = vec![(crate::i18n::t("文件名"), file.name.clone())];
+    let t = crate::i18n::t;
+    let mut rows = vec![(t("meta.file_name"), file.name.clone())];
     if let Some(p) = &file.path {
-        rows.push((crate::i18n::t("位置"), p.clone()));
+        rows.push((t("meta.location"), p.clone()));
     }
     if let Some(b) = file.bytes {
-        rows.push((crate::i18n::t("文件大小"), bytes(b)));
+        rows.push((t("meta.file_size"), bytes(b)));
     }
     let (w, h) = (info.source_size.w, info.source_size.h);
     rows.push((
-        crate::i18n::t("尺寸"),
+        t("meta.dimensions"),
         rust_i18n::t!(
-            "{w} × {h}（{:.1} MP）",
+            "meta.dimensions_value",
             arg0 = format!("{:.1}", w as f64 * h as f64 / 1e6),
             w = w,
             h = h
@@ -219,15 +220,15 @@ pub fn sections(info: &ImageInfo, file: &FileFacts) -> Vec<Section> {
         .into_owned(),
     ));
     rows.push((
-        crate::i18n::t("类型"),
+        t("meta.type"),
         match info.kind {
             SourceKind::Raw => "RAW".to_string(),
-            SourceKind::Rendered => crate::i18n::t("已渲染图像"),
-            SourceKind::Synthetic => crate::i18n::t("合成测试图"),
+            SourceKind::Rendered => t("meta.kind.rendered"),
+            SourceKind::Synthetic => t("meta.kind.synthetic"),
         },
     ));
     out.push(Section {
-        title: crate::i18n::t("文件"),
+        title: t("meta.section.file"),
         rows,
     });
 
@@ -238,117 +239,114 @@ pub fn sections(info: &ImageInfo, file: &FileFacts) -> Vec<Section> {
     let opt = |v: Option<String>| v.filter(|s| !s.is_empty());
 
     let mut rows = Vec::new();
-    rows.push((crate::i18n::t("机身"), camera_name(c)));
+    rows.push((t("meta.body"), camera_name(c)));
     if let Some(v) = opt(s.body_serial.clone()) {
-        rows.push((crate::i18n::t("机身序列号"), v));
+        rows.push((t("meta.body_serial"), v));
     }
     if let Some(v) = opt(s.firmware.clone()) {
-        rows.push((crate::i18n::t("固件"), v));
+        rows.push((t("meta.firmware"), v));
     }
     if let Some(v) = &s.date_time {
-        rows.push((
-            crate::i18n::t("拍摄时间"),
-            date_time(v, s.utc_offset.as_deref()),
-        ));
+        rows.push((t("meta.date_taken"), date_time(v, s.utc_offset.as_deref())));
     }
     out.push(Section {
-        title: crate::i18n::t("相机"),
+        title: t("meta.section.camera"),
         rows,
     });
 
     let mut rows = Vec::new();
     if let Some(v) = lens_name(c) {
-        rows.push((crate::i18n::t("镜头"), v));
+        rows.push((t("meta.lens"), v));
     }
     if let Some(v) = opt(c.lens_make.clone()) {
-        rows.push((crate::i18n::t("镜头厂商"), v));
+        rows.push((t("meta.lens_maker"), v));
     }
     if let Some(v) = opt(s.lens_serial.clone()) {
-        rows.push((crate::i18n::t("镜头序列号"), v));
+        rows.push((t("meta.lens_serial"), v));
     }
     if let Some(f) = c.focal_length {
         let mut v = focal(f);
         if let Some(e) = c.focal_length_35mm.filter(|e| (e - f).abs() >= 0.5) {
-            v.push_str(&rust_i18n::t!("（等效 {}）", arg0 = focal(e)).into_owned());
+            v.push_str(&rust_i18n::t!("meta.equivalent", arg0 = focal(e)).into_owned());
         }
-        rows.push((crate::i18n::t("焦距"), v));
+        rows.push((t("meta.focal_length"), v));
     }
     if let Some(a) = s.max_aperture {
-        rows.push((crate::i18n::t("最大光圈"), aperture(a)));
+        rows.push((t("meta.max_aperture"), aperture(a)));
     }
     if !rows.is_empty() {
         out.push(Section {
-            title: crate::i18n::t("镜头"),
+            title: t("meta.section.lens"),
             rows,
         });
     }
 
     let mut rows = Vec::new();
-    if let Some(t) = c.exposure_time {
-        rows.push((crate::i18n::t("快门"), shutter(t)));
+    if let Some(e) = c.exposure_time {
+        rows.push((t("meta.shutter"), shutter(e)));
     }
     if let Some(a) = c.f_number {
-        rows.push((crate::i18n::t("光圈"), aperture(a)));
+        rows.push((t("meta.aperture"), aperture(a)));
     }
     if let Some(i) = c.iso {
         rows.push(("ISO".into(), format!("{}", i.round() as u32)));
     }
     if let Some(b) = s.exposure_bias {
-        rows.push((crate::i18n::t("曝光补偿"), bias(b)));
+        rows.push((t("meta.exposure_bias"), bias(b)));
     }
     if let Some(v) = s.exposure_program.and_then(exposure_program) {
-        rows.push((crate::i18n::t("曝光程序"), v));
+        rows.push((t("meta.exposure_program"), v));
     }
     if let Some(v) = s.exposure_mode.and_then(exposure_mode) {
-        rows.push((crate::i18n::t("曝光模式"), v));
+        rows.push((t("meta.exposure_mode"), v));
     }
     if let Some(v) = s.metering_mode.and_then(metering_mode) {
-        rows.push((crate::i18n::t("测光"), v));
+        rows.push((t("meta.metering"), v));
     }
     if let Some(f) = s.flash {
-        rows.push((crate::i18n::t("闪光灯"), flash(f)));
+        rows.push((t("meta.flash"), flash(f)));
     }
     if let Some(v) = s.white_balance.and_then(white_balance) {
-        rows.push((crate::i18n::t("机内白平衡"), v));
+        rows.push((t("meta.camera_wb"), v));
     }
     rows.push((
-        crate::i18n::t("原照白平衡"),
+        t("meta.as_shot_wb"),
         rust_i18n::t!(
-            "{} K，色调 {}",
+            "meta.as_shot_wb_value",
             arg0 = info.as_shot.temperature.round() as i32,
             arg1 = info.as_shot.tint.round() as i32
         )
         .into_owned(),
     ));
     out.push(Section {
-        title: crate::i18n::t("拍摄"),
+        title: t("meta.section.shooting"),
         rows,
     });
 
     let mut rows = Vec::new();
     if let Some(v) = opt(s.artist.clone()) {
-        rows.push((crate::i18n::t("作者"), v));
+        rows.push((t("meta.artist"), v));
     }
     if let Some(v) = opt(s.copyright.clone()) {
-        rows.push((crate::i18n::t("版权"), v));
+        rows.push((t("meta.copyright"), v));
     }
     if !rows.is_empty() {
         out.push(Section {
-            title: crate::i18n::t("版权"),
+            title: t("meta.section.copyright"),
             rows,
         });
     }
 
     if let Some(g) = s.gps {
         let mut rows = vec![
-            (crate::i18n::t("纬度"), coord(g.latitude, 'N', 'S')),
-            (crate::i18n::t("经度"), coord(g.longitude, 'E', 'W')),
+            (t("meta.latitude"), coord(g.latitude, 'N', 'S')),
+            (t("meta.longitude"), coord(g.longitude, 'E', 'W')),
         ];
         if let Some(a) = g.altitude {
-            rows.push((crate::i18n::t("海拔"), format!("{} m", a.round() as i32)));
+            rows.push((t("meta.altitude"), format!("{} m", a.round() as i32)));
         }
         out.push(Section {
-            title: crate::i18n::t("位置"),
+            title: t("meta.section.location"),
             rows,
         });
     }
@@ -454,12 +452,21 @@ mod tests {
                 .find(|r| r.0 == crate::i18n::t(k))
                 .map(|r| r.1.clone())
         };
-        assert_eq!(find("尺寸").as_deref(), Some("6000 × 4000 (24.0 MP)"));
-        assert_eq!(find("文件大小").as_deref(), Some("23.0 MB"));
-        assert_eq!(find("焦距").as_deref(), Some("50 mm (75 mm equivalent)"));
-        assert_eq!(find("曝光程序").as_deref(), Some("Aperture Priority"));
-        assert_eq!(find("经度").as_deref(), Some("84.68170° W"));
-        assert_eq!(find("原照白平衡").as_deref(), Some("5203 K, tint 3"));
+        assert_eq!(
+            find("meta.dimensions").as_deref(),
+            Some("6000 × 4000 (24.0 MP)")
+        );
+        assert_eq!(find("meta.file_size").as_deref(), Some("23.0 MB"));
+        assert_eq!(
+            find("meta.focal_length").as_deref(),
+            Some("50 mm (75 mm equivalent)")
+        );
+        assert_eq!(
+            find("meta.exposure_program").as_deref(),
+            Some("Aperture Priority")
+        );
+        assert_eq!(find("meta.longitude").as_deref(), Some("84.68170° W"));
+        assert_eq!(find("meta.as_shot_wb").as_deref(), Some("5203 K, tint 3"));
 
         let bare = ImageInfo {
             camera: None,

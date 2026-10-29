@@ -116,14 +116,20 @@ impl Render for Resources {
         } else {
             format!("{mib:.0} MiB")
         };
-        let ram = crate::i18n::t("内存");
+        let ram = crate::i18n::t("resources.ram");
         let label = match usage.cpu_percent {
             Some(cpu) => format!("CPU {cpu:.0}% · {ram} {memory}"),
             None => format!("{ram} {memory}"),
         };
-        div().id("app-resources").flex_none().text_xs().text_color(cx.theme().muted_foreground)
+        div()
+            .id("app-resources")
+            .flex_none()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
             .child(label)
-            .tooltip(|window, cx| Tooltip::new(crate::i18n::t("应用的 CPU 使用率和驻留内存，每两秒更新。CPU 的 100% 表示一个逻辑核心，多线程时可超过 100%。")).build(window, cx))
+            .tooltip(|window, cx| {
+                Tooltip::new(crate::i18n::t("resources.tooltip")).build(window, cx)
+            })
             .into_any_element()
     }
 }

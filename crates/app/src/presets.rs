@@ -194,7 +194,7 @@ impl Render for PresetsPanel {
                             .label("×")
                             .xsmall()
                             .ghost()
-                            .tooltip(crate::i18n::t("删除预设"))
+                            .tooltip(crate::i18n::t("presets.delete"))
                             .on_click(
                                 cx.listener(move |_, _, _, cx| cx.emit(PresetsEvent::Remove(i))),
                             ),
@@ -212,14 +212,14 @@ impl Render for PresetsPanel {
                         div()
                             .text_sm()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child(crate::i18n::t("预设")),
+                            .child(crate::i18n::t("presets.title")),
                     )
                     .child(
                         Button::new("preset-add")
                             .label("+")
                             .xsmall()
                             .ghost()
-                            .tooltip(crate::i18n::t("用当前设置新建预设"))
+                            .tooltip(crate::i18n::t("presets.new_tooltip"))
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(PresetsEvent::Create))),
                     ),
             )
@@ -235,7 +235,7 @@ impl Render for PresetsPanel {
                                 .pb_1()
                                 .text_xs()
                                 .text_color(muted)
-                                .child(crate::i18n::t("暂无预设")),
+                                .child(crate::i18n::t("presets.empty")),
                         )
                     })
                     .child(v_flex().children(rows)),
@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn names_and_stems() {
-        assert_eq!(unique_name(["预设 1"].into_iter(), "预设"), "预设 2");
+        assert_eq!(unique_name(["Preset 1"].into_iter(), "Preset"), "Preset 2");
         assert_eq!(file_stem("a:b"), "a_b");
         assert_eq!(file_stem("..."), "preset");
     }

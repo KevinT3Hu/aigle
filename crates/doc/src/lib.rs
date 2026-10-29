@@ -163,8 +163,9 @@ pub struct HistoryItem {
 /// Entries kept when history is saved; older applied entries are dropped first.
 pub const MAX_SAVED_ENTRIES: usize = 200;
 
-/// Label of the entry that reconciles saved history with edits changed elsewhere.
-pub const EXTERNAL_LABEL: &str = "外部修改";
+/// Label of the entry that reconciles saved history with edits changed elsewhere; the app
+/// translates it as a catalog key.
+pub const EXTERNAL_LABEL: &str = "history.external";
 
 /// A document's history in storable form.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

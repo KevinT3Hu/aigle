@@ -128,7 +128,7 @@ pub fn init(cx: &mut App) -> Option<String> {
         install(merged(None).expect("valid default keymap"), cx).expect("valid default actions");
         Some(format!(
             "{}: {error:#}",
-            crate::i18n::t("无法加载快捷键，已使用默认设置")
+            crate::i18n::t("keybindings.load_failed")
         ))
     } else {
         None
@@ -218,7 +218,7 @@ fn format_hint(text: &str, bindings: &Bindings) -> String {
             .map(|(key, _)| key.as_str())
             .collect();
         values.push(if keys.is_empty() {
-            crate::i18n::t("未绑定")
+            crate::i18n::t("keybindings.unbound")
         } else {
             keys.join(" / ")
         });

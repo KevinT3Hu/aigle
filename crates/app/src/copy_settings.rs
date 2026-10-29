@@ -83,22 +83,22 @@ impl Group {
 
     pub fn label(self) -> &'static str {
         match self {
-            Group::Profile => "配置文件",
-            Group::WhiteBalance => "白平衡",
-            Group::Light => "影调",
-            Group::Presence => "偏好",
-            Group::Curve => "曲线",
-            Group::Mixer => "颜色",
-            Group::Monochrome => "黑白",
-            Group::Grading => "分级",
-            Group::Detail => "细节",
-            Group::Lens => "镜头校正",
-            Group::Effects => "效果",
-            Group::Raw => "RAW 处理",
-            Group::Geometry => "裁剪与变换",
-            Group::Masks => "蒙版",
-            Group::Spots => "污点去除",
-            Group::RedEye => "红眼校正",
+            Group::Profile => "copy_settings.group.profile",
+            Group::WhiteBalance => "copy_settings.group.white_balance",
+            Group::Light => "copy_settings.group.light",
+            Group::Presence => "copy_settings.group.presence",
+            Group::Curve => "copy_settings.group.curve",
+            Group::Mixer => "copy_settings.group.mixer",
+            Group::Monochrome => "copy_settings.group.monochrome",
+            Group::Grading => "copy_settings.group.grading",
+            Group::Detail => "copy_settings.group.detail",
+            Group::Lens => "copy_settings.group.lens",
+            Group::Effects => "copy_settings.group.effects",
+            Group::Raw => "copy_settings.group.raw",
+            Group::Geometry => "copy_settings.group.geometry",
+            Group::Masks => "copy_settings.group.masks",
+            Group::Spots => "copy_settings.group.spots",
+            Group::RedEye => "copy_settings.group.red_eye",
         }
     }
 
@@ -179,8 +179,8 @@ impl CopyDialog {
         cx: &mut Context<Self>,
     ) -> CopyDialog {
         let (name, sub) = if matches!(purpose, Purpose::Preset) {
-            let name =
-                cx.new(|cx| InputState::new(window, cx).placeholder(crate::i18n::t("预设名称")));
+            let name = cx
+                .new(|cx| InputState::new(window, cx).placeholder(crate::i18n::t("presets.name")));
             name.update(cx, |n, cx| n.focus(window, cx));
             let sub = cx.subscribe(&name, |d, _, ev: &InputEvent, cx| {
                 if let InputEvent::PressEnter { .. } = ev {
@@ -240,12 +240,18 @@ impl Render for CopyDialog {
                     .on_click(cx.listener(move |d, _, _, cx| d.toggle(g, cx)))
             }));
         let (title, confirm) = match self.purpose {
-            Purpose::Copy => (crate::i18n::t("拷贝设置"), crate::i18n::t("拷贝")),
-            Purpose::Sync(n) => (
-                rust_i18n::t!("将设置同步到另外 {} 张照片", arg0 = n).into_owned(),
-                crate::i18n::t("同步"),
+            Purpose::Copy => (
+                crate::i18n::t("copy_settings.copy_title"),
+                crate::i18n::t("copy_settings.copy"),
             ),
-            Purpose::Preset => (crate::i18n::t("新建预设"), crate::i18n::t("创建")),
+            Purpose::Sync(n) => (
+                rust_i18n::t!("copy_settings.sync_title", arg0 = n).into_owned(),
+                crate::i18n::t("copy_settings.sync"),
+            ),
+            Purpose::Preset => (
+                crate::i18n::t("copy_settings.new_preset_title"),
+                crate::i18n::t("copy_settings.create"),
+            ),
         };
         let card = v_flex()
             .id("copy-card")
@@ -271,14 +277,14 @@ impl Render for CopyDialog {
                     .gap_1()
                     .child(
                         Button::new("copy-all")
-                            .label(crate::i18n::t("全选"))
+                            .label(crate::i18n::t("common.select_all"))
                             .xsmall()
                             .ghost()
                             .on_click(cx.listener(|d, _, _, cx| d.set_all(true, cx))),
                     )
                     .child(
                         Button::new("copy-none")
-                            .label(crate::i18n::t("全不选"))
+                            .label(crate::i18n::t("common.select_none"))
                             .xsmall()
                             .ghost()
                             .on_click(cx.listener(|d, _, _, cx| d.set_all(false, cx))),
@@ -291,7 +297,7 @@ impl Render for CopyDialog {
                     .justify_end()
                     .child(
                         Button::new("copy-cancel")
-                            .label(crate::i18n::t("取消"))
+                            .label(crate::i18n::t("common.cancel"))
                             .small()
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(CopyEvent::Done(None)))),
                     )

@@ -26,9 +26,9 @@ fn origin_tag(o: &Origin) -> Option<String> {
     match o {
         Origin::User => None,
         Origin::Agent { .. } => Some("AI".into()),
-        Origin::Preset => Some(crate::i18n::t("预设")),
-        Origin::Profile => Some(crate::i18n::t("配置")),
-        Origin::ExternalReload => Some(crate::i18n::t("外部")),
+        Origin::Preset => Some(crate::i18n::t("history_panel.origin.preset")),
+        Origin::Profile => Some(crate::i18n::t("history_panel.origin.profile")),
+        Origin::ExternalReload => Some(crate::i18n::t("history_panel.origin.external")),
     }
 }
 
@@ -41,7 +41,7 @@ impl Render for HistoryPanel {
         let (fg, muted, active) = (theme.foreground, theme.muted_foreground, theme.list_active);
         let photo = self.photo.clone();
 
-        let rows = std::iter::once((crate::i18n::t("打开照片").to_string(), None))
+        let rows = std::iter::once(("history.open".to_owned(), None))
             .chain(
                 items
                     .iter()
@@ -104,7 +104,7 @@ impl Render for HistoryPanel {
                             .label("×")
                             .xsmall()
                             .ghost()
-                            .tooltip(crate::i18n::t("删除快照"))
+                            .tooltip(crate::i18n::t("history_panel.delete_snapshot"))
                             .on_click(move |_, _, cx| {
                                 remove.update(cx, |p, cx| p.remove_snapshot(i, cx))
                             }),
@@ -127,13 +127,13 @@ impl Render for HistoryPanel {
                     .px_3()
                     .py_2()
                     .justify_between()
-                    .child(heading(crate::i18n::t("快照_标题")))
+                    .child(heading(crate::i18n::t("history_panel.snapshots")))
                     .child(
                         Button::new("snapshot-add")
                             .label("+")
                             .xsmall()
                             .ghost()
-                            .tooltip(crate::i18n::t("将当前设置存为快照"))
+                            .tooltip(crate::i18n::t("history_panel.save_snapshot"))
                             .on_click(move |_, _, cx| add.update(cx, |p, cx| p.add_snapshot(cx))),
                     ),
             )
@@ -150,7 +150,7 @@ impl Render for HistoryPanel {
                                 .pb_1()
                                 .text_xs()
                                 .text_color(muted)
-                                .child(crate::i18n::t("暂无快照")),
+                                .child(crate::i18n::t("history_panel.no_snapshots")),
                         )
                     })
                     .child(v_flex().children(snapshots)),
@@ -159,7 +159,7 @@ impl Render for HistoryPanel {
                 div()
                     .px_3()
                     .py_2()
-                    .child(heading(crate::i18n::t("历史记录"))),
+                    .child(heading(crate::i18n::t("history_panel.title"))),
             )
             .child(
                 div()
