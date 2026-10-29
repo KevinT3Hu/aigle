@@ -66,7 +66,7 @@ pub fn stars(rating: i8) -> String {
     }
 }
 
-/// Thumbnail of `item`, or a placeholder while it loads.
+/// Thumbnail of `item`, a placeholder while it loads, or why it cannot be shown.
 pub fn thumb_or_placeholder(item: &Item, cx: &App) -> gpui::AnyElement {
     match &item.thumb {
         Some(t) => div()
@@ -81,6 +81,22 @@ pub fn thumb_or_placeholder(item: &Item, cx: &App) -> gpui::AnyElement {
                     .object_fit(ObjectFit::Contain),
             )
             .into_any_element(),
+        None if item.unreadable.is_some() => {
+            let why = item.unreadable.clone().unwrap_or_default();
+            div()
+                .id(SharedString::from(format!("unreadable-{}", item.name())))
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_xs()
+                .text_color(cx.theme().danger)
+                .child(crate::i18n::t("grid.unreadable"))
+                .tooltip(move |window, cx| {
+                    gpui_component::tooltip::Tooltip::new(why.clone()).build(window, cx)
+                })
+                .into_any_element()
+        }
         None => div()
             .size_full()
             .flex()

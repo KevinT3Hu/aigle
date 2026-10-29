@@ -147,7 +147,9 @@ impl SessionShared {
             move || {
                 let Some(s) = weak.upgrade() else { return };
                 let res = match &from {
-                    Some(src) => src.with_highlights(&params, &s.engine.ledger, Some(&cancel)),
+                    Some(src) => source::guarded(|| {
+                        src.with_highlights(&params, &s.engine.ledger, Some(&cancel))
+                    }),
                     None => s.engine.source_for(&s.src, &params, Some(&cancel)),
                 };
                 s.finish_load(want, &cancel, res);

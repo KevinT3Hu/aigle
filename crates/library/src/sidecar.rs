@@ -411,10 +411,10 @@ impl Store {
                 existing.clone(),
             ),
             None => {
-                let embedded = match aigle_exiv2_sys::read_file(photo) {
+                let embedded = match crate::worker::embedded_xmp(photo) {
                     Ok(p) => p,
                     Err(e) => {
-                        tracing::debug!(path = %photo.display(), "no embedded XMP: {}", e.0);
+                        tracing::debug!(path = %photo.display(), "no embedded XMP: {e}");
                         None
                     }
                 };

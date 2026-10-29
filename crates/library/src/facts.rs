@@ -21,10 +21,10 @@ impl Facts {
 
 /// The facts of `photo`; unknown ones (or all, if Exiv2 cannot read the file) are `None`.
 pub fn read_facts(photo: &Path) -> Facts {
-    let exif = match aigle_exiv2_sys::read_facts(photo) {
+    let exif = match crate::worker::exif_facts(photo) {
         Ok(e) => e,
         Err(e) => {
-            tracing::debug!(path = %photo.display(), "no EXIF: {}", e.0);
+            tracing::debug!(path = %photo.display(), "no EXIF: {e}");
             return Facts::default();
         }
     };

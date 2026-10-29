@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use aigle_core::EditParams;
 use aigle_doc::Origin;
-use aigle_engine_api::{Engine, Priority, SourceRef};
+use aigle_engine_api::{Engine, JobError, Priority, SourceRef};
 use aigle_library::{
     Catalog, CopyId, Facts, Field, PhotoEntry, PhotoKey, PhotoMeta, Snapshot, Store, VirtualCopy,
     WriteReport, Writer,
@@ -68,6 +68,8 @@ pub struct Item {
     /// The edits `thumb` was made from.
     thumb_of: Option<Option<Arc<EditParams>>>,
     failed_for: Option<Option<Arc<EditParams>>>,
+    /// Why the photo cannot be shown, when its thumbnail failed.
+    pub unreadable: Option<String>,
 }
 
 /// `IMG_1 (Copy 1).CR3`: the photo's file name with the copy's name before the extension.
@@ -107,6 +109,7 @@ impl Item {
             thumb: None,
             thumb_of: None,
             failed_for: None,
+            unreadable: None,
         }
     }
 
@@ -755,14 +758,26 @@ impl Library {
                         return;
                     };
                     let it = &mut l.all[s];
-                    match r.ok().and_then(|t| render_image(&t.pixels)) {
-                        Some(img) => {
+                    let shown = match r {
+                        Ok(t) => {
+                            render_image(&t.pixels).ok_or_else(|| crate::i18n::t("grid.unreadable"))
+                        }
+                        Err(JobError::Cancelled | JobError::Dropped) => return,
+                        Err(e) => Err(e.to_string()),
+                    };
+                    match shown {
+                        Ok(img) => {
                             if let Some(old) = it.thumb.replace(img) {
                                 cx.drop_image(old, None);
                             }
                             it.thumb_of = Some(for_edits);
+                            it.unreadable = None;
                         }
-                        None => it.failed_for = Some(for_edits),
+                        Err(why) => {
+                            tracing::warn!(path = %it.entry.path.display(), "no thumbnail: {why}");
+                            it.failed_for = Some(for_edits);
+                            it.unreadable = Some(why);
+                        }
                     }
                     l.evict(cx);
                     cx.notify();

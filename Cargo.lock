@@ -139,6 +139,7 @@ dependencies = [
  "aigle-doc",
  "aigle-engine",
  "aigle-engine-api",
+ "aigle-isolate",
  "aigle-library",
  "anyhow",
  "futures",
@@ -150,6 +151,7 @@ dependencies = [
  "rust-i18n",
  "serde",
  "serde_json",
+ "signal-hook",
  "sysinfo",
  "tracing",
  "tracing-subscriber",
@@ -184,6 +186,7 @@ version = "0.1.0"
 dependencies = [
  "aigle-core",
  "aigle-engine-api",
+ "aigle-isolate",
  "aigle-kernels",
  "aigle-lensfun",
  "aigle-libraw-sys",
@@ -227,6 +230,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "aigle-isolate"
+version = "0.1.0"
+dependencies = [
+ "aigle-engine-api",
+ "bytemuck",
+ "rustix",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "aigle-kernels"
 version = "0.1.0"
 dependencies = [
@@ -250,6 +266,7 @@ dependencies = [
  "aigle-doc",
  "aigle-engine-api",
  "aigle-exiv2-sys",
+ "aigle-isolate",
  "blake3",
  "parking_lot",
  "rusqlite",
@@ -6087,6 +6104,16 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
+
+[[package]]
+name = "signal-hook"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b29ffa27d3d59a049bb328258de100f8012848d1b08d444e08bbc02ac468435e"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
 
 [[package]]
 name = "signal-hook-registry"

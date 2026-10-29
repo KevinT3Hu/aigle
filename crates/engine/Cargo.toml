@@ -10,6 +10,7 @@ rust-version.workspace = true
 ash = { version = "0.38.0", default-features = false }
 aigle-core.workspace = true
 aigle-engine-api.workspace = true
+aigle-isolate.workspace = true
 aigle-kernels.workspace = true
 aigle-lensfun.workspace = true
 aigle-libraw-sys.workspace = true
@@ -35,3 +36,7 @@ workspace = true
 [dev-dependencies]
 image.workspace = true
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+
+[[test]]
+name = "isolated"
+harness = false

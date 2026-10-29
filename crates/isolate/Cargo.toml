@@ -1,0 +1,23 @@
+[package]
+name = "aigle-isolate"
+description = "aigle worker processes: runs untrusted-file parsers out of process so a crash or hang fails one file, not the app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aigle-engine-api.workspace = true
+bytemuck.workspace = true
+rustix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[[test]]
+name = "worker"
+harness = false
+
+[lints]
+workspace = true

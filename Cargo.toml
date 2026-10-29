@@ -13,6 +13,7 @@ members = [
     "crates/exiv2-sys",
     "crates/library",
     "crates/lensfun",
+    "crates/isolate",
     "xtask",
 ]
 # Nightly-only SPIR-V build (doc 04 §3); has its own workspace and toolchain.
@@ -37,8 +38,10 @@ aigle-vips-sys = { path = "crates/vips-sys" }
 aigle-exiv2-sys = { path = "crates/exiv2-sys" }
 aigle-library = { path = "crates/library" }
 aigle-lensfun = { path = "crates/lensfun" }
+aigle-isolate = { path = "crates/isolate" }
 
 blake3 = "1.8"
+bytemuck = "1.23"
 futures = "0.3.31"
 half = { version = "2.6", features = ["bytemuck"] }
 image = { version = "0.25.6", default-features = false, features = ["png", "jpeg", "tiff"] }
@@ -47,11 +50,14 @@ parking_lot = "0.12.4"
 rayon = "1.11"
 # Bundled SQLite: the catalog must not depend on the system library's version.
 rusqlite = { version = "=0.41.0", features = ["bundled"] }
-# Safe renameat2(RENAME_NOREPLACE) for moving photos without overwriting.
-rustix = { version = "1.1.6", features = ["fs"] }
+# Safe renameat2(RENAME_NOREPLACE) for moving photos without overwriting; poll, pipe sizes
+# and stdio redirection for worker processes.
+rustix = { version = "1.1.6", features = ["fs", "event", "pipe", "stdio"] }
 schemars = "1.0"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
-serde_json = "1.0.140"
+# float_roundtrip: decoder results cross the worker boundary as JSON and must parse back
+# to the same f64.
+serde_json = { version = "1.0.140", features = ["float_roundtrip"] }
 thiserror = "2.0.12"
 tokio = { version = "1.47", default-features = false, features = ["sync"] }
 tracing = "0.1.41"

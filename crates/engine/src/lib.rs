@@ -51,6 +51,7 @@ pub mod retouch;
 pub mod scheduler;
 mod session;
 pub mod source;
+pub use source::worker::OPS as WORKER_OPS;
 mod view;
 
 use std::sync::Arc;

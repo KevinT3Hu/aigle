@@ -115,10 +115,12 @@ impl EngineInner {
                 return Ok(s);
             }
             if s.decode_matches(params) {
-                return s.with_highlights(params, &self.ledger, cancel);
+                return source::guarded(|| s.with_highlights(params, &self.ledger, cancel));
             }
         }
-        let s = Arc::new(source::load(src, params, &self.ledger, cancel)?);
+        let s = Arc::new(source::guarded(|| {
+            source::load(src, params, &self.ledger, cancel)
+        })?);
         self.sources.lock().insert(id, Arc::downgrade(&s));
         Ok(s)
     }
@@ -144,7 +146,13 @@ impl EngineInner {
                 completer.complete(Err(JobError::Cancelled));
                 return;
             }
-            completer.complete(f(&token));
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&token)))
+                .unwrap_or_else(|p| {
+                    let msg = aigle_isolate::panic_message(p.as_ref());
+                    tracing::error!("engine job panicked: {msg}");
+                    Err(JobError::Failed(format!("internal error: {msg}")))
+                });
+            completer.complete(r);
         });
         job
     }

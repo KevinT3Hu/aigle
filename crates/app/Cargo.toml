@@ -15,6 +15,7 @@ aigle-core.workspace = true
 aigle-doc.workspace = true
 aigle-engine.workspace = true
 aigle-engine-api.workspace = true
+aigle-isolate.workspace = true
 aigle-library.workspace = true
 anyhow = "1.0.98"
 futures.workspace = true
@@ -30,6 +31,7 @@ sysinfo = { version = "0.31.4", default-features = false, features = ["system"] 
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 zbus = { version = "=5.19.0", default-features = false, features = ["async-io"] }
+signal-hook = "0.4"
 
 [lints]
 workspace = true

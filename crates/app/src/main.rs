@@ -9,6 +9,7 @@ mod actions;
 mod auto_tone;
 mod canvas;
 mod copy_settings;
+mod crash;
 mod crop;
 mod curve;
 mod display;
@@ -77,12 +78,15 @@ fn source_from_args() -> Option<SourceRef> {
 }
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "warn,aigle=info".into()),
-        )
-        .init();
+    if aigle_isolate::is_worker() {
+        crash::init_worker_logging();
+        let _span = tracing::info_span!("worker", pid = std::process::id()).entered();
+        aigle_isolate::serve(&[aigle_engine::WORKER_OPS, aigle_library::WORKER_OPS].concat());
+    }
+    let log = crash::init_logging();
+    let crashed_before = crash::previous_reports();
+    let _session = crash::Session::start(log.clone());
+    aigle_isolate::enable("/proc/self/exe".into(), crash::worker_env(log.as_deref()));
     let source = source_from_args();
 
     gpui_platform::application()
@@ -119,6 +123,15 @@ fn main() {
                     window.defer(cx, move |window, cx| {
                         use gpui_component::WindowExt;
                         window.push_notification(error, cx);
+                    });
+                }
+                if let Some(report) = crashed_before.last() {
+                    let text =
+                        rust_i18n::t!("common.crashed_before", path = report.display().to_string())
+                            .into_owned();
+                    window.defer(cx, move |window, cx| {
+                        use gpui_component::WindowExt;
+                        window.push_notification(text, cx);
                     });
                 }
                 root

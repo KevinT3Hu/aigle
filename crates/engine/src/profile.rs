@@ -19,7 +19,7 @@ use aigle_core::color::{self, Mat3};
 pub const D50_XY: (f64, f64) = (0.3457, 0.3585);
 
 /// One calibration illuminant.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Illuminant {
     /// Correlated colour temperature in K.
     pub cct: f64,
@@ -31,7 +31,7 @@ pub struct Illuminant {
     pub calibration: Mat3,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CameraCalibration {
     /// One or two illuminants, sorted by CCT (lowest first).
     pub ill: Vec<Illuminant>,

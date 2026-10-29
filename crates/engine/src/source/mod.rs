@@ -11,6 +11,7 @@ mod pyramid;
 mod raster;
 mod raw;
 mod synthetic;
+pub(crate) mod worker;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -22,7 +23,6 @@ use aigle_core::params::Demosaic;
 use aigle_engine_api::{CancelToken, ImageInfo, NoiseEstimate, SourceKind, SourceRef, WbValuesDto};
 use highlights::{HlBase, HlKey};
 pub use pyramid::{Level, Level32, Pyramid};
-pub use raw::embedded_preview;
 
 use parking_lot::Mutex;
 
@@ -58,7 +58,7 @@ impl From<String> for LoadError {
 /// The decode slice of `EditParams` (doc 02 §4: A2, A3 rows); changing it re-decodes. A4
 /// (`raw.highlight_recon` and the quantised user WB) is keyed separately ([`HlKey`]) and
 /// re-derived from the decoded source.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ATier {
     pub demosaic: Demosaic,
     pub ca_correction: bool,
@@ -85,7 +85,7 @@ impl ATier {
 }
 
 /// Colour description of the stored camera RGB (doc 02 §6.2).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SourceColor {
     /// Reference WB multipliers premultiplied into the stored data (as-shot for raws),
     /// normalised to green = 1.
@@ -379,52 +379,149 @@ fn decode_rgb(
                 noise_model: None,
             }
         }
-        SourceRef::File(path) if is_raw_source(src) => {
-            let _slot = crate::arbiter::decoders()
-                .acquire(cancel)
-                .ok_or(LoadError::Cancelled)?;
-            let d = raw::decode(path, a, cancel, admit)?;
-            tracing::debug!(
-                path = %path.display(),
-                demosaic = ?d.demosaic,
-                white = ?d.white_levels,
-                "raw decoded"
-            );
-            key.json(&d.white_levels);
-            let noise_model = noise::raw_model(&d.noise_profile, d.color.reference_wb);
-            // The model shapes S-tier output.
-            key.json(&noise_model.map(|m| (m.luma, m.chroma)));
-            Decoded {
-                kind: SourceKind::Raw,
-                size: d.size,
-                exif: d.exif_orientation,
-                rgb: d.rgb,
-                color: d.color,
-                camera: Some(d.camera),
-                sensor_clipped: Some(d.sensor_clipped),
-                mask: d.clip_mask,
-                noise_model,
-            }
-        }
         SourceRef::File(path) => {
+            let raw = is_raw_source(src);
             let _slot = crate::arbiter::decoders()
                 .acquire(cancel)
                 .ok_or(LoadError::Cancelled)?;
-            let d = raster::decode(path, &mut |w, h| admit(raster_peak(w, h)), cancel)?;
+            let FileDecoded {
+                header: h,
+                rgb,
+                mask,
+            } = decode_file(path, raw, a, admit, cancel)?;
+            let noise_model = if raw {
+                tracing::debug!(
+                    path = %path.display(),
+                    demosaic = ?h.demosaic,
+                    white = ?h.white_levels,
+                    "raw decoded"
+                );
+                key.json(&h.white_levels);
+                let m = noise::raw_model(&h.noise_profile, h.color.reference_wb);
+                // The model shapes S-tier output.
+                key.json(&m.map(|m| (m.luma, m.chroma)));
+                m
+            } else {
+                None
+            };
             Decoded {
-                kind: SourceKind::Rendered,
-                size: Size::new(d.width, d.height),
-                exif: d.exif_orientation,
-                rgb: d.rgb,
-                color: SourceColor::working_space(),
-                camera: d.camera,
-                sensor_clipped: None,
-                mask: None,
-                noise_model: None,
+                kind: if raw {
+                    SourceKind::Raw
+                } else {
+                    SourceKind::Rendered
+                },
+                size: h.size,
+                exif: h.exif,
+                rgb,
+                color: h.color,
+                camera: h.camera,
+                sensor_clipped: h.sensor_clipped,
+                mask,
+                noise_model,
             }
         }
     };
     Ok(d)
+}
+
+/// A1–A3 output of a file, the same whether decoded in this process or in a worker.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct FileHeader {
+    pub size: Size,
+    pub exif: u16,
+    pub color: SourceColor,
+    pub camera: Option<aigle_engine_api::CameraInfo>,
+    pub sensor_clipped: Option<f32>,
+    /// camconst white levels used (raws).
+    pub white_levels: Option<[f32; 4]>,
+    /// DNG NoiseProfile pairs (raws; empty if absent).
+    pub noise_profile: Vec<(f64, f64)>,
+    pub demosaic: Option<Demosaic>,
+    pub has_mask: bool,
+}
+
+pub(crate) struct FileDecoded {
+    pub header: FileHeader,
+    pub rgb: Vec<aigle_kernels::Rgb>,
+    pub mask: Option<Vec<u8>>,
+}
+
+/// Decode a file in a worker process when isolation is on ([`aigle_isolate`]), else here.
+fn decode_file(
+    path: &Path,
+    raw: bool,
+    a: &ATier,
+    admit: &mut dyn FnMut(u64) -> Result<(), LoadError>,
+    cancel: Option<&CancelToken>,
+) -> Result<FileDecoded, LoadError> {
+    if aigle_isolate::enabled() {
+        worker::decode(path, raw, a, admit, cancel)
+    } else {
+        decode_file_here(path, raw, a, admit, cancel)
+    }
+}
+
+fn decode_file_here(
+    path: &Path,
+    raw: bool,
+    a: &ATier,
+    admit: &mut dyn FnMut(u64) -> Result<(), LoadError>,
+    cancel: Option<&CancelToken>,
+) -> Result<FileDecoded, LoadError> {
+    if raw {
+        let d = raw::decode(path, a, cancel, admit)?;
+        Ok(FileDecoded {
+            header: FileHeader {
+                size: d.size,
+                exif: d.exif_orientation,
+                color: d.color,
+                camera: Some(d.camera),
+                sensor_clipped: Some(d.sensor_clipped),
+                white_levels: d.white_levels,
+                noise_profile: d.noise_profile,
+                demosaic: Some(d.demosaic),
+                has_mask: d.clip_mask.is_some(),
+            },
+            rgb: d.rgb,
+            mask: d.clip_mask,
+        })
+    } else {
+        let d = raster::decode(path, &mut |w, h| admit(raster_peak(w, h)), cancel)?;
+        Ok(FileDecoded {
+            header: FileHeader {
+                size: Size::new(d.width, d.height),
+                exif: d.exif_orientation,
+                color: SourceColor::working_space(),
+                camera: d.camera,
+                sensor_clipped: None,
+                white_levels: None,
+                noise_profile: Vec::new(),
+                demosaic: None,
+                has_mask: false,
+            },
+            rgb: d.rgb,
+            mask: None,
+        })
+    }
+}
+
+/// Embedded preview of a raw file, oriented, as 8-bit RGB (in a worker when isolation is
+/// on).
+pub fn embedded_preview(path: &Path) -> Result<(u32, u32, Vec<u8>), String> {
+    if aigle_isolate::enabled() {
+        worker::preview(path)
+    } else {
+        raw::embedded_preview(path)
+    }
+}
+
+/// Run a source computation, turning a panic into a load failure.
+pub(crate) fn guarded<T>(f: impl FnOnce() -> Result<T, LoadError>) -> Result<T, LoadError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|p| {
+        let msg = aigle_isolate::panic_message(p.as_ref());
+        tracing::error!("source computation panicked: {msg}");
+        Err(LoadError::Failed(format!("internal error: {msg}")))
+    })
 }
 
 /// Full-precision level 0 of `base` for 16-bit exports (doc 03 §9): A1–A3 are re-run on
