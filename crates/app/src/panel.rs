@@ -119,11 +119,6 @@ pub const TOOL_GROUPS: &[GroupDef] = &[
         title: "group.basic",
         sections: &[
             Section {
-                title: "section.profile",
-                extra: Extra::CameraProfile,
-                rows: &[],
-            },
-            Section {
                 title: "section.white_balance",
                 extra: Extra::WhiteBalance,
                 rows: &["wb.temperature", "wb.tint"],
@@ -149,6 +144,12 @@ pub const TOOL_GROUPS: &[GroupDef] = &[
                     "presence.saturation",
                 ],
             ),
+            // Below the sliders: choosing a profile or look means importing a file.
+            Section {
+                title: "section.profile",
+                extra: Extra::CameraProfile,
+                rows: &[],
+            },
         ],
     },
     GroupDef {
