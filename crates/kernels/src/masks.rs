@@ -78,16 +78,20 @@ pub fn cat(p: &[f32], base: usize) -> (Mat3f, Mat3f) {
     (mat(p, base + 28), mat(p, base + 37))
 }
 
-/// Pixel quantities the range components need, computed once per pixel.
+/// Pixel quantities, with range inputs computed only when first used.
 struct Px {
     x: f32,
     y: f32,
+    rgb: Rgb,
+    base: usize,
     lum: f32,
     lab: [f32; 3],
+    lum_ready: bool,
+    lab_ready: bool,
 }
 
 /// Alpha of one program `p[o..o + len]` at pixel `px`.
-fn run(p: &[f32], o: usize, len: usize, px: &Px) -> f32 {
+fn run(p: &[f32], o: usize, len: usize, px: &mut Px) -> f32 {
     let mut st = [0f32; STACK];
     let mut sp = 0usize;
     let mut i = o;
@@ -143,6 +147,10 @@ fn run(p: &[f32], o: usize, len: usize, px: &Px) -> f32 {
             }
             push = Some(a);
         } else if op == OP_LUM {
+            if !px.lum_ready {
+                px.lum = srgb_oetf(clamp01(luminance(px.rgb)));
+                px.lum_ready = true;
+            }
             let (lo, hi, w) = (p[i], p[i + 1], p[i + 2]);
             i += 3;
             let rise = if lo <= 0.0 {
@@ -157,6 +165,14 @@ fn run(p: &[f32], o: usize, len: usize, px: &Px) -> f32 {
             };
             push = Some(rise * fall);
         } else if op == OP_COLOR {
+            if !px.lab_ready {
+                let lms = mat3_mul(&mat(p, px.base + 10), px.rgb);
+                px.lab = mat3_mul(
+                    &mat(p, px.base + 19),
+                    [cbrt(lms[0]), cbrt(lms[1]), cbrt(lms[2])],
+                );
+                px.lab_ready = true;
+            }
             let (n, tol, w) = (p[i] as u32, p[i + 1], p[i + 2]);
             i += 3;
             let mut best = f32::MAX;
@@ -201,16 +217,15 @@ fn prepare(p: &[f32], base: usize, u: f32, v: f32, rgb: Rgb) -> Px {
     let (fu, fv) = (u + 0.5, v + 0.5);
     let nx = p[m] * fu + p[m + 1] * fv + p[m + 2];
     let ny = p[m + 3] * fu + p[m + 4] * fv + p[m + 5];
-    let lms = mat3_mul(&mat(p, base + 10), rgb);
-    let lab = mat3_mul(
-        &mat(p, base + 19),
-        [cbrt(lms[0]), cbrt(lms[1]), cbrt(lms[2])],
-    );
     Px {
         x: nx * p[base + 2],
         y: ny * p[base + 3],
-        lum: srgb_oetf(clamp01(luminance(rgb))),
-        lab,
+        rgb,
+        base,
+        lum: 0.0,
+        lab: [0.0; 3],
+        lum_ready: false,
+        lab_ready: false,
     }
 }
 
@@ -223,14 +238,14 @@ pub fn eval(p: &[f32], base: usize, u: f32, v: f32, rgb: Rgb) -> [f32; MAX_PARAM
     if n == 0 {
         return out;
     }
-    let px = prepare(p, base, u, v, rgb);
+    let mut px = prepare(p, base, u, v, rgb);
     let mut o = base + HEADER;
     let mut k = 0;
     while k < n {
         let (opacity, invert, len) = (p[o], p[o + 1], p[o + 2] as usize);
         let deltas = o + 3;
         let prog = deltas + np;
-        let mut a = run(p, prog, len, &px);
+        let mut a = run(p, prog, len, &mut px);
         if invert != 0.0 {
             a = 1.0 - a;
         }
@@ -250,14 +265,14 @@ pub fn eval(p: &[f32], base: usize, u: f32, v: f32, rgb: Rgb) -> [f32; MAX_PARAM
 pub fn alpha_of(p: &[f32], base: usize, index: u32, u: f32, v: f32, rgb: Rgb) -> f32 {
     let n = p[base] as u32;
     let np = p[base + 1] as usize;
-    let px = prepare(p, base, u, v, rgb);
+    let mut px = prepare(p, base, u, v, rgb);
     let mut o = base + HEADER;
     let mut k = 0;
     while k < n {
         let (opacity, invert, len) = (p[o], p[o + 1], p[o + 2] as usize);
         let prog = o + 3 + np;
         if k == index {
-            let a = run(p, prog, len, &px);
+            let a = run(p, prog, len, &mut px);
             return opacity * if invert != 0.0 { 1.0 - a } else { a };
         }
         o = prog + len;

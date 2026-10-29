@@ -566,12 +566,18 @@ pub fn plan(
 pub fn run_cpu<R: Rgb2D + Sync>(plan: &SPlan, src: &R) -> Vec<[f32; 3]> {
     let n = plan.plane_len();
     let mut work = vec![0f32; plan.work_len()];
+    let mut res = Vec::new();
     for p in &plan.passes {
         let (gw, gh) = (p.up[U_GW] as usize, p.up[U_GH] as usize);
-        let res: Vec<[f32; 4]> = (0..gw * gh)
-            .into_par_iter()
-            .map(|i| s_px(&work, src, &p.fp, &p.up, (i % gw) as u32, (i / gw) as u32))
-            .collect();
+        if matches!(p.up[U_OP], OP_BOX_H | OP_BOX_V) {
+            res.resize(gw * gh, [0.0; 4]);
+            box_pass_cpu(&work, &p.up, &mut res);
+        } else {
+            (0..gw * gh)
+                .into_par_iter()
+                .map(|i| s_px(&work, src, &p.fp, &p.up, (i % gw) as u32, (i / gw) as u32))
+                .collect_into_vec(&mut res);
+        }
         if p.up[U_OP] == OP_REBUILD {
             let o = p.up[U_OUT] as usize * n;
             work[o..o + 3 * gw * gh]
@@ -594,6 +600,76 @@ pub fn run_cpu<R: Rgb2D + Sync>(plan: &SPlan, src: &R) -> Vec<[f32; 3]> {
     }
     let (o, len) = plan.out_range();
     work[o..o + len].as_chunks::<3>().0.to_vec()
+}
+
+/// Row-batched box passes. Accumulate each pixel's taps in the same order as
+/// `box_px`, but expose independent neighbouring pixels to the CPU vectoriser.
+/// Prefix sums would change rounding in the guided filter's variance calculation.
+fn box_pass_cpu(work: &[f32], up: &[u32], out: &mut [[f32; 4]]) {
+    let (w, h) = (up[U_RW] as usize, up[U_RH] as usize);
+    let n = w * h;
+    let r = up[U_A] as usize;
+    let np = up[U_B] as usize;
+    debug_assert_eq!(out.len(), n);
+    out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+        row.fill([0.0; 4]);
+        if up[U_OP] == OP_BOX_V {
+            let a = y.saturating_sub(r);
+            let b = (y + r).min(h - 1);
+            let inv = 1.0 / (b - a + 1) as f32;
+            for k in 0..np {
+                let plane = up[U_IN + k];
+                if plane == NONE {
+                    continue;
+                }
+                let src = &work[plane as usize * n..(plane as usize + 1) * n];
+                for t in a..=b {
+                    let src = &src[t * w..(t + 1) * w];
+                    for (dst, &v) in row.iter_mut().zip(src) {
+                        dst[k] += v;
+                    }
+                }
+                for dst in row.iter_mut() {
+                    dst[k] *= inv;
+                }
+            }
+        } else {
+            let left = r.min(w);
+            let right = w.saturating_sub(r).max(left);
+            for (x, dst) in row[..left].iter_mut().enumerate() {
+                *dst = box_px(work, up, x as u32, y as u32);
+            }
+            for (i, dst) in row[right..].iter_mut().enumerate() {
+                *dst = box_px(work, up, (right + i) as u32, y as u32);
+            }
+            let inv = 1.0 / (2 * r + 1) as f32;
+            let (chunks, rem) = row[left..right].as_chunks_mut::<8>();
+            for (i, chunk) in chunks.iter_mut().enumerate() {
+                let start = left + i * 8 - r;
+                for k in 0..np {
+                    let plane = up[U_IN + k];
+                    if plane == NONE {
+                        continue;
+                    }
+                    let offset = plane as usize * n + y * w;
+                    let src = &work[offset..offset + w];
+                    let mut acc = [0.0; 8];
+                    for t in 0..2 * r + 1 {
+                        for lane in 0..8 {
+                            acc[lane] += src[start + t + lane];
+                        }
+                    }
+                    for lane in 0..8 {
+                        chunk[lane][k] = acc[lane] * inv;
+                    }
+                }
+            }
+            let start = right - rem.len();
+            for (i, dst) in rem.iter_mut().enumerate() {
+                *dst = box_px(work, up, (start + i) as u32, y as u32);
+            }
+        }
+    });
 }
 
 /// Process the `bw × bh` block at (`bx0`, `by0`) of `level` (index `l`) on the CPU.
@@ -722,6 +798,43 @@ mod tests {
 
     fn params() -> SParams {
         SParams::of(&EditParams::default())
+    }
+
+    #[test]
+    fn batched_box_pass_matches_scalar_bits() {
+        // Small/degenerate images, clipped windows, vector tails and missing planes.
+        for (w, h) in [(1, 1), (3, 7), (19, 11), (32, 23)] {
+            let n = w * h;
+            let work: Vec<f32> = (0..4 * n)
+                .map(|i| {
+                    let bits = (i as u32).wrapping_mul(1664525).wrapping_add(1013904223);
+                    (bits >> 8) as f32 / 16777216.0 - 0.5
+                })
+                .collect();
+            for op in [OP_BOX_H, OP_BOX_V] {
+                for r in [0, 1, 3, 8, 48] {
+                    for np in 1..=4 {
+                        let mut up = [0; UP_LEN];
+                        up[U_OP] = op;
+                        up[U_RW] = w as u32;
+                        up[U_RH] = h as u32;
+                        up[U_A] = r;
+                        up[U_B] = np;
+                        up[U_IN..U_IN + 4].copy_from_slice(&[0, 1, NONE, 3]);
+                        let mut out = vec![[f32::NAN; 4]; n];
+                        box_pass_cpu(&work, &up, &mut out);
+                        for (i, actual) in out.iter().enumerate() {
+                            let expected = box_px(&work, &up, (i % w) as u32, (i / w) as u32);
+                            assert_eq!(
+                                actual.map(f32::to_bits),
+                                expected.map(f32::to_bits),
+                                "{w}x{h}, op={op}, radius={r}, planes={np}, pixel={i}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

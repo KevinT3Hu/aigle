@@ -113,6 +113,13 @@ pub fn lanczos3<S: Rgb2D>(src: &S, u: f32, v: f32, k: f32) -> Rgb {
         j += 1;
     }
     let (w, h) = (src.width(), src.height());
+    // The same horizontal taps are read for every row of this sample.
+    let mut xx = [0u32; MAX_TAPS];
+    i = 0;
+    while i < nx {
+        xx[i] = mirror(xs + i as i32, w);
+        i += 1;
+    }
     let mut acc = [0f32; 3];
     let mut wsum = 0f32;
     j = 0;
@@ -122,7 +129,7 @@ pub fn lanczos3<S: Rgb2D>(src: &S, u: f32, v: f32, k: f32) -> Rgb {
         let mut rs = 0f32;
         i = 0;
         while i < nx {
-            let p = src.load(mirror(xs + i as i32, w), yy);
+            let p = src.load(xx[i], yy);
             let wt = wx[i];
             row[0] += wt * p[0];
             row[1] += wt * p[1];
