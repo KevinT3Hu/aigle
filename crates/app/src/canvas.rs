@@ -2,7 +2,8 @@
 //!
 //! Frames arrive on the view's latest-wins channel and are copied once into a GPUI
 //! `RenderImage`. While a new render is in flight the previous frame is reprojected to the
-//! current zoom/pan, so pan and zoom respond immediately. The split comparison adds a second
+//! current zoom/pan. A bounded whole-image backing fills newly exposed areas until detail
+//! arrives, so pan and zoom respond immediately. The split comparison adds a second
 //! view on `ParamsSource::Original` (the unedited photo framed like the edit) with the same
 //! viewport.
 //!
@@ -114,6 +115,13 @@ pub struct Canvas {
     state: ViewState,
     frame: Option<Shown>,
     _frames: Task<anyhow::Result<()>>,
+    /// Whole-image backing remains visible outside the last detailed viewport.
+    overview: View,
+    overview_frame: Option<Shown>,
+    _overview_frames: Task<anyhow::Result<()>>,
+    overview_sent: Option<Viewport>,
+    before_overview: Option<(View, Task<anyhow::Result<()>>)>,
+    before_overview_frame: Option<Shown>,
     /// Canvas bounds (logical px) and the window scale factor at the last layout.
     layout: Option<(Bounds<Pixels>, f32)>,
     drag: Option<Point<Pixels>>,
@@ -172,8 +180,18 @@ impl Canvas {
     pub fn new(photo: Entity<Photo>, window: &mut Window, cx: &mut Context<Self>) -> Canvas {
         let view = photo.read(cx).session.create_view(ViewSpec::fit(1, 1));
         let frames = listen(view.frames(), |c| &mut c.frame, cx);
+        let overview = photo
+            .read(cx)
+            .session
+            .create_view(ViewSpec::fit(1024, 1024));
+        let overview_frames = listen(overview.frames(), |c| &mut c.overview_frame, cx);
         cx.on_release_in(window, |canvas, window, cx| {
-            for slot in [&mut canvas.frame, &mut canvas.before_frame] {
+            for slot in [
+                &mut canvas.frame,
+                &mut canvas.before_frame,
+                &mut canvas.overview_frame,
+                &mut canvas.before_overview_frame,
+            ] {
                 if let Some((_, image)) = slot.take() {
                     cx.drop_image(image, Some(window));
                 }
@@ -209,6 +227,12 @@ impl Canvas {
             state: ViewState::default(),
             frame: None,
             _frames: frames,
+            overview,
+            overview_frame: None,
+            _overview_frames: overview_frames,
+            overview_sent: None,
+            before_overview: None,
+            before_overview_frame: None,
             layout: None,
             drag: None,
             show_info: true,
@@ -249,6 +273,11 @@ impl Canvas {
                 self.set_compare(Compare::Off, cx);
             }
             self.view.set_uncropped(tool == Tool::Crop);
+            self.overview.set_uncropped(tool == Tool::Crop);
+            if let Some((_, old)) = self.overview_frame.take() {
+                release_image(old, cx);
+            }
+            self.overview_sent = None;
             self.state = ViewState::default();
             if let Some((_, old)) = self.frame.take() {
                 release_image(old, cx);
@@ -270,6 +299,7 @@ impl Canvas {
         };
         if o != self.overlays {
             self.view.set_overlays(o.clone());
+            self.overview.set_overlays(o.clone());
             self.overlays = o;
         }
     }
@@ -323,6 +353,21 @@ impl Canvas {
         let Some((crop, out, _)) = self.geometry(cx) else {
             return;
         };
+        // Keep this target independent of pan/zoom: a gesture must never cancel
+        // the full-image backing that supplies newly exposed pixels.
+        let overview = Viewport {
+            region: aigle_core::geometry::Rect::new(0.0, 0.0, crop.0, crop.1),
+            output_size: overview_size(crop),
+            display: crate::display::profile(cx),
+        };
+        if self.overview_sent.as_ref() != Some(&overview) {
+            self.overview
+                .set_viewport(overview.clone(), Interaction::Final);
+            if let Some((v, _)) = &self.before_overview {
+                v.set_viewport(overview.clone(), Interaction::Final);
+            }
+            self.overview_sent = Some(overview);
+        }
         let vp = Viewport {
             region: self.state.region(crop, out),
             output_size: (out.w, out.h),
@@ -419,7 +464,8 @@ impl Canvas {
         self.overlays.gamut_warning = gamut_warning && proof.is_some();
         self.overlays.proof = proof;
         self.view.set_overlays(self.overlays.clone());
-        if let Some((v, _)) = &self.before {
+        self.overview.set_overlays(self.overlays.clone());
+        for (v, _) in self.before.iter().chain(self.before_overview.iter()) {
             v.set_overlays(Overlays {
                 proof: self.overlays.proof.clone(),
                 gamut_warning: self.overlays.gamut_warning,
@@ -456,12 +502,23 @@ impl Canvas {
         if self.compare == mode {
             return;
         }
+        let source_changed = (self.compare == Compare::Before) != (mode == Compare::Before);
         self.compare = mode;
-        self.view.set_params_source(if mode == Compare::Before {
+        let source = if mode == Compare::Before {
             ParamsSource::Original
         } else {
             ParamsSource::Current
-        });
+        };
+        // Never show an edited backing under an original (or vice versa).
+        if source_changed {
+            self.view.set_params_source(source.clone());
+            self.overview.set_params_source(source);
+            for slot in [&mut self.frame, &mut self.overview_frame] {
+                if let Some((_, old)) = slot.take() {
+                    release_image(old, cx);
+                }
+            }
+        }
         if mode == Compare::Split {
             let v = self.photo.read(cx).session.create_view(ViewSpec::fit(1, 1));
             v.set_params_source(ParamsSource::Original);
@@ -475,8 +532,28 @@ impl Canvas {
             }
             let task = listen(v.frames(), |c| &mut c.before_frame, cx);
             self.before = Some((v, task));
+            let v = self
+                .photo
+                .read(cx)
+                .session
+                .create_view(ViewSpec::fit(1024, 1024));
+            v.set_params_source(ParamsSource::Original);
+            v.set_overlays(Overlays {
+                proof: self.overlays.proof.clone(),
+                gamut_warning: self.overlays.gamut_warning,
+                ..Default::default()
+            });
+            if let Some(vp) = &self.overview_sent {
+                v.set_viewport(vp.clone(), Interaction::Final);
+            }
+            let task = listen(v.frames(), |c| &mut c.before_overview_frame, cx);
+            self.before_overview = Some((v, task));
         } else {
             self.before = None;
+            self.before_overview = None;
+            if let Some((_, old)) = self.before_overview_frame.take() {
+                release_image(old, cx);
+            }
             self.split_drag = false;
             if let Some((_, old)) = self.before_frame.take() {
                 release_image(old, cx);
@@ -1227,6 +1304,15 @@ fn paint_divider(window: &mut Window, x: Pixels, b: Bounds<Pixels>) {
     );
 }
 
+/// Bound backing storage and rendering work while preserving the image aspect ratio.
+fn overview_size(crop: (f64, f64)) -> (u32, u32) {
+    let scale = (1024.0 / crop.0.max(crop.1)).min(1.0);
+    (
+        (crop.0 * scale).round().max(1.0) as u32,
+        (crop.1 * scale).round().max(1.0) as u32,
+    )
+}
+
 pub fn render_image(p: &PixelBuffer) -> Option<Arc<RenderImage>> {
     let row = p.width as usize * 4;
     let mut data = Vec::with_capacity(row * p.height as usize);
@@ -1268,6 +1354,8 @@ impl Render for Canvas {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let me = cx.entity();
         let frame = self.frame.clone();
+        let overview_frame = self.overview_frame.clone();
+        let before_overview_frame = self.before_overview_frame.clone();
         let target = self.geometry(cx).map(|(crop, out, _)| {
             (
                 self.state.region(crop, out),
@@ -1416,6 +1504,12 @@ impl Render for Canvas {
                                     point(x, bounds.origin.y),
                                     bounds.bottom_right(),
                                 );
+                                if let Some(s) = &before_overview_frame {
+                                    paint(window, s, left);
+                                }
+                                if let Some(s) = &overview_frame {
+                                    paint(window, s, right);
+                                }
                                 if let Some(s) = &before_frame {
                                     paint(window, s, left);
                                 }
@@ -1425,6 +1519,9 @@ impl Render for Canvas {
                                 paint_divider(window, x, bounds);
                             }
                             None => {
+                                if let Some(s) = &overview_frame {
+                                    paint(window, s, bounds);
+                                }
                                 if let Some(s) = &frame {
                                     paint(window, s, bounds);
                                 }
@@ -1540,5 +1637,40 @@ impl Render for Canvas {
                         .children(lines.map(|l| div().text_xs().child(l))),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+
+    #[test]
+    fn backing_is_bounded_and_preserves_portrait_and_landscape_aspect() {
+        assert_eq!(overview_size((6000.0, 4000.0)), (1024, 683));
+        assert_eq!(overview_size((4000.0, 6000.0)), (683, 1024));
+        assert_eq!(overview_size((320.0, 200.0)), (320, 200));
+        assert_eq!(overview_size((100000.0, 1.0)), (1024, 1));
+    }
+
+    #[test]
+    fn backing_covers_new_pixels_after_pan_and_zoom_out() {
+        let crop = (6000.0, 4000.0);
+        let out = Size::new(1200, 800);
+        let full = aigle_core::geometry::Rect::new(0.0, 0.0, crop.0, crop.1);
+        let mut state = ViewState::default();
+        state.zoom_to(1.0, ImgPoint::new(600.0, 400.0), crop, out);
+        let previous = state.region(crop, out);
+        state.pan(-1800.0, -1000.0, crop, out);
+        for zoom in [1.0, 0.5, 0.2] {
+            state.zoom_to(zoom, ImgPoint::new(600.0, 400.0), crop, out);
+            let region = state.region(crop, out);
+            let backing = reproject(full, region, out);
+            assert!(backing.x <= 1e-9 && backing.y <= 1e-9);
+            assert!(backing.x + backing.w >= out.w as f64 - 1e-9);
+            assert!(backing.y + backing.h >= out.h as f64 - 1e-9);
+        }
+        // The previous detailed frame alone cannot supply the exposed area.
+        let detail = reproject(previous, state.region(crop, out), out);
+        assert!(detail.w < out.w as f64);
     }
 }

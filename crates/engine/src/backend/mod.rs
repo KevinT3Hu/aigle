@@ -1282,6 +1282,36 @@ fn c1_cpu(job: &C1Job<'_>, field: Option<FieldRef<'_>>) -> HostC1 {
     let mut d = vec![[0f32; 5]; if job.fields { n } else { 0 }];
     let w = job.w as usize;
     let geo = job.geo.view();
+    // Lanczos reads each source pixel many times. Decode only this tile's
+    // bounded footprint once instead of converting f16 at every filter tap.
+    let footprint = job.geo.roi(job.w, job.h, job.src.full_w, job.src.full_h);
+    // Extreme transforms can cover an entire source. Limit scratch to 24 MiB
+    // per active tile and keep the original sampler for larger footprints.
+    let decoded = (!job.src.data.is_f32()
+        && geo.flags & tiles::GEO_LANCZOS != 0
+        && u64::from(footprint.2) * u64::from(footprint.3) <= 2 * 1024 * 1024)
+        .then(|| {
+            let (x0, y0, rw, rh) = footprint;
+            let mut pixels = Vec::with_capacity(rw as usize * rh as usize);
+            for y in y0..y0 + rh {
+                for x in x0..x0 + rw {
+                    pixels.push(job.src.load(x, y));
+                }
+            }
+            (pixels, x0, y0, rw, rh)
+        });
+    let src = match &decoded {
+        Some((pixels, x0, y0, w, h)) => LevelView {
+            data: Px::F(pixels),
+            x0: *x0,
+            y0: *y0,
+            w: *w,
+            h: *h,
+            full_w: job.src.full_w,
+            full_h: job.src.full_h,
+        },
+        None => job.src,
+    };
     // One slice for both tables, as on the GPU.
     let mut tdata = job.prog.to_vec();
     tdata.extend_from_slice(job.color);
@@ -1293,16 +1323,7 @@ fn c1_cpu(job: &C1Job<'_>, field: Option<FieldRef<'_>>) -> HostC1 {
     let fill = |y: usize, row: &mut [Rgb], drow: Option<&mut [[f32; 5]]>| {
         let mut drow = drow;
         for (x, px) in row.iter_mut().enumerate() {
-            let (v, f) = tiles::c1_px(
-                &job.src,
-                &geo,
-                x as u32,
-                y as u32,
-                &job.params,
-                &c2,
-                &fv,
-                &tab,
-            );
+            let (v, f) = tiles::c1_px(&src, &geo, x as u32, y as u32, &job.params, &c2, &fv, &tab);
             *px = v;
             if let Some(dr) = drow.as_deref_mut() {
                 dr[x] = f;
@@ -2010,6 +2031,60 @@ mod tests {
             }
         }
         assert!(worst <= 2e-3, "worst relative error {worst:.2e}");
+    }
+
+    #[test]
+    fn decoded_lanczos_matches_original_sampler_bits() {
+        let (level, (affine, params)) = self_test_inputs();
+        let original = LevelView::whole(&level);
+        let fv = field_view(None);
+        for (w, h) in [(1, 1), (37, 29), (64, 64)] {
+            let mut warped = self_test_warp(&affine, w, h);
+            warped.flags |= tiles::GEO_LANCZOS;
+            for geo in [
+                TileGeo::affine(affine, tiles::GEO_LANCZOS),
+                TileGeo::affine(
+                    Affine {
+                        a: [1.7, 0.2, -5.0, -0.1, 1.3, -8.0],
+                    },
+                    tiles::GEO_LANCZOS,
+                ),
+                warped,
+            ] {
+                let job = C1Job {
+                    src: original,
+                    device_src: None,
+                    atlas: None,
+                    geo: &geo,
+                    params,
+                    c2: C2Params::default(),
+                    prog: &[0.0],
+                    color: &[0.0],
+                    fields: true,
+                    w,
+                    h,
+                };
+                let got = c1_cpu(&job, None);
+                for y in 0..h {
+                    for x in 0..w {
+                        let (rgb, fields) = tiles::c1_px(
+                            &original,
+                            &geo.view(),
+                            x,
+                            y,
+                            &params,
+                            &job.c2,
+                            &fv,
+                            &tiles::NO_TABLES,
+                        );
+                        let expected = rgb.map(|v| half::f16::from_f32(v).to_f32().to_bits());
+                        let i = (y * w + x) as usize;
+                        assert_eq!(got.rgb.as_px().get(i).map(f32::to_bits), expected);
+                        assert_eq!(got.d.get(i), fields);
+                    }
+                }
+            }
+        }
     }
 
     #[test]
