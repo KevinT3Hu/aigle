@@ -1,10 +1,11 @@
-//! The bar above the grid: filter by rating, label, camera, lens, date and keyword, and
-//! choose the sort order. The grid and the filmstrip show the same filtered view.
+//! The bar above the grid: filter by rating, label, camera, lens, date and keyword, list
+//! subfolders too, and choose the sort order. The grid and the filmstrip show the same
+//! filtered view.
 
 use gpui::{App, Entity, IntoElement, ParentElement, SharedString, Styled, div, prelude::*, px};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
-use gpui_component::{ActiveTheme, Sizable, h_flex};
+use gpui_component::{ActiveTheme, Selectable, Sizable, h_flex};
 
 use crate::grid::stars;
 use crate::i18n::t;
@@ -300,6 +301,18 @@ pub fn filter_bar(lib: &Entity<Library>, cx: &App) -> impl IntoElement + use<> {
             .on_click(move |_, _, cx| lib.update(cx, |l, cx| l.set_filter(Filter::default(), cx)))
     };
 
+    let subfolders = {
+        let lib = lib.clone();
+        let on = lib.read(cx).recursive();
+        Button::new("subfolders")
+            .label(t("action.ToggleSubfolders"))
+            .xsmall()
+            .ghost()
+            .selected(on)
+            .tooltip(t("library.subfolders_tooltip"))
+            .on_click(move |_, _, cx| lib.update(cx, |l, cx| l.set_recursive(!on, cx)))
+    };
+
     h_flex()
         .w_full()
         .flex_none()
@@ -322,5 +335,6 @@ pub fn filter_bar(lib: &Entity<Library>, cx: &App) -> impl IntoElement + use<> {
         .child(keyword)
         .when(active, |d| d.child(clear))
         .child(div().flex_1())
+        .child(subfolders)
         .child(sort_button)
 }

@@ -183,6 +183,8 @@ type Listing = (Vec<PhotoEntry>, Vec<VirtualCopy>, HashMap<PathBuf, Facts>);
 pub struct Library {
     engine: Engine,
     pub dir: Option<PathBuf>,
+    /// Photos of subfolders are listed too.
+    recursive: bool,
     /// Every photo and copy of the folder.
     all: Vec<Item>,
     /// Storage indices of the shown items, in order.
@@ -223,6 +225,27 @@ fn file_name(p: &Path) -> String {
         .unwrap_or_default()
 }
 
+fn recursive_path() -> Option<PathBuf> {
+    crate::config_dir().map(|d| d.join("subfolders"))
+}
+
+fn load_recursive() -> bool {
+    recursive_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .is_some_and(|s| s.trim() == "on")
+}
+
+fn save_recursive(on: bool) {
+    let Some(path) = recursive_path() else { return };
+    let r = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&path, if on { "on\n" } else { "off\n" }));
+    if let Err(e) = r {
+        tracing::warn!(path = %path.display(), "{e}");
+    }
+}
+
 impl Library {
     pub fn new(engine: Engine, catalog: Arc<Catalog>, cx: &mut Context<Self>) -> Library {
         let store = Arc::new(Store::new());
@@ -252,6 +275,7 @@ impl Library {
         Library {
             engine,
             dir: None,
+            recursive: load_recursive(),
             all: Vec::new(),
             view: Vec::new(),
             slots: HashMap::new(),
@@ -300,6 +324,31 @@ impl Library {
 
     pub fn folder_name(&self) -> String {
         self.dir.as_deref().map(file_name).unwrap_or_default()
+    }
+
+    pub fn recursive(&self) -> bool {
+        self.recursive
+    }
+
+    /// List the photos of subfolders too, or stop; the choice is remembered.
+    pub fn set_recursive(&mut self, recursive: bool, cx: &mut Context<Self>) {
+        if self.recursive == recursive {
+            return;
+        }
+        self.recursive = recursive;
+        save_recursive(recursive);
+        if let Some(dir) = self.dir.clone() {
+            let selected = self.selected_item().map(|it| it.entry.path.clone());
+            self.open_folder(dir, selected, cx);
+        }
+        cx.notify();
+    }
+
+    /// The folder of `item` relative to the open folder, when it is a subfolder.
+    pub fn subfolder(&self, item: &Item) -> Option<String> {
+        let parent = item.entry.path.parent()?;
+        let rel = parent.strip_prefix(self.dir.as_deref()?).ok()?;
+        (!rel.as_os_str().is_empty()).then(|| rel.display().to_string())
     }
 
     pub fn filter(&self) -> &Filter {
@@ -404,6 +453,7 @@ impl Library {
         self.dir = Some(dir.clone());
         self.loading = true;
         let generation = self.generation;
+        let recursive = self.recursive;
         let store = self.store.clone();
         let catalog = self.catalog.clone();
         cx.notify();
@@ -412,7 +462,11 @@ impl Library {
             let lister = catalog.clone();
             let listed = cx
                 .background_spawn(async move {
-                    let entries = aigle_library::scan(&scan_dir)?;
+                    let entries = if recursive {
+                        aigle_library::scan_recursive(&scan_dir)?
+                    } else {
+                        aigle_library::scan(&scan_dir)?
+                    };
                     let paths: Vec<PathBuf> = entries.iter().map(|e| e.path.clone()).collect();
                     let copies = lister.copies_of(&paths).unwrap_or_else(|e| {
                         tracing::warn!("{e}");
@@ -1260,12 +1314,14 @@ impl Library {
 
     /// Run `op` on each photo file of `paths` in the background. Their items leave
     /// the library while it runs; the ones `op` fails on come back. `done` reports the
-    /// outcome.
+    /// outcome. With `relist`, the folder is listed again afterwards (photos moved within
+    /// the listed folders).
     fn file_op(
         &mut self,
         paths: Vec<PathBuf>,
         op: impl Fn(&Path) -> Result<(), String> + Send + 'static,
         done: impl FnOnce(&[Outcome]) -> Option<String> + 'static,
+        relist: bool,
         cx: &mut Context<Self>,
     ) {
         if paths.is_empty() {
@@ -1316,6 +1372,13 @@ impl Library {
                 if let Some(msg) = done(&outcomes) {
                     cx.emit(LibraryEvent::Notice(msg));
                 }
+                if relist
+                    && l.generation == generation
+                    && let Some(dir) = l.dir.clone()
+                {
+                    let selected = l.selected_item().map(|it| it.entry.path.clone());
+                    l.open_folder(dir, selected, cx);
+                }
                 cx.notify();
             });
         });
@@ -1330,6 +1393,7 @@ impl Library {
             .into_iter()
             .filter(|p| p.parent() != Some(dest.as_path()))
             .collect();
+        let relist = self.recursive && self.dir.as_ref().is_some_and(|d| dest.starts_with(d));
         let catalog = self.catalog.clone();
         let folder = file_name(&dest);
         let op = move |from: &Path| {
@@ -1345,7 +1409,7 @@ impl Library {
                 rust_i18n::t!("library.moved", arg0 = n, folder = folder).into_owned()
             }))
         };
-        self.file_op(paths, op, done, cx);
+        self.file_op(paths, op, done, relist, cx);
     }
 
     /// Move the photo files `paths` to the trash with their sidecars, and forget their
@@ -1364,7 +1428,7 @@ impl Library {
                 rust_i18n::t!("library.trashed", arg0 = n).into_owned()
             }))
         };
-        self.file_op(paths, op, done, cx);
+        self.file_op(paths, op, done, false, cx);
     }
 
     /// Write every pending sidecar and catalog change now (closing a photo, quitting).

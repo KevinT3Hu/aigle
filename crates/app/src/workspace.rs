@@ -25,6 +25,7 @@ use crate::export::{self, ExportDialog, ExportEvent, Request, Settings};
 use crate::filmstrip::Filmstrip;
 use crate::grid::Grid;
 use crate::history::HistoryPanel;
+use crate::import::{ImportDialog, ImportEvent};
 use crate::keybinding_editor::{Closed as KeybindingsClosed, KeybindingEditor};
 use crate::library::{CopyInfo, LABELS, Library, LibraryEvent};
 use crate::metadata_panel::MetadataPanel;
@@ -71,6 +72,20 @@ struct ExportJob {
     _task: Task<()>,
 }
 
+/// A running import.
+struct ImportJob {
+    progress: aigle_library::import::Progress,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+    _tasks: [Task<()>; 2],
+}
+
+impl Drop for ImportJob {
+    fn drop(&mut self) {
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 pub struct Workspace {
     engine: Engine,
     resources: Entity<Resources>,
@@ -97,6 +112,8 @@ pub struct Workspace {
     /// Running export batches.
     exports: Vec<ExportJob>,
     next_export: u64,
+    import_dialog: Option<(Entity<ImportDialog>, Subscription)>,
+    import: Option<ImportJob>,
     _subs: Vec<Subscription>,
 }
 
@@ -174,6 +191,8 @@ impl Workspace {
             presets,
             exports: Vec::new(),
             next_export: 0,
+            import_dialog: None,
+            import: None,
             _subs: subs,
         };
         match source {
@@ -499,6 +518,7 @@ impl Workspace {
         if self.export_dialog.take().is_some()
             || self.copy_dialog.take().is_some()
             || self.rename_dialog.take().is_some()
+            || self.import_dialog.take().is_some()
         {
             cx.notify();
             return;
@@ -591,6 +611,7 @@ impl Workspace {
         + 'static,
     ) {
         self.export_dialog = None;
+        self.import_dialog = None;
         let dialog = cx.new(|cx| CopyDialog::new(groups, purpose, window, cx));
         let sub = cx.subscribe_in(&dialog, window, move |w, _, ev, window, cx| {
             let CopyEvent::Done(chosen) = ev;
@@ -953,6 +974,7 @@ impl Workspace {
         };
         self.export_dialog = None;
         self.copy_dialog = None;
+        self.import_dialog = None;
         let dialog = cx.new(|cx| RenameDialog::new(title, current, suffix, window, cx));
         let sub = cx.subscribe_in(&dialog, window, move |w, _, ev, window, cx| {
             let RenameEvent::Done(name) = ev;
@@ -1124,6 +1146,7 @@ impl Workspace {
             return;
         }
         self.export_dialog = None;
+        self.import_dialog = None;
         let editor = cx.new(|cx| KeybindingEditor::new(window, cx));
         let subscription = cx.subscribe_in(
             &editor,
@@ -1161,6 +1184,7 @@ impl Workspace {
             return;
         }
         self.copy_dialog = None;
+        self.import_dialog = None;
         let settings = self.export_settings.clone();
         let dialog = cx.new(|cx| ExportDialog::new(requests, settings, window, cx));
         let sub = cx.subscribe_in(&dialog, window, |w, _, ev, window, cx| {
@@ -1246,6 +1270,160 @@ impl Workspace {
         cx.notify();
     }
 
+    fn open_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.import.is_some() {
+            window.push_notification(crate::i18n::t("import.busy"), cx);
+            return;
+        }
+        self.export_dialog = None;
+        self.copy_dialog = None;
+        self.rename_dialog = None;
+        let dialog = cx.new(|cx| ImportDialog::new(window, cx));
+        let sub = cx.subscribe_in(&dialog, window, |w, _, ev, window, cx| {
+            let ImportEvent::Done(chosen) = ev;
+            w.import_dialog = None;
+            if let Some(r) = chosen {
+                w.start_import(r.clone(), window, cx);
+            }
+            window.focus(&w.focus, cx);
+            cx.notify();
+        });
+        self.import_dialog = Some((dialog, sub));
+        cx.notify();
+    }
+
+    /// Read the source, then copy its photos in the background, showing the progress in
+    /// the toolbar.
+    fn start_import(
+        &mut self,
+        request: crate::import::Request,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use aigle_library::import;
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (tx, mut rx) = futures::channel::mpsc::unbounded::<import::Progress>();
+        let progress = cx.spawn(async move |this, cx| {
+            while let Some(p) = futures::StreamExt::next(&mut rx).await {
+                let alive = this.update(cx, |w, cx| {
+                    if let Some(job) = &mut w.import {
+                        job.progress = p;
+                    }
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        });
+        let stop = cancel.clone();
+        let options = request.options.clone();
+        let (source, dest) = (request.source, request.options.dest);
+        let work = cx.spawn_in(window, async move |this, cx| {
+            let report = cx
+                .background_spawn(async move {
+                    let facts = import::needs_facts(&options);
+                    let sources = import::read_sources(&source, facts, &stop)?;
+                    let planned =
+                        import::plan(&sources, &options).map_err(std::io::Error::other)?;
+                    Ok::<_, std::io::Error>(import::run(&planned, &options, &stop, &mut |p| {
+                        let _ = tx.unbounded_send(p);
+                    }))
+                })
+                .await;
+            let _ = this.update_in(cx, |w, window, cx| {
+                w.import = None;
+                w.import_done(report, &dest, window, cx);
+                cx.notify();
+            });
+        });
+        self.import = Some(ImportJob {
+            progress: import::Progress::default(),
+            cancel,
+            _tasks: [progress, work],
+        });
+        cx.notify();
+    }
+
+    fn import_done(
+        &mut self,
+        report: std::io::Result<aigle_library::import::ImportReport>,
+        dest: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let report = match report {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = rust_i18n::t!("import.failed", e = e).into_owned();
+                window.push_notification(msg, cx);
+                return;
+            }
+        };
+        for (p, e) in report.failed.iter().chain(&report.backup_failed) {
+            tracing::warn!(path = %p.display(), "import: {e}");
+        }
+        let mut msg = if report.cancelled {
+            rust_i18n::t!("import.cancelled", arg0 = report.imported.len()).into_owned()
+        } else {
+            rust_i18n::t!("import.done", arg0 = report.imported.len()).into_owned()
+        };
+        if report.duplicates > 0 {
+            msg.push(' ');
+            msg.push_str(&rust_i18n::t!(
+                "import.duplicates",
+                arg0 = report.duplicates
+            ));
+        }
+        let name = |p: &Path| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        if let Some((p, e)) = report.failed.first() {
+            msg.push(' ');
+            msg.push_str(&rust_i18n::t!(
+                "import.some_failed",
+                arg0 = report.failed.len(),
+                name = name(p),
+                e = e
+            ));
+        }
+        if let Some((p, e)) = report.backup_failed.first() {
+            msg.push(' ');
+            msg.push_str(&rust_i18n::t!(
+                "import.backup_failed",
+                arg0 = report.backup_failed.len(),
+                name = name(p),
+                e = e
+            ));
+        }
+        window.push_notification(msg, cx);
+
+        let Some(first) = report.imported.first().cloned() else {
+            return;
+        };
+        if self.mode != Mode::Library {
+            return;
+        }
+        let parent = first.parent().map(Path::to_path_buf);
+        let one_folder = report
+            .imported
+            .iter()
+            .all(|p| p.parent() == parent.as_deref());
+        let (dir, subfolders) = match parent {
+            Some(p) if one_folder => (p, false),
+            _ => (dest.to_path_buf(), true),
+        };
+        self.library.update(cx, |l, cx| {
+            if subfolders {
+                l.set_recursive(true, cx);
+            }
+            l.open_folder(dir, Some(first), cx);
+        });
+        self.update_title(window, cx);
+    }
+
     fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let develop = self.mode == Mode::Develop;
         let (can_undo, can_redo, show_info, compare, tool, monochrome) = match (&self.open, develop)
@@ -1266,6 +1444,7 @@ impl Workspace {
         };
         let show_history = self.show_history;
         let show_metadata = self.show_metadata;
+        let subfolders = self.library.read(cx).recursive();
         let can_paste = self.clipboard.is_some();
         let ws = cx.entity().downgrade();
         let preset_names: Vec<SharedString> = self
@@ -1328,6 +1507,7 @@ impl Workspace {
                         menu.action_context(file_focus.clone())
                             .menu(crate::i18n::t("action.Open"), Box::new(Open))
                             .menu(crate::i18n::t("action.OpenFolder"), Box::new(OpenFolder))
+                            .menu(crate::i18n::t("action.Import"), Box::new(Import))
                             .separator()
                             .menu(crate::i18n::t("action.RenamePhoto"), Box::new(RenamePhoto))
                             .menu(crate::i18n::t("action.MovePhotos"), Box::new(MovePhotos))
@@ -1540,6 +1720,11 @@ impl Workspace {
                                 Box::new(ToggleMetadata),
                                 develop,
                             )
+                            .menu_with_check(
+                                crate::i18n::t("action.ToggleSubfolders"),
+                                subfolders,
+                                Box::new(ToggleSubfolders),
+                            )
                             .menu_with_check_and_disabled(
                                 crate::i18n::t("action.ToggleHistory"),
                                 show_history,
@@ -1647,6 +1832,41 @@ impl Workspace {
                             })),
                     ),
             )
+            .when_some(self.import.as_ref().map(|j| j.progress), |row, p| {
+                let text = if p.total_files == 0 {
+                    crate::i18n::t("toolbar.import_reading")
+                } else {
+                    rust_i18n::t!(
+                        "toolbar.importing",
+                        arg0 = p.files,
+                        arg1 = p.total_files,
+                        arg2 = (p.bytes * 100 / p.total_bytes.max(1)).min(100)
+                    )
+                    .into_owned()
+                };
+                row.child(
+                    h_flex()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(text),
+                        )
+                        .child(
+                            Button::new("import-stop")
+                                .label("×")
+                                .xsmall()
+                                .tooltip(crate::i18n::t("import.stop"))
+                                .on_click(cx.listener(|w, _, _, cx| {
+                                    if let Some(j) = &w.import {
+                                        j.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
             .when(!self.exports.is_empty(), |row| {
                 let (done, total) = self
                     .exports
@@ -1760,6 +1980,7 @@ impl Render for Workspace {
         let dialog = self.export_dialog.as_ref().map(|(d, _)| d.clone());
         let copy_dialog = self.copy_dialog.as_ref().map(|(d, _)| d.clone());
         let rename_dialog = self.rename_dialog.as_ref().map(|(d, _)| d.clone());
+        let import_dialog = self.import_dialog.as_ref().map(|(d, _)| d.clone());
         v_flex()
             .size_full()
             .track_focus(&self.focus)
@@ -1768,6 +1989,13 @@ impl Render for Workspace {
             .text_color(cx.theme().foreground)
             .on_action(cx.listener(|w, _: &Open, window, cx| w.prompt_open(false, window, cx)))
             .on_action(cx.listener(|w, _: &OpenFolder, window, cx| w.prompt_open(true, window, cx)))
+            .on_action(cx.listener(|w, _: &Import, window, cx| w.open_import(window, cx)))
+            .on_action(cx.listener(|w, _: &ToggleSubfolders, _, cx| {
+                w.library.update(cx, |l, cx| {
+                    let on = !l.recursive();
+                    l.set_recursive(on, cx)
+                })
+            }))
             .on_action(
                 cx.listener(|w, _: &ShowGrid, window, cx| w.set_mode(Mode::Library, window, cx)),
             )
@@ -1922,7 +2150,8 @@ impl Render for Workspace {
                     .child(body)
                     .when_some(dialog, |d, e| d.child(e))
                     .when_some(copy_dialog, |d, e| d.child(e))
-                    .when_some(rename_dialog, |d, e| d.child(e)),
+                    .when_some(rename_dialog, |d, e| d.child(e))
+                    .when_some(import_dialog, |d, e| d.child(e)),
             )
     }
 }

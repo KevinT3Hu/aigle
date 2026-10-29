@@ -1,6 +1,7 @@
 {
   "ctrl-o": "aigle::Open",
   "ctrl-shift-o": "aigle::OpenFolder",
+  "ctrl-shift-i": "aigle::Import",
   "g": "aigle::ShowGrid",
   "d": "aigle::ShowDevelop",
   "enter": "aigle::OpenSelected",

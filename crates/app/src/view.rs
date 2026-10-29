@@ -139,13 +139,14 @@ fn cmp_known<T: Ord>(a: Option<T>, b: Option<T>, descending: bool) -> Ordering {
     }
 }
 
-/// File name, then the photo before its virtual copies (oldest first).
+/// File name, then folder, then the photo before its virtual copies (oldest first).
 fn by_name(a: &Item, b: &Item) -> Ordering {
     a.entry
         .name
         .to_lowercase()
         .cmp(&b.entry.name.to_lowercase())
         .then_with(|| a.entry.name.cmp(&b.entry.name))
+        .then_with(|| a.entry.path.cmp(&b.entry.path))
         .then_with(|| {
             a.copy
                 .as_ref()

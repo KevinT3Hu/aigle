@@ -139,10 +139,24 @@ fn cell(
     item: &Item,
     index: usize,
     (selected, primary): (bool, bool),
+    folder: Option<String>,
     lib: &Entity<Library>,
     cx: &App,
 ) -> Stateful<Div> {
     let theme = cx.theme();
+    let name = div()
+        .id(SharedString::from(format!("cell-name-{index}")))
+        .w_full()
+        .truncate()
+        .text_xs()
+        .text_center()
+        .child(item.name())
+        .when_some(folder, |d, folder| {
+            let tip = format!("{folder}/{}", item.name());
+            d.tooltip(move |window, cx| {
+                gpui_component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+            })
+        });
     let d = v_flex()
         .id(SharedString::from(format!("cell-{index}")))
         .w(px(CELL - GAP))
@@ -162,14 +176,7 @@ fn cell(
                 .h(px(THUMB_H))
                 .child(thumb_or_placeholder(item, cx)),
         )
-        .child(
-            div()
-                .w_full()
-                .truncate()
-                .text_xs()
-                .text_center()
-                .child(item.name()),
-        )
+        .child(name)
         .child(
             h_flex()
                 .h(px(14.0))
@@ -233,7 +240,8 @@ impl Render for Grid {
                                 (row * cols..((row + 1) * cols).min(n)).filter_map(|i| {
                                     let primary = multi && l.selected == Some(i);
                                     let it = l.item(i)?;
-                                    Some(cell(it, i, (l.is_selected(i), primary), &lib, cx))
+                                    let folder = l.subfolder(it);
+                                    Some(cell(it, i, (l.is_selected(i), primary), folder, &lib, cx))
                                 }),
                             )
                         })

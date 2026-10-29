@@ -6,6 +6,8 @@ actions!(
     [
         Open,
         OpenFolder,
+        Import,
+        ToggleSubfolders,
         ShowGrid,
         ShowDevelop,
         OpenSelected,

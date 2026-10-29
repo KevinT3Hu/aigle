@@ -66,10 +66,10 @@ bundled defaults and shows an error. The file must use valid JSON, without comme
 
 All names below have the `aigle::` prefix:
 
-- Files: `Open`, `OpenFolder`, `Export`, `Quit`.
+- Files: `Open`, `OpenFolder`, `Import`, `Export`, `Quit`.
 - Navigation: `ShowGrid`, `ShowDevelop`, `OpenSelected`, `Left`, `Right`, `Up`, `Down`.
 - Rating: `Rate0` through `Rate5`; color labels: `Label1` through `Label4`.
 - Editing: `Undo`, `Redo`, `ToggleCrop`, `ToggleMask`, `ToggleWbPicker`, `SwapAspect`, `Cancel`.
-- View: `ToggleZoom`, `ToggleBefore`, `ToggleSplit`, `ToggleInfo`, `ToggleHistory`, `ToggleOverlay`.
+- View: `ToggleZoom`, `ToggleBefore`, `ToggleSplit`, `ToggleInfo`, `ToggleHistory`, `ToggleOverlay`, `ToggleSubfolders`.
 - Language: `LanguageEnglish`, `LanguageChinese`.
 - Shortcuts: `EditKeybindings`, `ReloadKeybindings`.

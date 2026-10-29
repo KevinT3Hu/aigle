@@ -18,6 +18,7 @@ mod filmstrip;
 mod grid;
 mod history;
 mod i18n;
+mod import;
 mod keybinding_editor;
 mod keymap;
 mod library;
