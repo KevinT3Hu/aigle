@@ -18,6 +18,8 @@ pub struct Grid {
     library: Entity<Library>,
     scroll: UniformListScrollHandle,
     cols: usize,
+    /// Window width taken by panels beside the grid, in px.
+    pub side: f32,
 }
 
 impl Grid {
@@ -27,6 +29,7 @@ impl Grid {
             library,
             scroll: UniformListScrollHandle::new(),
             cols: 1,
+            side: 0.0,
         }
     }
 
@@ -34,7 +37,7 @@ impl Grid {
     pub fn move_selection(&mut self, dx: isize, dy: isize, cx: &mut Context<Self>) {
         let cols = self.cols as isize;
         let target = self.library.update(cx, |l, cx| {
-            let n = l.items.len() as isize;
+            let n = l.len() as isize;
             if n == 0 {
                 return None;
             }
@@ -174,17 +177,18 @@ fn cell(
 
 impl Render for Grid {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let width = f32::from(window.viewport_size().width) - 2.0 * PAD;
+        let width = f32::from(window.viewport_size().width) - self.side - 2.0 * PAD;
         self.cols = (((width + GAP) / CELL).floor() as usize).max(1);
         let cols = self.cols;
-        let (n, loading, folder) = {
+        let (n, loading, folder, total) = {
             let l = self.library.read(cx);
-            (l.items.len(), l.loading, l.dir.is_some())
+            (l.len(), l.loading, l.dir.is_some(), l.total())
         };
         if n == 0 {
             let msg = match (folder, loading) {
                 (false, _) => crate::keymap::hint("grid.empty_hint", cx),
                 (true, true) => crate::i18n::t("grid.reading"),
+                (true, false) if total > 0 => crate::i18n::t("grid.none_match"),
                 (true, false) => crate::i18n::t("grid.no_photos"),
             };
             return div()
@@ -210,9 +214,10 @@ impl Render for Grid {
                     range
                         .map(|row| {
                             h_flex().px(px(PAD)).pb(px(GAP)).gap(px(GAP)).children(
-                                (row * cols..((row + 1) * cols).min(n)).map(|i| {
+                                (row * cols..((row + 1) * cols).min(n)).filter_map(|i| {
                                     let primary = multi && l.selected == Some(i);
-                                    cell(&l.items[i], i, (l.is_selected(i), primary), &lib, cx)
+                                    let it = l.item(i)?;
+                                    Some(cell(it, i, (l.is_selected(i), primary), &lib, cx))
                                 }),
                             )
                         })

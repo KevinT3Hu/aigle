@@ -47,7 +47,7 @@ impl Render for Filmstrip {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (n, selected) = {
             let l = self.library.read(cx);
-            (l.items.len(), l.selected)
+            (l.len(), l.selected)
         };
         let bounds = self.scroll.bounds();
         let width = if bounds.size.width > px(0.0) {
@@ -74,8 +74,8 @@ impl Render for Filmstrip {
         let theme = cx.theme();
         let l = self.library.read(cx);
         let multi = l.selection_len() > 1;
-        let items = (first..last).map(|i| {
-            let it = &l.items[i];
+        let items = (first..last).filter_map(|i| {
+            let it = l.item(i)?;
             let picked = l.is_selected(i);
             let d = v_flex()
                 .id(SharedString::from(format!("strip-{i}")))
@@ -111,7 +111,7 @@ impl Render for Filmstrip {
                         })
                         .child(div().text_color(rgb(0xe8c547)).child(stars(it.rating()))),
                 );
-            on_pick(d, &self.library, i, 1)
+            Some(on_pick(d, &self.library, i, 1))
         });
 
         div()

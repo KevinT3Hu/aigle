@@ -20,14 +20,18 @@ mod i18n;
 mod keybinding_editor;
 mod keymap;
 mod library;
+mod library_bar;
 mod mask_panel;
 mod meta;
+mod metadata_panel;
 mod panel;
 mod photo;
 mod presets;
+mod rename;
 mod resources;
 mod retouch_panel;
 mod tools;
+mod view;
 mod viewport;
 mod workspace;
 

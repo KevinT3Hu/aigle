@@ -1,10 +1,14 @@
-//! The open folder: its photos, their sidecar metadata and thumbnails (doc 01 §9, doc 03 §8).
+//! The open folder: its photos, their sidecar metadata, EXIF facts and thumbnails (doc 01
+//! §9, doc 03 §8), and the filtered, sorted view of them that the grid and filmstrip show.
 //!
-//! Thumbnails are requested only for the index ranges the grid and the filmstrip currently
+//! Every photo and virtual copy of the folder is kept in storage order; the view lists the
+//! ones that pass the [`Filter`] in [`Sort`] order. Public indices are view positions.
+//!
+//! Thumbnails are requested only for the view ranges the grid and the filmstrip currently
 //! show; leaving a range drops its jobs, which cancels them in the engine. Thumbnails of
 //! edited photos follow the edits about a second after the last change.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -14,13 +18,14 @@ use aigle_core::EditParams;
 use aigle_doc::Origin;
 use aigle_engine_api::{Engine, Priority, SourceRef};
 use aigle_library::{
-    Catalog, CopyId, PhotoEntry, PhotoKey, PhotoMeta, Snapshot, Store, VirtualCopy, WriteReport,
-    Writer,
+    Catalog, CopyId, Facts, Field, PhotoEntry, PhotoKey, PhotoMeta, Snapshot, Store, VirtualCopy,
+    WriteReport, Writer,
 };
 use futures::StreamExt;
 use gpui::{AppContext, Context, EventEmitter, RenderImage, Task};
 
 use crate::canvas::render_image;
+use crate::view::{Facets, Filter, Sort};
 
 /// Long edge of grid and filmstrip thumbnails, in device px.
 pub const THUMB_PX: u32 = 360;
@@ -55,6 +60,8 @@ pub struct Item {
     pub copy: Option<CopyInfo>,
     /// `None` until the sidecar has been read.
     pub meta: Option<PhotoMeta>,
+    /// `None` until the EXIF has been read.
+    pub facts: Option<Facts>,
     pub thumb: Option<Arc<RenderImage>>,
     /// The edits the thumbnail should show; trails `meta.edits` by [`SAVE_DELAY`].
     shown: Option<Arc<EditParams>>,
@@ -76,6 +83,19 @@ pub fn copy_display_name(file_name: &str, copy: &str) -> String {
     }
 }
 
+/// The file name for renaming `file_name` to `stem`, keeping the extension; `None` when
+/// `stem` is not a usable name (empty, hidden, or with a path separator).
+pub fn renamed(file_name: &str, stem: &str) -> Option<String> {
+    let stem = stem.trim();
+    if stem.is_empty() || stem.starts_with('.') || stem.contains(['/', '\0']) {
+        return None;
+    }
+    Some(match Path::new(file_name).extension() {
+        Some(ext) => format!("{stem}.{}", ext.to_string_lossy()),
+        None => stem.to_string(),
+    })
+}
+
 impl Item {
     fn new(entry: PhotoEntry, copy: Option<CopyInfo>, meta: Option<PhotoMeta>) -> Item {
         Item {
@@ -83,6 +103,7 @@ impl Item {
             copy,
             shown: meta.as_ref().and_then(|m| m.edits.clone()).map(Arc::new),
             meta,
+            facts: None,
             thumb: None,
             thumb_of: None,
             failed_for: None,
@@ -115,18 +136,60 @@ impl Item {
     pub fn edited(&self) -> bool {
         self.meta.as_ref().is_some_and(|m| m.edits.is_some())
     }
+
+    fn set_meta(&mut self, meta: PhotoMeta) {
+        self.shown = meta.edits.clone().map(Arc::new);
+        self.meta = Some(meta);
+    }
+
+    #[cfg(test)]
+    pub fn test(
+        name: &str,
+        copy: Option<CopyId>,
+        meta: Option<PhotoMeta>,
+        facts: Option<Facts>,
+    ) -> Item {
+        let entry = PhotoEntry {
+            path: PathBuf::from("/p").join(name),
+            name: name.to_string(),
+            bytes: 1,
+            modified: None,
+        };
+        let copy = copy.map(|id| CopyInfo {
+            id,
+            name: format!("Copy {id}"),
+        });
+        let mut it = Item::new(entry, copy, meta);
+        it.facts = facts;
+        it
+    }
 }
 
 struct ThumbJob {
-    index: usize,
+    key: PhotoKey,
     edits: Option<Arc<EditParams>>,
     _task: Task<()>,
 }
 
+/// What a file operation did to one photo.
+type Outcome = (PathBuf, Result<(), String>);
+
+/// A listed folder: its photos, their virtual copies and their cached EXIF facts.
+type Listing = (Vec<PhotoEntry>, Vec<VirtualCopy>, HashMap<PathBuf, Facts>);
+
 pub struct Library {
     engine: Engine,
     pub dir: Option<PathBuf>,
-    pub items: Vec<Item>,
+    /// Every photo and copy of the folder.
+    all: Vec<Item>,
+    /// Storage indices of the shown items, in order.
+    view: Vec<usize>,
+    /// Storage index by key.
+    slots: HashMap<PhotoKey, usize>,
+    /// View position by key.
+    positions: HashMap<PhotoKey, usize>,
+    filter: Filter,
+    sort: Sort,
     /// The primary selection: the photo develop opens and single-photo commands act on.
     pub selected: Option<usize>,
     /// Every selected photo; contains `selected`.
@@ -137,8 +200,6 @@ pub struct Library {
     store: Arc<Store>,
     writer: Writer,
     pub catalog: Arc<Catalog>,
-    /// Item positions by key.
-    index: HashMap<PhotoKey, usize>,
     wanted: [Range<usize>; 2],
     jobs: Vec<ThumbJob>,
     generation: u64,
@@ -153,6 +214,12 @@ pub struct Library {
 
 impl EventEmitter<LibraryEvent> for Library {}
 
+fn file_name(p: &Path) -> String {
+    p.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
 impl Library {
     pub fn new(engine: Engine, catalog: Arc<Catalog>, cx: &mut Context<Self>) -> Library {
         let store = Arc::new(Store::new());
@@ -163,10 +230,7 @@ impl Library {
         let reports = cx.spawn(async move |this, cx| {
             while let Some((photo, r)) = rx.next().await {
                 let Err(e) = r else { continue };
-                let name = photo
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
+                let name = file_name(&photo);
                 let msg = if e.is_read_only() {
                     rust_i18n::t!("library.folder_read_only", name = name).into_owned()
                 } else if matches!(e, aigle_library::Error::Conflict(_)) {
@@ -185,7 +249,12 @@ impl Library {
         Library {
             engine,
             dir: None,
-            items: Vec::new(),
+            all: Vec::new(),
+            view: Vec::new(),
+            slots: HashMap::new(),
+            positions: HashMap::new(),
+            filter: Filter::default(),
+            sort: Sort::default(),
             selected: None,
             selection: BTreeSet::new(),
             anchor: None,
@@ -193,7 +262,6 @@ impl Library {
             store,
             writer,
             catalog,
-            index: HashMap::new(),
             wanted: [0..0, 0..0],
             jobs: Vec::new(),
             generation: 0,
@@ -205,43 +273,131 @@ impl Library {
         }
     }
 
-    pub fn index_of(&self, key: &PhotoKey) -> Option<usize> {
-        self.index.get(key).copied()
+    /// Shown photos.
+    pub fn len(&self) -> usize {
+        self.view.len()
     }
 
-    fn reindex(&mut self) {
-        self.index = self
-            .items
+    /// Photos and copies in the folder, shown or not.
+    pub fn total(&self) -> usize {
+        self.all.len()
+    }
+
+    pub fn item(&self, index: usize) -> Option<&Item> {
+        self.view.get(index).map(|&s| &self.all[s])
+    }
+
+    pub fn index_of(&self, key: &PhotoKey) -> Option<usize> {
+        self.positions.get(key).copied()
+    }
+
+    pub fn selected_item(&self) -> Option<&Item> {
+        self.item(self.selected?)
+    }
+
+    pub fn folder_name(&self) -> String {
+        self.dir.as_deref().map(file_name).unwrap_or_default()
+    }
+
+    pub fn filter(&self) -> &Filter {
+        &self.filter
+    }
+
+    pub fn sort(&self) -> Sort {
+        self.sort
+    }
+
+    pub fn set_filter(&mut self, filter: Filter, cx: &mut Context<Self>) {
+        if self.filter != filter {
+            self.filter = filter;
+            self.rebuild_view(cx);
+        }
+    }
+
+    pub fn set_sort(&mut self, sort: Sort, cx: &mut Context<Self>) {
+        if self.sort != sort {
+            self.sort = sort;
+            self.rebuild_view(cx);
+        }
+    }
+
+    /// The cameras, lenses, dates and keywords of the folder.
+    pub fn facets(&self) -> Facets {
+        Facets::of(&self.all)
+    }
+
+    fn key_at(&self, index: usize) -> Option<PhotoKey> {
+        self.item(index).map(Item::key)
+    }
+
+    /// Storage indices changed: rebuild the key map and the view.
+    fn reindex(&mut self, cx: &mut Context<Self>) {
+        self.slots = self
+            .all
             .iter()
             .enumerate()
             .map(|(i, it)| (it.key(), i))
             .collect();
+        self.rebuild_view(cx);
     }
 
-    pub fn selected_item(&self) -> Option<&Item> {
-        self.items.get(self.selected?)
-    }
+    /// Apply the filter and sort again, keeping the selected photos that are still shown.
+    fn rebuild_view(&mut self, cx: &mut Context<Self>) {
+        let selection: Vec<PhotoKey> = self
+            .selection
+            .iter()
+            .filter_map(|&i| self.key_at(i))
+            .collect();
+        let primary = self.selected.and_then(|i| self.key_at(i));
+        let anchor = self.anchor.and_then(|i| self.key_at(i));
+        let had_selection = !selection.is_empty();
 
-    pub fn folder_name(&self) -> String {
-        self.dir
+        let mut view: Vec<usize> = (0..self.all.len())
+            .filter(|&s| self.filter.matches(&self.all[s]))
+            .collect();
+        view.sort_by(|&a, &b| self.sort.cmp(&self.all[a], &self.all[b]));
+        self.positions = view
+            .iter()
+            .enumerate()
+            .map(|(p, &s)| (self.all[s].key(), p))
+            .collect();
+        self.view = view;
+
+        let pos = |k: &PhotoKey| self.positions.get(k).copied();
+        self.selection = selection.iter().filter_map(pos).collect();
+        self.selected = primary
             .as_ref()
-            .and_then(|d| d.file_name())
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default()
+            .and_then(pos)
+            .or_else(|| self.selection.first().copied());
+        self.anchor = anchor.as_ref().and_then(pos).or(self.selected);
+        if had_selection && self.selection.is_empty() && !self.view.is_empty() {
+            self.set_single(Some(0));
+        }
+        let n = self.view.len();
+        for r in &mut self.wanted {
+            *r = r.start.min(n)..r.end.min(n);
+        }
+        self.request_thumbs(cx);
+        cx.notify();
     }
 
-    /// Scan `dir`, then read every sidecar in the background. `select` is selected once
-    /// listed (the first photo otherwise).
+    /// Scan `dir`, then read every sidecar and EXIF in the background. `select` is selected
+    /// once listed (the first photo otherwise).
     pub fn open_folder(&mut self, dir: PathBuf, select: Option<PathBuf>, cx: &mut Context<Self>) {
         self.flush(cx);
         self.generation += 1;
         self.jobs.clear();
         self.refresh.clear();
         self.drop_thumbs(cx);
-        self.items.clear();
-        self.index.clear();
+        self.all.clear();
+        self.view.clear();
+        self.slots.clear();
+        self.positions.clear();
         self.set_single(None);
         self.wanted = [0..0, 0..0];
+        if self.dir.as_ref() != Some(&dir) {
+            self.filter = self.filter.for_new_folder();
+        }
         self.dir = Some(dir.clone());
         self.loading = true;
         let generation = self.generation;
@@ -250,68 +406,67 @@ impl Library {
         cx.notify();
         self.scan = Some(cx.spawn(async move |this, cx| {
             let scan_dir = dir.clone();
+            let lister = catalog.clone();
             let listed = cx
                 .background_spawn(async move {
                     let entries = aigle_library::scan(&scan_dir)?;
                     let paths: Vec<PathBuf> = entries.iter().map(|e| e.path.clone()).collect();
-                    let copies = catalog.copies_of(&paths).unwrap_or_else(|e| {
+                    let copies = lister.copies_of(&paths).unwrap_or_else(|e| {
                         tracing::warn!("{e}");
                         Vec::new()
                     });
-                    Ok((entries, copies))
+                    let facts = lister.facts_of(&entries).unwrap_or_else(|e| {
+                        tracing::warn!("{e}");
+                        HashMap::new()
+                    });
+                    Ok((entries, copies, facts))
                 })
                 .await;
-            let paths = match this.update(cx, |l, cx| l.listed(generation, listed, select, cx)) {
-                Ok(Some(p)) => p,
+            let entries = match this.update(cx, |l, cx| l.listed(generation, listed, select, cx)) {
+                Ok(Some(e)) => e,
                 _ => return,
             };
             let mut warnings = Vec::new();
-            for chunk in paths.chunks(META_CHUNK) {
+            for chunk in entries.chunks(META_CHUNK) {
                 let store = store.clone();
+                let catalog = catalog.clone();
                 let chunk = chunk.to_vec();
                 let read = cx
                     .background_spawn(async move {
-                        chunk
+                        let mut fresh = Vec::new();
+                        let read: Vec<_> = chunk
                             .into_iter()
-                            .map(|p| {
-                                let r = store.read(&p);
-                                (p, r)
+                            .map(|(e, cached)| {
+                                let r = store.read(&e.path);
+                                let facts = (!cached).then(|| {
+                                    let f = aigle_library::read_facts(&e.path);
+                                    fresh.push((e.clone(), f.clone()));
+                                    f
+                                });
+                                (e.path, r, facts)
                             })
-                            .collect::<Vec<_>>()
+                            .collect();
+                        if !fresh.is_empty()
+                            && let Err(e) = catalog.set_facts(&fresh)
+                        {
+                            tracing::warn!("{e}");
+                        }
+                        read
                     })
                     .await;
                 let ok = this.update(cx, |l, cx| {
                     if l.generation != generation {
                         return false;
                     }
-                    for (path, r) in read {
-                        let Some(i) = l.index_of(&PhotoKey::master(path)) else {
-                            continue;
-                        };
-                        let it = &mut l.items[i];
-                        if it.meta.is_some() {
-                            continue;
-                        }
-                        let meta = match r {
-                            Ok(loaded) => {
-                                warnings.extend(
-                                    loaded
-                                        .warnings
-                                        .iter()
-                                        .map(|w| format!("{}: {w}", it.entry.name)),
-                                );
-                                loaded.meta
-                            }
-                            Err(e) => {
-                                warnings.push(e.to_string());
-                                PhotoMeta::default()
-                            }
-                        };
-                        it.shown = meta.edits.clone().map(Arc::new);
-                        it.meta = Some(meta);
+                    for (path, r, facts) in read {
+                        l.loaded(path, r, facts, &mut warnings);
                     }
-                    l.request_thumbs(cx);
-                    cx.notify();
+                    if crate::view::depends_on_loading(&l.filter, &l.sort) {
+                        l.rebuild_view(cx);
+                    } else {
+                        l.request_thumbs(cx);
+                        cx.notify();
+                    }
                     true
                 });
                 if !matches!(ok, Ok(true)) {
@@ -337,17 +492,59 @@ impl Library {
         }));
     }
 
+    /// The sidecar of `path` was read, and its EXIF unless the facts were cached; its copies
+    /// share the facts.
+    fn loaded(
+        &mut self,
+        path: PathBuf,
+        read: Result<aigle_library::Loaded, aigle_library::Error>,
+        facts: Option<Facts>,
+        warnings: &mut Vec<String>,
+    ) {
+        let Some(&s) = self.slots.get(&PhotoKey::master(&path)) else {
+            return;
+        };
+        for it in self.all[s..]
+            .iter_mut()
+            .take_while(|it| it.entry.path == path)
+            .filter(|_| facts.is_some())
+        {
+            it.facts = facts.clone();
+        }
+        let it = &mut self.all[s];
+        if it.meta.is_some() {
+            return;
+        }
+        let meta = match read {
+            Ok(loaded) => {
+                warnings.extend(
+                    loaded
+                        .warnings
+                        .iter()
+                        .map(|w| format!("{}: {w}", it.entry.name)),
+                );
+                loaded.meta
+            }
+            Err(e) => {
+                warnings.push(e.to_string());
+                PhotoMeta::default()
+            }
+        };
+        it.set_meta(meta);
+    }
+
+    /// The folder was listed; the photos are returned with whether their facts were cached.
     fn listed(
         &mut self,
         generation: u64,
-        listed: std::io::Result<(Vec<PhotoEntry>, Vec<VirtualCopy>)>,
+        listed: std::io::Result<Listing>,
         select: Option<PathBuf>,
         cx: &mut Context<Self>,
-    ) -> Option<Vec<PathBuf>> {
+    ) -> Option<Vec<(PhotoEntry, bool)>> {
         if self.generation != generation {
             return None;
         }
-        let (entries, copies) = match listed {
+        let (entries, copies, mut facts) = match listed {
             Ok(e) => e,
             Err(e) => {
                 self.loading = false;
@@ -358,28 +555,34 @@ impl Library {
                 return None;
             }
         };
-        let paths: Vec<PathBuf> = entries.iter().map(|e| e.path.clone()).collect();
         let mut copies = copies.into_iter().peekable();
         let mut items = Vec::with_capacity(entries.len());
+        let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let path = entry.path.clone();
-            items.push(Item::new(entry.clone(), None, None));
+            let known = facts.remove(&path);
+            out.push((entry.clone(), known.is_some()));
+            let mut it = Item::new(entry.clone(), None, None);
+            it.facts = known.clone();
+            items.push(it);
             while let Some(c) = copies.next_if(|c| c.path == path) {
                 let info = CopyInfo {
                     id: c.id,
                     name: c.name,
                 };
-                items.push(Item::new(entry.clone(), Some(info), Some(c.meta)));
+                let mut it = Item::new(entry.clone(), Some(info), Some(c.meta));
+                it.facts = known.clone();
+                items.push(it);
             }
         }
-        self.items = items;
-        self.reindex();
+        self.all = items;
+        self.reindex(cx);
         let first = select
             .and_then(|p| self.index_of(&PhotoKey::master(p)))
-            .or((!self.items.is_empty()).then_some(0));
+            .or((!self.view.is_empty()).then_some(0));
         self.set_single(first);
         cx.notify();
-        Some(paths)
+        Some(out)
     }
 
     /// The metadata of a photo by path, read from its sidecar now.
@@ -398,19 +601,25 @@ impl Library {
         }
     }
 
-    /// The metadata of `index`, reading the sidecar now if the background pass has not
-    /// reached it yet.
-    pub fn meta_now(&mut self, index: usize) -> PhotoMeta {
-        let Some(it) = self.items.get(index) else {
+    /// The metadata of storage slot `s`, reading the sidecar now if the background pass has
+    /// not reached it yet.
+    fn meta_at(&mut self, s: usize) -> PhotoMeta {
+        let Some(it) = self.all.get(s) else {
             return PhotoMeta::default();
         };
         if it.meta.is_none() {
             let meta = self.read_meta(&it.entry.path);
-            let it = &mut self.items[index];
-            it.shown = meta.edits.clone().map(Arc::new);
-            it.meta = Some(meta);
+            self.all[s].set_meta(meta);
         }
-        self.items[index].meta.clone().unwrap_or_default()
+        self.all[s].meta.clone().unwrap_or_default()
+    }
+
+    /// The metadata of `index`, read now if needed.
+    pub fn meta_now(&mut self, index: usize) -> PhotoMeta {
+        match self.view.get(index) {
+            Some(&s) => self.meta_at(s),
+            None => PhotoMeta::default(),
+        }
     }
 
     fn set_single(&mut self, index: Option<usize>) {
@@ -421,7 +630,7 @@ impl Library {
 
     /// Select only `index`.
     pub fn select(&mut self, index: usize, cx: &mut Context<Self>) {
-        if index < self.items.len() && (self.selected != Some(index) || self.selection.len() != 1) {
+        if index < self.len() && (self.selected != Some(index) || self.selection.len() != 1) {
             self.set_single(Some(index));
             cx.notify();
         }
@@ -430,7 +639,7 @@ impl Library {
     /// Add `index` to the selection or take it out (Ctrl-click); the primary photo stays
     /// unless it is the one taken out.
     pub fn toggle_select(&mut self, index: usize, cx: &mut Context<Self>) {
-        if index >= self.items.len() {
+        if index >= self.len() {
             return;
         }
         if self.selection.remove(&index) {
@@ -453,7 +662,7 @@ impl Library {
     /// Select the range from the anchor to `index` (Shift-click), keeping the primary photo
     /// in it.
     pub fn extend_select(&mut self, index: usize, cx: &mut Context<Self>) {
-        if index >= self.items.len() {
+        if index >= self.len() {
             return;
         }
         let from = self.anchor.unwrap_or(index);
@@ -466,10 +675,10 @@ impl Library {
     }
 
     pub fn select_all(&mut self, cx: &mut Context<Self>) {
-        if self.items.is_empty() {
+        if self.view.is_empty() {
             return;
         }
-        self.selection = (0..self.items.len()).collect();
+        self.selection = (0..self.len()).collect();
         if self.selected.is_none() {
             self.selected = Some(0);
             self.anchor = Some(0);
@@ -485,62 +694,67 @@ impl Library {
         self.selection.len()
     }
 
-    /// The selected photos in folder order.
+    /// The selected photos in view order.
     pub fn selection(&self) -> Vec<usize> {
         self.selection.iter().copied().collect()
     }
 
     /// Show thumbnails for `range` of `who`; jobs outside every shown range are cancelled.
     pub fn want(&mut self, who: Consumer, range: Range<usize>, cx: &mut Context<Self>) {
-        let range = range.start.min(self.items.len())..range.end.min(self.items.len());
+        let n = self.len();
+        let range = range.start.min(n)..range.end.min(n);
         if self.wanted[who as usize] != range {
             self.wanted[who as usize] = range;
             self.request_thumbs(cx);
         }
     }
 
-    fn is_wanted(&self, i: usize) -> bool {
-        self.wanted.iter().any(|r| r.contains(&i))
+    fn is_wanted(&self, index: usize) -> bool {
+        self.wanted.iter().any(|r| r.contains(&index))
     }
 
     fn request_thumbs(&mut self, cx: &mut Context<Self>) {
-        let wanted = self.wanted.clone();
-        self.jobs
-            .retain(|j| wanted.iter().any(|r| r.contains(&j.index)));
+        let wanted: Vec<usize> = self.wanted.iter().flat_map(|r| r.clone()).collect();
+        let keys: HashSet<PhotoKey> = wanted.iter().filter_map(|&i| self.key_at(i)).collect();
+        self.jobs.retain(|j| keys.contains(&j.key));
         let center = self.selected.unwrap_or(0);
-        for i in wanted.iter().flat_map(|r| r.clone()) {
-            let Some(it) = self.items.get(i) else {
-                continue;
-            };
+        for i in wanted {
+            let Some(it) = self.item(i) else { continue };
             if it.meta.is_none() {
                 continue;
             }
+            let key = it.key();
             let edits = it.shown.clone();
             let current = Some(edits.clone());
             if it.thumb_of == current
                 || it.failed_for == current
-                || self.jobs.iter().any(|j| j.index == i && j.edits == edits)
+                || self.jobs.iter().any(|j| j.key == key && j.edits == edits)
             {
                 continue;
             }
-            self.jobs.retain(|j| j.index != i);
+            let path = it.entry.path.clone();
+            self.jobs.retain(|j| j.key != key);
             let prio = 10_000 - (i.abs_diff(center).min(10_000) as i32);
             let job = self.engine.thumbnail(
-                SourceRef::File(it.entry.path.clone()),
+                SourceRef::File(path),
                 edits.clone(),
                 THUMB_PX,
                 Priority(prio),
             );
             let generation = self.generation;
-            let for_edits = edits.clone();
+            let (for_key, for_edits) = (key.clone(), edits.clone());
             let task = cx.spawn(async move |this, cx| {
                 let r = job.await;
                 let _ = this.update(cx, |l, cx| {
                     if l.generation != generation {
                         return;
                     }
-                    l.jobs.retain(|j| !(j.index == i && j.edits == for_edits));
-                    let Some(it) = l.items.get_mut(i) else { return };
+                    l.jobs
+                        .retain(|j| !(j.key == for_key && j.edits == for_edits));
+                    let Some(&s) = l.slots.get(&for_key) else {
+                        return;
+                    };
+                    let it = &mut l.all[s];
                     match r.ok().and_then(|t| render_image(&t.pixels)) {
                         Some(img) => {
                             if let Some(old) = it.thumb.replace(img) {
@@ -555,23 +769,33 @@ impl Library {
                 });
             });
             self.jobs.push(ThumbJob {
-                index: i,
+                key,
                 edits,
                 _task: task,
             });
         }
     }
 
-    /// Drop the thumbnails furthest from the shown ranges until at most [`KEEP`] remain.
+    /// Drop the thumbnails furthest from the shown ranges until at most [`KEEP`] remain;
+    /// photos the filter hides go first.
     fn evict(&mut self, cx: &mut Context<Self>) {
-        let mut held: Vec<usize> = (0..self.items.len())
-            .filter(|&i| self.items[i].thumb.is_some() && !self.is_wanted(i))
+        let mut position = vec![None; self.all.len()];
+        for (p, &s) in self.view.iter().enumerate() {
+            position[s] = Some(p);
+        }
+        let mut held: Vec<usize> = (0..self.all.len())
+            .filter(|&s| {
+                self.all[s].thumb.is_some() && !position[s].is_some_and(|p| self.is_wanted(p))
+            })
             .collect();
         let total = held.len() + self.wanted.iter().map(|r| r.len()).sum::<usize>();
         if total <= KEEP {
             return;
         }
-        let distance = |i: usize| {
+        let distance = |s: usize| {
+            let Some(i) = position[s] else {
+                return usize::MAX;
+            };
             self.wanted
                 .iter()
                 .filter(|r| !r.is_empty())
@@ -585,9 +809,9 @@ impl Library {
                 .min()
                 .unwrap_or(usize::MAX)
         };
-        held.sort_by_key(|&i| std::cmp::Reverse(distance(i)));
-        for i in held.into_iter().take(total - KEEP) {
-            let it = &mut self.items[i];
+        held.sort_by_key(|&s| std::cmp::Reverse(distance(s)));
+        for s in held.into_iter().take(total - KEEP) {
+            let it = &mut self.all[s];
             if let Some(old) = it.thumb.take() {
                 cx.drop_image(old, None);
             }
@@ -596,15 +820,15 @@ impl Library {
     }
 
     fn drop_thumbs(&mut self, cx: &mut Context<Self>) {
-        for it in &mut self.items {
+        for it in &mut self.all {
             if let Some(old) = it.thumb.take() {
                 cx.drop_image(old, None);
             }
         }
     }
 
-    fn save(&mut self, index: usize, cx: &mut Context<Self>) {
-        let Some(it) = self.items.get(index) else {
+    fn save(&mut self, s: usize, cx: &mut Context<Self>) {
+        let Some(it) = self.all.get(s) else {
             return;
         };
         let Some(meta) = it.meta.clone() else { return };
@@ -639,44 +863,87 @@ impl Library {
         }
     }
 
-    pub fn set_rating(&mut self, index: usize, rating: i8, cx: &mut Context<Self>) {
-        self.meta_now(index);
-        if let Some(meta) = self.items.get_mut(index).and_then(|it| it.meta.as_mut())
-            && meta.rating != rating
+    /// Change the metadata of `index` with `change`, saving it if `change` returns true.
+    fn change_meta(
+        &mut self,
+        index: usize,
+        cx: &mut Context<Self>,
+        change: impl FnOnce(&mut PhotoMeta) -> bool,
+    ) {
+        let Some(&s) = self.view.get(index) else {
+            return;
+        };
+        self.meta_at(s);
+        if let Some(meta) = self.all[s].meta.as_mut()
+            && change(meta)
         {
-            meta.rating = rating;
-            self.save(index, cx);
+            self.save(s, cx);
             cx.notify();
         }
     }
 
+    pub fn set_rating(&mut self, index: usize, rating: i8, cx: &mut Context<Self>) {
+        self.change_meta(index, cx, |m| {
+            std::mem::replace(&mut m.rating, rating) != rating
+        });
+    }
+
     pub fn set_label(&mut self, index: usize, label: Option<&str>, cx: &mut Context<Self>) {
-        self.meta_now(index);
-        if let Some(meta) = self.items.get_mut(index).and_then(|it| it.meta.as_mut())
-            && meta.label.as_deref() != label
-        {
-            meta.label = label.map(str::to_string);
-            self.save(index, cx);
-            cx.notify();
-        }
+        self.change_meta(index, cx, |m| {
+            let label = label.map(str::to_string);
+            std::mem::replace(&mut m.label, label.clone()) != label
+        });
+    }
+
+    pub fn set_field(&mut self, index: usize, field: Field, value: &str, cx: &mut Context<Self>) {
+        self.change_meta(index, cx, |m| {
+            let before = m.field(field).to_string();
+            m.set_field(field, value);
+            m.field(field) != before
+        });
+    }
+
+    /// Add the keywords `add` to `index` and take out `remove`, as typed or shown by
+    /// [`PhotoMeta::tags`] (`Places > France` is a hierarchical keyword); compared
+    /// case-insensitively.
+    pub fn edit_keywords(
+        &mut self,
+        index: usize,
+        add: &[String],
+        remove: &[String],
+        cx: &mut Context<Self>,
+    ) {
+        let norm = |k: &String| aigle_library::normalize_tag(k).map(|k| k.to_lowercase());
+        let gone: HashSet<String> = remove.iter().filter_map(norm).collect();
+        self.change_meta(index, cx, |m| {
+            let before = (m.keywords.clone(), m.hierarchy.clone());
+            let tags: Vec<String> = m
+                .tags()
+                .into_iter()
+                .filter(|k| !norm(k).is_some_and(|k| gone.contains(&k)))
+                .chain(add.iter().cloned())
+                .collect();
+            m.set_tags(tags);
+            (m.keywords.clone(), m.hierarchy.clone()) != before
+        });
     }
 
     /// The open photo `key` has new edits: save them and refresh its thumbnail shortly.
     pub fn photo_edited(&mut self, key: &PhotoKey, head: &Arc<EditParams>, cx: &mut Context<Self>) {
         let edits = (**head != EditParams::default()).then(|| (**head).clone());
-        let Some(i) = self.index_of(key) else {
+        let Some(&s) = self.slots.get(key) else {
             self.update_unlisted(key, cx, |m| m.edits = edits);
             return;
         };
-        self.meta_now(i);
-        let Some(meta) = self.items[i].meta.as_mut() else {
+        self.meta_at(s);
+        let Some(meta) = self.all[s].meta.as_mut() else {
             return;
         };
         if meta.edits == edits {
             return;
         }
         meta.edits = edits;
-        self.save(i, cx);
+        self.save(s, cx);
         let shown = (**head != EditParams::default()).then(|| head.clone());
         let generation = self.generation;
         let refresh_key = key.clone();
@@ -687,8 +954,8 @@ impl Library {
                     return;
                 }
                 l.refresh.remove(&refresh_key);
-                if let Some(i) = l.index_of(&refresh_key) {
-                    l.items[i].shown = shown;
+                if let Some(&s) = l.slots.get(&refresh_key) {
+                    l.all[s].shown = shown;
                     l.request_thumbs(cx);
                     cx.notify();
                 }
@@ -737,7 +1004,7 @@ impl Library {
         edit: impl FnOnce(&EditParams) -> Result<EditParams, aigle_doc::CommandError>,
         cx: &mut Context<Self>,
     ) -> Result<(), aigle_doc::CommandError> {
-        let Some(key) = self.items.get(index).map(Item::key) else {
+        let Some(key) = self.key_at(index) else {
             return Ok(());
         };
         let current = self.meta_now(index).edits.unwrap_or_default();
@@ -764,38 +1031,40 @@ impl Library {
         snapshots: Vec<Snapshot>,
         cx: &mut Context<Self>,
     ) {
-        let Some(i) = self.index_of(key) else {
+        let Some(&s) = self.slots.get(key) else {
             self.update_unlisted(key, cx, |m| m.snapshots = snapshots);
             return;
         };
-        self.meta_now(i);
-        if let Some(meta) = self.items[i].meta.as_mut()
+        self.meta_at(s);
+        if let Some(meta) = self.all[s].meta.as_mut()
             && meta.snapshots != snapshots
         {
             meta.snapshots = snapshots;
-            self.save(i, cx);
+            self.save(s, cx);
         }
     }
 
-    /// Make a virtual copy of each photo in `indices` with its current edits, rating and
-    /// label, placed after the photo's other copies. Returns the keys of the new copies.
+    /// Make a virtual copy of each photo in `indices` with its current edits, rating,
+    /// label and descriptions, placed after the photo's other copies. Returns the keys of
+    /// the new copies.
     pub fn create_copies(&mut self, indices: &[usize], cx: &mut Context<Self>) -> Vec<PhotoKey> {
         let base = crate::i18n::t("library.virtual_copy");
         let mut created = Vec::new();
         let mut failed = None;
-        let mut indices = indices.to_vec();
-        indices.sort_unstable_by(|a, b| b.cmp(a));
-        for i in indices {
-            let Some(path) = self.items.get(i).map(|it| it.entry.path.clone()) else {
-                continue;
-            };
-            let src = self.meta_now(i);
+        let mut slots: Vec<usize> = indices
+            .iter()
+            .filter_map(|&i| self.view.get(i).copied())
+            .collect();
+        slots.sort_unstable_by(|a, b| b.cmp(a));
+        for s in slots {
+            let path = self.all[s].entry.path.clone();
+            let src = self.meta_at(s);
             let meta = PhotoMeta {
                 snapshots: Vec::new(),
                 ..src
             };
             let name = crate::presets::unique_name(
-                self.items
+                self.all
                     .iter()
                     .filter(|it| it.entry.path == path)
                     .filter_map(|it| it.copy.as_ref().map(|c| c.name.as_str())),
@@ -804,14 +1073,17 @@ impl Library {
             match self.catalog.create_copy(&path, &name, &meta) {
                 Ok(id) => {
                     let at = self
-                        .items
+                        .all
                         .iter()
                         .rposition(|it| it.entry.path == path)
-                        .map_or(self.items.len(), |p| p + 1);
-                    let entry = self.items[i].entry.clone();
-                    let info = CopyInfo { id, name };
-                    self.items
-                        .insert(at, Item::new(entry, Some(info), Some(meta)));
+                        .map_or(self.all.len(), |p| p + 1);
+                    let mut item = Item::new(
+                        self.all[s].entry.clone(),
+                        Some(CopyInfo { id, name }),
+                        Some(meta),
+                    );
+                    item.facts = self.all[s].facts.clone();
+                    self.all.insert(at, item);
                     created.push(PhotoKey {
                         path,
                         copy: Some(id),
@@ -828,7 +1100,7 @@ impl Library {
                 rust_i18n::t!("library.copy_create_failed", e = e).into_owned(),
             ));
         }
-        self.items_moved(cx);
+        self.reindex(cx);
         let new: BTreeSet<usize> = created.iter().filter_map(|k| self.index_of(k)).collect();
         if let Some(&first) = new.iter().next() {
             self.selection = new;
@@ -839,19 +1111,49 @@ impl Library {
         created
     }
 
+    /// Take the items of `keys` out of storage (the caller reindexes).
+    fn take_items(&mut self, keys: &HashSet<PhotoKey>) -> Vec<Item> {
+        let mut taken = Vec::new();
+        let mut i = 0;
+        while i < self.all.len() {
+            if keys.contains(&self.all[i].key()) {
+                taken.push(self.all.remove(i));
+            } else {
+                i += 1;
+            }
+        }
+        taken
+    }
+
+    fn drop_items(items: Vec<Item>, cx: &mut Context<Self>) {
+        for it in items {
+            if let Some(t) = it.thumb {
+                cx.drop_image(t, None);
+            }
+        }
+    }
+
+    /// After items were removed: select the photo that was primary if it is still shown,
+    /// else the first one.
+    fn reselect(&mut self, primary: Option<PhotoKey>) {
+        let next = primary
+            .and_then(|k| self.index_of(&k))
+            .or((!self.view.is_empty()).then_some(0));
+        self.set_single(next);
+    }
+
     /// Delete the virtual copies among `indices`; photos are left alone. Returns the keys
     /// of the deleted copies.
     pub fn remove_copies(&mut self, indices: &[usize], cx: &mut Context<Self>) -> Vec<PhotoKey> {
         let mut removed = Vec::new();
         let mut failed = None;
         for &i in indices {
-            let Some(it) = self.items.get(i) else {
-                continue;
-            };
+            let Some(it) = self.item(i) else { continue };
             let Some(c) = &it.copy else { continue };
-            self.pending_copies.remove(&c.id);
-            match self.catalog.remove_copy(c.id) {
-                Ok(()) => removed.push(it.key()),
+            let (id, key) = (c.id, it.key());
+            self.pending_copies.remove(&id);
+            match self.catalog.remove_copy(id) {
+                Ok(()) => removed.push(key),
                 Err(e) => {
                     tracing::warn!("{e}");
                     failed.get_or_insert(e);
@@ -869,42 +1171,209 @@ impl Library {
         let primary = self
             .selected_item()
             .map(|it| PhotoKey::master(&it.entry.path));
-        for key in &removed {
-            if let Some(i) = self.index_of(key) {
-                let it = self.items.remove(i);
-                if let Some(t) = it.thumb {
-                    cx.drop_image(t, None);
-                }
-                self.reindex();
-            }
-        }
-        self.items_moved(cx);
-        let next = primary
-            .and_then(|k| self.index_of(&k))
-            .or((!self.items.is_empty()).then_some(0));
-        self.set_single(next);
+        let gone = self.take_items(&removed.iter().cloned().collect());
+        Self::drop_items(gone, cx);
+        self.reindex(cx);
+        self.reselect(primary);
         cx.notify();
         removed
     }
 
-    /// After items were inserted or removed: positions of jobs and the selection are stale.
-    fn items_moved(&mut self, cx: &mut Context<Self>) {
-        self.reindex();
-        self.jobs.clear();
-        self.refresh.clear();
-        for it in &mut self.items {
-            it.shown = it.meta.as_ref().and_then(|m| m.edits.clone()).map(Arc::new);
+    /// The photo files behind `indices` (a virtual copy stands for its photo), in view
+    /// order without repeats.
+    pub fn photo_paths(&self, indices: &[usize]) -> Vec<PathBuf> {
+        let mut seen = HashSet::new();
+        indices
+            .iter()
+            .filter_map(|&i| self.item(i))
+            .map(|it| it.entry.path.clone())
+            .filter(|p| seen.insert(p.clone()))
+            .collect()
+    }
+
+    /// Rename the photo at `index` to `stem` (keeping its extension) with its sidecars,
+    /// copies and history, or rename a virtual copy. Returns the new key. The caller closes
+    /// the photo in develop first.
+    pub fn rename(
+        &mut self,
+        index: usize,
+        stem: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<PhotoKey, String> {
+        let Some(it) = self.item(index) else {
+            return Err(String::new());
+        };
+        let key = it.key();
+        if let Some(c) = &it.copy {
+            let id = c.id;
+            let name = stem.trim().to_string();
+            if name.is_empty() {
+                return Err(crate::i18n::t("library.bad_name"));
+            }
+            self.catalog
+                .rename_copy(id, &name)
+                .map_err(|e| e.to_string())?;
+            if let Some(&s) = self.slots.get(&key)
+                && let Some(c) = self.all[s].copy.as_mut()
+            {
+                c.name = name;
+            }
+            self.rebuild_view(cx);
+            return Ok(key);
         }
-        let n = self.items.len();
-        self.selection.retain(|&i| i < n);
-        self.selected = self.selected.filter(|&i| i < n);
-        self.request_thumbs(cx);
+        let from = key.path.clone();
+        let name =
+            renamed(&it.entry.name, stem).ok_or_else(|| crate::i18n::t("library.bad_name"))?;
+        let to = from.with_file_name(&name);
+        if to == from {
+            return Ok(key);
+        }
+        self.flush(cx);
+        aigle_library::move_photo(&from, &to).map_err(|e| e.to_string())?;
+        if let Err(e) = self.catalog.move_photo(&from, &to) {
+            tracing::warn!("{e}");
+        }
+        self.store.forget(&from);
+        self.refresh.retain(|k, _| k.path != from);
+        for it in self.all.iter_mut().filter(|it| it.entry.path == from) {
+            it.entry.path = to.clone();
+            it.entry.name = name.clone();
+        }
+        self.reindex(cx);
+        Ok(PhotoKey::master(to))
+    }
+
+    /// Run `op` on each photo file of `paths` in the background. Their items leave
+    /// the library while it runs; the ones `op` fails on come back. `done` reports the
+    /// outcome.
+    fn file_op(
+        &mut self,
+        paths: Vec<PathBuf>,
+        op: impl Fn(&Path) -> Result<(), String> + Send + 'static,
+        done: impl FnOnce(&[Outcome]) -> Option<String> + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        if paths.is_empty() {
+            return;
+        }
+        self.flush(cx);
+        let primary = self.selected_item().map(Item::key);
+        let keys: HashSet<PhotoKey> = self
+            .all
+            .iter()
+            .filter(|it| paths.contains(&it.entry.path))
+            .map(Item::key)
+            .collect();
+        for p in &paths {
+            self.store.forget(p);
+        }
+        self.refresh.retain(|k, _| !paths.contains(&k.path));
+        let taken = self.take_items(&keys);
+        self.reindex(cx);
+        self.reselect(primary);
+        let generation = self.generation;
+        let task = cx.spawn(async move |this, cx| {
+            let outcomes: Vec<Outcome> = cx
+                .background_spawn(async move {
+                    paths
+                        .into_iter()
+                        .map(|p| {
+                            let r = op(&p);
+                            (p, r)
+                        })
+                        .collect()
+                })
+                .await;
+            let _ = this.update(cx, |l, cx| {
+                let failed: HashSet<&Path> = outcomes
+                    .iter()
+                    .filter(|(_, r)| r.is_err())
+                    .map(|(p, _)| p.as_path())
+                    .collect();
+                let (back, gone): (Vec<Item>, Vec<Item>) = taken.into_iter().partition(|it| {
+                    l.generation == generation && failed.contains(it.entry.path.as_path())
+                });
+                Self::drop_items(gone, cx);
+                if !back.is_empty() {
+                    l.all.extend(back);
+                    l.reindex(cx);
+                }
+                if let Some(msg) = done(&outcomes) {
+                    cx.emit(LibraryEvent::Notice(msg));
+                }
+                cx.notify();
+            });
+        });
+        task.detach();
+    }
+
+    /// Move the photos behind `indices` into `dest` with their sidecars, virtual copies and
+    /// history. The caller closes the photo in develop first.
+    pub fn move_photos(&mut self, indices: &[usize], dest: PathBuf, cx: &mut Context<Self>) {
+        let paths: Vec<PathBuf> = self
+            .photo_paths(indices)
+            .into_iter()
+            .filter(|p| p.parent() != Some(dest.as_path()))
+            .collect();
+        let catalog = self.catalog.clone();
+        let folder = file_name(&dest);
+        let op = move |from: &Path| {
+            let to = dest.join(from.file_name().unwrap_or_default());
+            aigle_library::move_photo(from, &to).map_err(|e| e.to_string())?;
+            if let Err(e) = catalog.move_photo(from, &to) {
+                tracing::warn!("{e}");
+            }
+            Ok(())
+        };
+        let done = move |outcomes: &[Outcome]| {
+            Some(report(outcomes, |n| {
+                rust_i18n::t!("library.moved", arg0 = n, folder = folder).into_owned()
+            }))
+        };
+        self.file_op(paths, op, done, cx);
+    }
+
+    /// Move the photo files `paths` to the trash with their sidecars, and forget their
+    /// virtual copies and history. The caller asks first and closes the photo in develop.
+    pub fn trash_photos(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let catalog = self.catalog.clone();
+        let op = move |p: &Path| {
+            aigle_library::trash_photo(p).map_err(|e| e.to_string())?;
+            if let Err(e) = catalog.forget_photo(p) {
+                tracing::warn!("{e}");
+            }
+            Ok(())
+        };
+        let done = |outcomes: &[Outcome]| {
+            Some(report(outcomes, |n| {
+                rust_i18n::t!("library.trashed", arg0 = n).into_owned()
+            }))
+        };
+        self.file_op(paths, op, done, cx);
     }
 
     /// Write every pending sidecar and catalog change now (closing a photo, quitting).
     pub fn flush(&mut self, cx: &mut Context<Self>) {
         self.write_copies(cx);
         self.writer.flush();
+    }
+}
+
+/// The notice after a file operation: the first failure, or `ok(count)`.
+fn report(outcomes: &[Outcome], ok: impl FnOnce(usize) -> String) -> String {
+    let failures: Vec<(&PathBuf, &String)> = outcomes
+        .iter()
+        .filter_map(|(p, r)| r.as_ref().err().map(|e| (p, e)))
+        .collect();
+    match failures.first() {
+        None => ok(outcomes.len()),
+        Some((p, e)) => rust_i18n::t!(
+            "library.file_op_failed",
+            arg0 = failures.len(),
+            name = file_name(p),
+            e = e
+        )
+        .into_owned(),
     }
 }
 
@@ -939,5 +1408,14 @@ mod tests {
             Path::new(&copy_display_name("a.b.nef", "C")).file_stem(),
             Some(std::ffi::OsStr::new("a.b (C)"))
         );
+    }
+
+    #[test]
+    fn renaming_keeps_the_extension() {
+        assert_eq!(renamed("IMG_1.CR3", " sea ").as_deref(), Some("sea.CR3"));
+        assert_eq!(renamed("raw", "b").as_deref(), Some("b"));
+        for bad in ["", "  ", ".hidden", "a/b"] {
+            assert_eq!(renamed("IMG_1.CR3", bad), None, "{bad:?}");
+        }
     }
 }

@@ -27,10 +27,15 @@ use crate::grid::Grid;
 use crate::history::HistoryPanel;
 use crate::keybinding_editor::{Closed as KeybindingsClosed, KeybindingEditor};
 use crate::library::{CopyInfo, LABELS, Library, LibraryEvent};
+use crate::metadata_panel::MetadataPanel;
 use crate::panel::Panel;
 use crate::photo::{Photo, PhotoEvent, Tool};
 use crate::presets::{Preset, PresetsEvent, PresetsPanel};
+use crate::rename::{RenameDialog, RenameEvent};
 use crate::resources::Resources;
+
+/// Width of the library's metadata panel.
+const METADATA_W: f32 = 300.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
@@ -72,6 +77,11 @@ pub struct Workspace {
     library: Entity<Library>,
     grid: Entity<Grid>,
     filmstrip: Entity<Filmstrip>,
+    metadata: Entity<MetadataPanel>,
+    /// The develop panel's Metadata tab: the open photo only.
+    develop_metadata: Entity<MetadataPanel>,
+    show_metadata: bool,
+    rename_dialog: Option<(Entity<RenameDialog>, Subscription)>,
     mode: Mode,
     open: Option<OpenPhoto>,
     show_history: bool,
@@ -114,6 +124,9 @@ impl Workspace {
         let library = cx.new(|cx| Library::new(engine.clone(), catalog, cx));
         let grid = cx.new(|cx| Grid::new(library.clone(), cx));
         let filmstrip = cx.new(|cx| Filmstrip::new(library.clone(), cx));
+        let metadata = cx.new(|cx| MetadataPanel::new(library.clone(), false, window, cx));
+        let develop_metadata = cx.new(|cx| MetadataPanel::new(library.clone(), true, window, cx));
+        grid.update(cx, |g, _| g.side = METADATA_W);
         let (store, warnings) =
             crate::presets::Store::open(crate::config_dir().map(|d| d.join("presets")));
         for w in &warnings {
@@ -144,6 +157,10 @@ impl Workspace {
             library,
             grid,
             filmstrip,
+            metadata,
+            develop_metadata,
+            show_metadata: true,
+            rename_dialog: None,
             mode: Mode::Library,
             open: None,
             show_history: true,
@@ -195,7 +212,7 @@ impl Workspace {
     fn open_index(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let (item, meta) = self.library.update(cx, |l, cx| {
             l.select(index, cx);
-            let item = l.items.get(index).map(|it| (it.key(), it.copy.clone()));
+            let item = l.item(index).map(|it| (it.key(), it.copy.clone()));
             (item, l.meta_now(index))
         });
         let Some((key, copy)) = item else { return };
@@ -250,7 +267,8 @@ impl Workspace {
         });
         let canvas = cx.new(|cx| Canvas::new(photo.clone(), window, cx));
         let hist = canvas.read(cx).histogram();
-        let panel = cx.new(|cx| Panel::new(photo.clone(), hist, window, cx));
+        let develop_metadata = self.develop_metadata.clone();
+        let panel = cx.new(|cx| Panel::new(photo.clone(), hist, develop_metadata, window, cx));
         let history = cx.new(|cx| HistoryPanel::new(photo.clone(), cx));
         let library = self.library.clone();
         let edits = cx.subscribe(&photo, move |w, photo, e, cx| match e {
@@ -406,7 +424,7 @@ impl Workspace {
             Mode::Develop if dy == 0 => {
                 let target = {
                     let l = self.library.read(cx);
-                    let n = l.items.len() as isize;
+                    let n = l.len() as isize;
                     l.selected
                         .map(|s| s as isize + dx)
                         .filter(|t| (0..n).contains(t))
@@ -478,7 +496,10 @@ impl Workspace {
 
     /// Esc: drop a pending mask, else leave the tool, else stop picking.
     fn cancel(&mut self, cx: &mut Context<Self>) {
-        if self.export_dialog.take().is_some() || self.copy_dialog.take().is_some() {
+        if self.export_dialog.take().is_some()
+            || self.copy_dialog.take().is_some()
+            || self.rename_dialog.take().is_some()
+        {
             cx.notify();
             return;
         }
@@ -532,7 +553,7 @@ impl Workspace {
             .filter_map(|index| {
                 let meta = self.library.update(cx, |l, _| l.meta_now(index));
                 let l = self.library.read(cx);
-                let it = l.items.get(index)?;
+                let it = l.item(index)?;
                 if open_key.as_ref() == Some(&it.key())
                     && let Some(r) = &open
                 {
@@ -647,7 +668,7 @@ impl Workspace {
         let l = self.library.read(cx);
         l.selection()
             .into_iter()
-            .filter_map(|i| l.items.get(i).map(|it| it.key()))
+            .filter_map(|i| l.item(i).map(|it| it.key()))
             .collect()
     }
 
@@ -877,6 +898,226 @@ impl Workspace {
         .detach();
     }
 
+    fn toggle_metadata(&mut self, cx: &mut Context<Self>) {
+        self.show_metadata = !self.show_metadata;
+        let side = if self.show_metadata { METADATA_W } else { 0.0 };
+        self.grid.update(cx, |g, cx| {
+            g.side = side;
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    /// If the open photo (or a copy of it) is one of the files `paths`, close it, saving
+    /// its history, and show the grid. Returns the key that was open.
+    fn release_open(
+        &mut self,
+        paths: &[PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<PhotoKey> {
+        let key = self.open_key(cx).filter(|k| paths.contains(&k.path))?;
+        self.close_photo(cx);
+        self.mode = Mode::Library;
+        self.update_title(window, cx);
+        cx.notify();
+        Some(key)
+    }
+
+    fn open_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let target = {
+            let l = self.library.read(cx);
+            l.selected_item()
+                .map(|it| (it.key(), it.entry.name.clone(), it.copy.clone()))
+        };
+        let Some((key, file, copy)) = target else {
+            window.push_notification(crate::i18n::t("library.nothing_selected"), cx);
+            return;
+        };
+        let (title, current, suffix) = match &copy {
+            Some(c) => (
+                crate::i18n::t("rename.copy_title"),
+                c.name.clone(),
+                String::new(),
+            ),
+            None => {
+                let p = Path::new(&file);
+                let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned());
+                let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy()));
+                (
+                    crate::i18n::t("rename.title"),
+                    stem.unwrap_or(file.clone()),
+                    ext.unwrap_or_default(),
+                )
+            }
+        };
+        self.export_dialog = None;
+        self.copy_dialog = None;
+        let dialog = cx.new(|cx| RenameDialog::new(title, current, suffix, window, cx));
+        let sub = cx.subscribe_in(&dialog, window, move |w, _, ev, window, cx| {
+            let RenameEvent::Done(name) = ev;
+            w.rename_dialog = None;
+            if let Some(name) = name {
+                w.rename_to(&key, name, window, cx);
+            }
+            window.focus(&w.focus, cx);
+            cx.notify();
+        });
+        self.rename_dialog = Some((dialog, sub));
+        cx.notify();
+    }
+
+    /// Rename the photo or copy `key`, reopening it in develop if it was open there.
+    fn rename_to(
+        &mut self,
+        key: &PhotoKey,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.library.read(cx).index_of(key) else {
+            return;
+        };
+        let develop = self.mode == Mode::Develop;
+        let affected = self.open_key(cx).is_some_and(|open| match key.copy {
+            None => open.path == key.path,
+            Some(_) => open == *key,
+        });
+        let was_open = if affected {
+            self.release_open(std::slice::from_ref(&key.path), window, cx)
+        } else {
+            None
+        };
+        let renamed = self.library.update(cx, |l, cx| l.rename(index, name, cx));
+        let reopen = match renamed {
+            Ok(new) => was_open.map(|k| PhotoKey {
+                path: new.path,
+                ..k
+            }),
+            Err(e) => {
+                window.push_notification(
+                    rust_i18n::t!("library.rename_failed", e = e).into_owned(),
+                    cx,
+                );
+                was_open
+            }
+        };
+        if let Some(k) = reopen
+            && develop
+            && let Some(i) = self.library.read(cx).index_of(&k)
+        {
+            self.open_index(i, window, cx);
+        }
+        cx.notify();
+    }
+
+    fn prompt_move(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let keys = self.marked_keys(cx);
+        if keys.is_empty() {
+            window.push_notification(crate::i18n::t("library.nothing_selected"), cx);
+            return;
+        }
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some(crate::i18n::t("library.move_prompt").into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = rx.await
+                && let Some(dest) = paths.into_iter().next()
+            {
+                this.update_in(cx, |w, window, cx| w.move_to(&keys, dest, window, cx))?;
+            }
+            anyhow::Ok(())
+        })
+        .detach();
+    }
+
+    fn move_to(
+        &mut self,
+        keys: &[PhotoKey],
+        dest: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let indices: Vec<usize> = {
+            let l = self.library.read(cx);
+            keys.iter().filter_map(|k| l.index_of(k)).collect()
+        };
+        let paths = self.library.read(cx).photo_paths(&indices);
+        self.release_open(&paths, window, cx);
+        self.library
+            .update(cx, |l, cx| l.move_photos(&indices, dest, cx));
+    }
+
+    /// The keys of [`Workspace::marked`].
+    fn marked_keys(&self, cx: &App) -> Vec<PhotoKey> {
+        let l = self.library.read(cx);
+        self.marked(cx)
+            .into_iter()
+            .filter_map(|i| l.item(i).map(|it| it.key()))
+            .collect()
+    }
+
+    /// Move the marked photos to the trash after asking; their virtual copies go with them.
+    /// Selected copies of photos that stay are deleted. With only copies selected this is
+    /// [`Workspace::remove_virtual_copies`].
+    fn trash_marked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let keys = self.marked_keys(cx);
+        let paths: Vec<PathBuf> = keys
+            .iter()
+            .filter(|k| k.copy.is_none())
+            .map(|k| k.path.clone())
+            .collect();
+        if paths.is_empty() {
+            if keys.is_empty() {
+                window.push_notification(crate::i18n::t("library.nothing_selected"), cx);
+            } else {
+                self.remove_virtual_copies(window, cx);
+            }
+            return;
+        }
+        let copies: Vec<PhotoKey> = keys
+            .into_iter()
+            .filter(|k| k.copy.is_some() && !paths.contains(&k.path))
+            .collect();
+        let message = rust_i18n::t!("library.trash_prompt", arg0 = paths.len()).into_owned();
+        let detail = crate::i18n::t("library.trash_detail");
+        let (trash, cancel) = (
+            crate::i18n::t("library.trash"),
+            crate::i18n::t("common.cancel"),
+        );
+        let answer = window.prompt(
+            gpui::PromptLevel::Warning,
+            &message,
+            Some(&detail),
+            &[trash.as_str(), cancel.as_str()],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if answer.await != Ok(0) {
+                return anyhow::Ok(());
+            }
+            this.update_in(cx, |w, window, cx| {
+                let mut released: Vec<PathBuf> = paths.clone();
+                released.extend(copies.iter().map(|k| k.path.clone()));
+                if let Some(open) = w.open_key(cx)
+                    && (paths.contains(&open.path) || copies.contains(&open))
+                {
+                    w.release_open(&released, window, cx);
+                }
+                w.library.update(cx, |l, cx| {
+                    let lone: Vec<usize> = copies.iter().filter_map(|k| l.index_of(k)).collect();
+                    l.remove_copies(&lone, cx);
+                    l.trash_photos(paths, cx);
+                });
+                cx.notify();
+            })
+        })
+        .detach();
+    }
+
     fn open_keybindings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some((editor, _)) = &self.keybinding_dialog {
             editor.update(cx, |editor, cx| editor.focus_search(window, cx));
@@ -1024,6 +1265,7 @@ impl Workspace {
             _ => (false, false, false, Compare::Off, Tool::None, false),
         };
         let show_history = self.show_history;
+        let show_metadata = self.show_metadata;
         let can_paste = self.clipboard.is_some();
         let ws = cx.entity().downgrade();
         let preset_names: Vec<SharedString> = self
@@ -1052,10 +1294,17 @@ impl Workspace {
             let l = self.library.read(cx);
             match (&self.open, develop) {
                 (Some(o), true) => o.photo.read(cx).name.clone(),
+                _ if l.dir.is_some() && l.len() < l.total() => rust_i18n::t!(
+                    "toolbar.title_filtered",
+                    arg0 = l.folder_name(),
+                    arg1 = l.len(),
+                    arg2 = l.total()
+                )
+                .into_owned(),
                 _ if l.dir.is_some() => rust_i18n::t!(
                     "toolbar.title_count",
                     arg0 = l.folder_name(),
-                    arg1 = l.items.len()
+                    arg1 = l.total()
                 )
                 .into_owned(),
                 _ => String::new(),
@@ -1079,6 +1328,10 @@ impl Workspace {
                         menu.action_context(file_focus.clone())
                             .menu(crate::i18n::t("action.Open"), Box::new(Open))
                             .menu(crate::i18n::t("action.OpenFolder"), Box::new(OpenFolder))
+                            .separator()
+                            .menu(crate::i18n::t("action.RenamePhoto"), Box::new(RenamePhoto))
+                            .menu(crate::i18n::t("action.MovePhotos"), Box::new(MovePhotos))
+                            .menu(crate::i18n::t("action.TrashPhotos"), Box::new(TrashPhotos))
                             .separator()
                             .menu(crate::i18n::t("action.Export"), Box::new(Export))
                             .separator()
@@ -1282,6 +1535,12 @@ impl Workspace {
                             )
                             .separator()
                             .menu_with_check_and_disabled(
+                                crate::i18n::t("action.ToggleMetadata"),
+                                show_metadata,
+                                Box::new(ToggleMetadata),
+                                develop,
+                            )
+                            .menu_with_check_and_disabled(
                                 crate::i18n::t("action.ToggleHistory"),
                                 show_history,
                                 Box::new(ToggleHistory),
@@ -1425,7 +1684,7 @@ impl Workspace {
                 .child(crate::keymap::hint("develop.empty_hint", cx))
                 .into_any_element();
         };
-        let has_strip = !self.library.read(cx).items.is_empty();
+        let has_strip = self.library.read(cx).len() > 0;
         v_flex()
             .flex_1()
             .min_h_0()
@@ -1471,15 +1730,36 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let body = match self.mode {
-            Mode::Library => div()
-                .flex_1()
-                .min_h_0()
-                .child(self.grid.clone())
-                .into_any_element(),
+            Mode::Library => {
+                let border = cx.theme().border;
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(crate::library_bar::filter_bar(&self.library, cx))
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_h_0()
+                            .child(div().flex_1().h_full().min_w_0().child(self.grid.clone()))
+                            .when(self.show_metadata, |d| {
+                                d.child(
+                                    div()
+                                        .w(px(METADATA_W))
+                                        .h_full()
+                                        .flex_none()
+                                        .border_l_1()
+                                        .border_color(border)
+                                        .child(self.metadata.clone()),
+                                )
+                            }),
+                    )
+                    .into_any_element()
+            }
             Mode::Develop => self.develop(cx),
         };
         let dialog = self.export_dialog.as_ref().map(|(d, _)| d.clone());
         let copy_dialog = self.copy_dialog.as_ref().map(|(d, _)| d.clone());
+        let rename_dialog = self.rename_dialog.as_ref().map(|(d, _)| d.clone());
         v_flex()
             .size_full()
             .track_focus(&self.focus)
@@ -1533,6 +1813,10 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &RemoveVirtualCopy, window, cx| {
                 w.remove_virtual_copies(window, cx)
             }))
+            .on_action(cx.listener(|w, _: &RenamePhoto, window, cx| w.open_rename(window, cx)))
+            .on_action(cx.listener(|w, _: &MovePhotos, window, cx| w.prompt_move(window, cx)))
+            .on_action(cx.listener(|w, _: &TrashPhotos, window, cx| w.trash_marked(window, cx)))
+            .on_action(cx.listener(|w, _: &ToggleMetadata, _, cx| w.toggle_metadata(cx)))
             .on_action(
                 cx.listener(|w, _: &SelectAll, _, cx| {
                     w.library.update(cx, |l, cx| l.select_all(cx))
@@ -1637,7 +1921,8 @@ impl Render for Workspace {
                     .flex_col()
                     .child(body)
                     .when_some(dialog, |d, e| d.child(e))
-                    .when_some(copy_dialog, |d, e| d.child(e)),
+                    .when_some(copy_dialog, |d, e| d.child(e))
+                    .when_some(rename_dialog, |d, e| d.child(e)),
             )
     }
 }

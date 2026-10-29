@@ -47,12 +47,15 @@ parking_lot = "0.12.4"
 rayon = "1.11"
 # Bundled SQLite: the catalog must not depend on the system library's version.
 rusqlite = { version = "=0.41.0", features = ["bundled"] }
+# Safe renameat2(RENAME_NOREPLACE) for moving photos without overwriting.
+rustix = { version = "1.1.6", features = ["fs"] }
 schemars = "1.0"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = "1.0.140"
 thiserror = "2.0.12"
 tokio = { version = "1.47", default-features = false, features = ["sync"] }
 tracing = "0.1.41"
+trash = "5.2.9"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

@@ -367,6 +367,7 @@ mod tests {
                 .iter()
                 .map(|s| format!("param.local.{}", s.name)),
         );
+        keys.extend(crate::metadata_panel::label_keys());
         let actions = include_str!("actions.rs");
         let list = &actions[actions.find('[').unwrap() + 1..actions.find(']').unwrap()];
         for name in list.split(',').map(str::trim).filter(|n| !n.is_empty()) {

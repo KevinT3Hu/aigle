@@ -1,12 +1,13 @@
 //! XMP sidecars (doc 01 §9.1–§9.3).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use aigle_core::EditParams;
 use aigle_engine_api::{is_photo_path, is_raw_path};
+use aigle_exiv2_sys::{ITEM_SEP, Kind};
 
 /// Version of the `aigle:` properties written by this build.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -16,6 +17,152 @@ const LABEL: &str = "Xmp.xmp.Label";
 const SCHEMA: &str = "Xmp.aigle.SchemaVersion";
 const EDITS: &str = "Xmp.aigle.Edits";
 const SNAPSHOTS: &str = "Xmp.aigle.Snapshots";
+const KEYWORDS: &str = "Xmp.dc.subject";
+const HIERARCHY: &str = "Xmp.lr.hierarchicalSubject";
+
+/// Descriptive IPTC Core fields, stored in their standard XMP properties.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Field {
+    Title,
+    Caption,
+    Headline,
+    /// Several creators are shown and typed separated by `; `.
+    Creator,
+    CreatorJobTitle,
+    Copyright,
+    CopyrightUrl,
+    Credit,
+    Source,
+    Instructions,
+    JobId,
+    Sublocation,
+    City,
+    State,
+    Country,
+    CountryCode,
+}
+
+impl Field {
+    pub const ALL: [Field; 16] = [
+        Field::Title,
+        Field::Caption,
+        Field::Headline,
+        Field::Creator,
+        Field::CreatorJobTitle,
+        Field::Copyright,
+        Field::CopyrightUrl,
+        Field::Credit,
+        Field::Source,
+        Field::Instructions,
+        Field::JobId,
+        Field::Sublocation,
+        Field::City,
+        Field::State,
+        Field::Country,
+        Field::CountryCode,
+    ];
+
+    /// `snake_case` name, as in serialized form.
+    pub fn name(self) -> &'static str {
+        match self {
+            Field::Title => "title",
+            Field::Caption => "caption",
+            Field::Headline => "headline",
+            Field::Creator => "creator",
+            Field::CreatorJobTitle => "creator_job_title",
+            Field::Copyright => "copyright",
+            Field::CopyrightUrl => "copyright_url",
+            Field::Credit => "credit",
+            Field::Source => "source",
+            Field::Instructions => "instructions",
+            Field::JobId => "job_id",
+            Field::Sublocation => "sublocation",
+            Field::City => "city",
+            Field::State => "state",
+            Field::Country => "country",
+            Field::CountryCode => "country_code",
+        }
+    }
+
+    /// The XMP property and how it is stored.
+    pub fn property(self) -> (&'static str, Kind) {
+        match self {
+            Field::Title => ("Xmp.dc.title", Kind::LangAlt),
+            Field::Caption => ("Xmp.dc.description", Kind::LangAlt),
+            Field::Headline => ("Xmp.photoshop.Headline", Kind::Text),
+            Field::Creator => ("Xmp.dc.creator", Kind::Seq),
+            Field::CreatorJobTitle => ("Xmp.photoshop.AuthorsPosition", Kind::Text),
+            Field::Copyright => ("Xmp.dc.rights", Kind::LangAlt),
+            Field::CopyrightUrl => ("Xmp.xmpRights.WebStatement", Kind::Text),
+            Field::Credit => ("Xmp.photoshop.Credit", Kind::Text),
+            Field::Source => ("Xmp.photoshop.Source", Kind::Text),
+            Field::Instructions => ("Xmp.photoshop.Instructions", Kind::Text),
+            Field::JobId => ("Xmp.photoshop.TransmissionReference", Kind::Text),
+            Field::Sublocation => ("Xmp.Iptc4xmpCore.Location", Kind::Text),
+            Field::City => ("Xmp.photoshop.City", Kind::Text),
+            Field::State => ("Xmp.photoshop.State", Kind::Text),
+            Field::Country => ("Xmp.photoshop.Country", Kind::Text),
+            Field::CountryCode => ("Xmp.Iptc4xmpCore.CountryCode", Kind::Text),
+        }
+    }
+
+    /// The value as shown from what [`aigle_exiv2_sys::get`] returned.
+    fn shown_value(self, raw: &str) -> String {
+        match self.property().1 {
+            Kind::Seq | Kind::Bag => raw
+                .split(ITEM_SEP)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("; "),
+            _ => raw.trim().to_string(),
+        }
+    }
+
+    fn stored_value(self, value: &str) -> String {
+        match self.property().1 {
+            Kind::Seq | Kind::Bag => value
+                .split(';')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(&ITEM_SEP.to_string()),
+            _ => value.to_string(),
+        }
+    }
+}
+
+/// Keywords as typed or read: trimmed, without empty or repeated (case-insensitive) ones,
+/// in their first order.
+pub fn clean_keywords<S: AsRef<str>>(keywords: impl IntoIterator<Item = S>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    keywords
+        .into_iter()
+        .map(|k| k.as_ref().trim().to_string())
+        .filter(|k| !k.is_empty() && seen.insert(k.to_lowercase()))
+        .collect()
+}
+
+/// Separates the levels of a keyword as typed and shown: `Places > France > Paris`.
+pub const LEVEL_SEP: &str = " > ";
+
+/// The levels of a typed keyword (`Places > France`, or `Places|France` as stored), trimmed,
+/// without empty ones.
+fn levels(tag: &str) -> Vec<&str> {
+    tag.split(['>', '|'])
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// A typed keyword in the form [`PhotoMeta::tags`] shows it; `None` when blank.
+pub fn normalize_tag(tag: &str) -> Option<String> {
+    let l = levels(tag);
+    (!l.is_empty()).then(|| l.join(LEVEL_SEP))
+}
 
 /// A named, saved state of a photo's edits.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -35,6 +182,96 @@ pub struct PhotoMeta {
     pub edits: Option<EditParams>,
     /// Oldest first.
     pub snapshots: Vec<Snapshot>,
+    /// `dc:subject`, see [`clean_keywords`]. Holds every level of the hierarchical keywords.
+    pub keywords: Vec<String>,
+    /// `lr:hierarchicalSubject`: keyword paths with levels separated by `|`
+    /// (`Places|France|Paris`).
+    pub hierarchy: Vec<String>,
+    /// Descriptive fields; absent and empty are the same.
+    pub iptc: BTreeMap<Field, String>,
+}
+
+impl PhotoMeta {
+    /// The keywords as the user sees them: each path (`Places > France > Paris`), then the
+    /// flat keywords that are not a level of one.
+    pub fn tags(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .hierarchy
+            .iter()
+            .filter_map(|p| normalize_tag(p))
+            .collect();
+        let in_paths: std::collections::HashSet<String> = self
+            .hierarchy
+            .iter()
+            .flat_map(|p| levels(p))
+            .map(str::to_lowercase)
+            .collect();
+        out.extend(
+            self.keywords
+                .iter()
+                .filter(|k| !in_paths.contains(&k.to_lowercase()))
+                .cloned(),
+        );
+        clean_keywords(out)
+    }
+
+    /// Set the keywords from what the user typed. A keyword with levels becomes a path, and
+    /// each of its levels a flat keyword, as Lightroom writes them.
+    pub fn set_tags<S: AsRef<str>>(&mut self, tags: impl IntoIterator<Item = S>) {
+        let mut flat = Vec::new();
+        let mut paths = Vec::new();
+        for t in tags {
+            let l = levels(t.as_ref());
+            match l.len() {
+                0 => {}
+                1 => flat.push(l[0].to_string()),
+                _ => {
+                    flat.extend(l.iter().map(|s| s.to_string()));
+                    paths.push(l.join("|"));
+                }
+            }
+        }
+        self.keywords = clean_keywords(flat);
+        self.hierarchy = clean_keywords(paths);
+    }
+
+    /// Every keyword at any level: the flat ones, then path levels missing from them.
+    pub fn all_keywords(&self) -> Vec<String> {
+        clean_keywords(
+            self.keywords
+                .iter()
+                .map(String::as_str)
+                .chain(self.hierarchy.iter().flat_map(|p| levels(p))),
+        )
+    }
+
+    /// The photo has keyword `k` at any level (case-insensitive).
+    pub fn has_keyword(&self, k: &str) -> bool {
+        let k = k.to_lowercase();
+        self.all_keywords().iter().any(|x| x.to_lowercase() == k)
+    }
+
+    pub fn field(&self, f: Field) -> &str {
+        self.iptc.get(&f).map_or("", String::as_str)
+    }
+
+    /// Set `f`, removing it when `value` is blank.
+    pub fn set_field(&mut self, f: Field, value: &str) {
+        let value = value.trim();
+        if value.is_empty() {
+            self.iptc.remove(&f);
+        } else {
+            self.iptc.insert(f, value.to_string());
+        }
+    }
+}
+
+/// The descriptive metadata of a sidecar as it is on disk.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Described {
+    keywords: Vec<String>,
+    hierarchy: Vec<String>,
+    iptc: BTreeMap<Field, String>,
 }
 
 /// The result of [`Store::read`].
@@ -129,6 +366,9 @@ struct Known {
     edits_locked: bool,
     /// Likewise for the snapshots.
     snapshots_locked: bool,
+    /// Keywords and fields in the sidecar; only the ones that change are written, so
+    /// translations and other details aigle does not show stay as they are.
+    described: Described,
 }
 
 /// Reads and writes sidecars and remembers what it last saw of each, so that external
@@ -188,14 +428,38 @@ impl Store {
         };
         let mut edits_locked = false;
         let mut snapshots_locked = false;
+        let mut described = Described::default();
         if let Some(packet) = &packet {
             let at = source.as_deref().unwrap_or(photo);
-            let v = aigle_exiv2_sys::get(packet, &[RATING, LABEL, SCHEMA, EDITS, SNAPSHOTS])
-                .map_err(xmp_err(at))?;
-            let [rating, label, schema, edits, snapshots] = <[Option<String>; 5]>::try_from(v)
-                .map_err(|_| xmp_err(at)(aigle_exiv2_sys::Error("short result".into())))?;
+            let mut keys = vec![RATING, LABEL, SCHEMA, EDITS, SNAPSHOTS, KEYWORDS, HIERARCHY];
+            keys.extend(Field::ALL.iter().map(|f| f.property().0));
+            let mut v = aigle_exiv2_sys::get(packet, &keys).map_err(xmp_err(at))?;
+            if v.len() != keys.len() {
+                return Err(xmp_err(at)(aigle_exiv2_sys::Error("short result".into())));
+            }
+            let fields = v.split_off(7);
+            let [rating, label, schema, edits, snapshots, keywords, hierarchy] =
+                <[Option<String>; 7]>::try_from(v).expect("length checked");
             loaded.meta.rating = rating.as_deref().and_then(parse_rating).unwrap_or(0);
             loaded.meta.label = label.filter(|l| !l.trim().is_empty());
+            loaded.meta.keywords = keywords
+                .map(|k| clean_keywords(k.split(ITEM_SEP)))
+                .unwrap_or_default();
+            loaded.meta.hierarchy = hierarchy
+                .map(|h| clean_keywords(h.split(ITEM_SEP).map(|p| levels(p).join("|"))))
+                .unwrap_or_default();
+            for (f, raw) in Field::ALL.into_iter().zip(fields) {
+                if let Some(raw) = raw {
+                    loaded.meta.set_field(f, &f.shown_value(&raw));
+                }
+            }
+            if source.is_some() {
+                described = Described {
+                    keywords: loaded.meta.keywords.clone(),
+                    hierarchy: loaded.meta.hierarchy.clone(),
+                    iptc: loaded.meta.iptc.clone(),
+                };
+            }
             let version = schema.as_deref().and_then(|s| s.trim().parse::<u32>().ok());
             if source.is_some()
                 && let Some(json) = edits
@@ -228,6 +492,7 @@ impl Store {
                 hash,
                 edits_locked,
                 snapshots_locked,
+                described,
             },
         );
         Ok(loaded)
@@ -270,28 +535,67 @@ impl Store {
                 message: e.to_string(),
             })?;
         let schema = SCHEMA_VERSION.to_string();
-        let mut changes: Vec<(&str, Option<&str>)> =
-            vec![(RATING, rating.as_deref()), (LABEL, label)];
+        let mut changes: Vec<(&str, Kind, Option<&str>)> = vec![
+            (RATING, Kind::Text, rating.as_deref()),
+            (LABEL, Kind::Text, label),
+        ];
         if !k.edits_locked {
-            changes.push((EDITS, edits.as_deref()));
+            changes.push((EDITS, Kind::Text, edits.as_deref()));
         }
         if !k.snapshots_locked {
-            changes.push((SNAPSHOTS, snapshots.as_deref()));
+            changes.push((SNAPSHOTS, Kind::Text, snapshots.as_deref()));
         }
         // The schema version describes whatever locked data is kept, so it stays as is then.
         if !k.edits_locked && !k.snapshots_locked {
             let any = edits.is_some() || snapshots.is_some();
-            changes.push((SCHEMA, any.then_some(schema.as_str())));
+            changes.push((SCHEMA, Kind::Text, any.then_some(schema.as_str())));
         }
-        if current.is_none() && changes.iter().all(|(_, v)| v.is_none()) {
+        let described = Described {
+            keywords: clean_keywords(&meta.keywords),
+            hierarchy: clean_keywords(meta.hierarchy.iter().map(|p| levels(p).join("|"))),
+            iptc: meta
+                .iptc
+                .iter()
+                .filter(|(_, v)| !v.trim().is_empty())
+                .map(|(f, v)| (*f, v.trim().to_string()))
+                .collect(),
+        };
+        let sep = ITEM_SEP.to_string();
+        let keywords = described.keywords.join(&sep);
+        if described.keywords != k.described.keywords {
+            changes.push((
+                KEYWORDS,
+                Kind::Bag,
+                (!keywords.is_empty()).then_some(keywords.as_str()),
+            ));
+        }
+        let hierarchy = described.hierarchy.join(&sep);
+        if described.hierarchy != k.described.hierarchy {
+            changes.push((
+                HIERARCHY,
+                Kind::Bag,
+                (!hierarchy.is_empty()).then_some(hierarchy.as_str()),
+            ));
+        }
+        let fields: Vec<(Field, Option<String>)> = Field::ALL
+            .into_iter()
+            .filter(|f| described.iptc.get(f) != k.described.iptc.get(f))
+            .map(|f| (f, described.iptc.get(&f).map(|v| f.stored_value(v))))
+            .collect();
+        for (f, v) in &fields {
+            let (key, kind) = f.property();
+            changes.push((key, kind, v.as_deref().filter(|v| !v.is_empty())));
+        }
+        if current.is_none() && changes.iter().all(|(_, _, v)| v.is_none()) {
             return Ok(None);
         }
 
         let old = current.as_deref().map(String::from_utf8_lossy);
         let packet =
-            aigle_exiv2_sys::update(old.as_deref(), &changes).map_err(xmp_err(&k.sidecar))?;
+            aigle_exiv2_sys::update_typed(old.as_deref(), &changes).map_err(xmp_err(&k.sidecar))?;
         write_atomic(&k.sidecar, packet.as_bytes())?;
         k.hash = Some(blake3::hash(packet.as_bytes()));
+        k.described = described;
         Ok(Some(k.sidecar.clone()))
     }
 
@@ -396,6 +700,14 @@ pub(crate) mod tests {
                 name: "Warm".into(),
                 params: edited(),
             }],
+            keywords: vec!["sea".into(), "boat".into()],
+            hierarchy: vec!["Places|Brest".into()],
+            iptc: [
+                (Field::Title, "Harbour".to_string()),
+                (Field::Creator, "Jane; John".to_string()),
+                (Field::City, "Brest".to_string()),
+            ]
+            .into(),
         };
         assert_eq!(
             store.write(&photo, &meta).unwrap(),
@@ -535,6 +847,78 @@ pub(crate) mod tests {
         let loaded = Store::new().read(&photo).unwrap();
         assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
         assert_eq!(loaded.meta, meta);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn untouched_descriptions_are_not_rewritten() {
+        let dir = temp_dir("iptc");
+        let photo = dir.join("e.nef");
+        std::fs::write(&photo, b"raw").unwrap();
+        let packet = aigle_exiv2_sys::update_typed(
+            None,
+            &[
+                ("Xmp.dc.title", Kind::LangAlt, Some("Harbour")),
+                ("Xmp.dc.subject", Kind::Bag, Some("sea")),
+            ],
+        )
+        .unwrap()
+        .replace(
+            "<rdf:li xml:lang=\"x-default\">Harbour</rdf:li>",
+            "<rdf:li xml:lang=\"x-default\">Harbour</rdf:li><rdf:li xml:lang=\"fr\">Port</rdf:li>",
+        );
+        std::fs::write(dir.join("e.xmp"), packet).unwrap();
+        let store = Store::new();
+        let mut meta = store.read(&photo).unwrap().meta;
+        assert_eq!(meta.field(Field::Title), "Harbour");
+        assert_eq!(meta.keywords, ["sea"]);
+
+        meta.rating = 2;
+        store.write(&photo, &meta).unwrap();
+        let text = std::fs::read_to_string(dir.join("e.xmp")).unwrap();
+        assert!(text.contains("Port"), "{text}");
+
+        meta.keywords.push(" Boat ".into());
+        meta.keywords.push("SEA".into());
+        meta.set_field(Field::Title, "  ");
+        meta.set_field(Field::Headline, "Night");
+        store.write(&photo, &meta).unwrap();
+        let back = Store::new().read(&photo).unwrap().meta;
+        assert_eq!(back.keywords, ["sea", "Boat"]);
+        assert_eq!(back.field(Field::Title), "");
+        assert_eq!(back.field(Field::Headline), "Night");
+        assert_eq!(back.rating, 2);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn hierarchical_keywords() {
+        let dir = temp_dir("hier");
+        let photo = dir.join("h.nef");
+        std::fs::write(&photo, b"raw").unwrap();
+        let mut meta = PhotoMeta::default();
+        meta.set_tags(["Places > France > Paris", "sea", "france", " > "]);
+        assert_eq!(meta.keywords, ["Places", "France", "Paris", "sea"]);
+        assert_eq!(meta.hierarchy, ["Places|France|Paris"]);
+        assert_eq!(meta.tags(), ["Places > France > Paris", "sea"]);
+        assert!(meta.has_keyword("paris"));
+
+        let store = Store::new();
+        store.write(&photo, &meta).unwrap();
+        let text = std::fs::read_to_string(dir.join("h.xmp")).unwrap();
+        assert!(text.contains("Places|France|Paris"), "{text}");
+        let back = Store::new().read(&photo).unwrap().meta;
+        assert_eq!(back.tags(), ["Places > France > Paris", "sea"]);
+
+        let mut less = back.clone();
+        less.set_tags(["sea"]);
+        store.write(&photo, &less).unwrap();
+        let back = Store::new().read(&photo).unwrap().meta;
+        assert_eq!(
+            (back.keywords, back.hierarchy),
+            (vec!["sea".to_string()], vec![])
+        );
+        assert_eq!(normalize_tag("a|b >c"), Some("a > b > c".into()));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -14,10 +14,12 @@ aigle-exiv2-sys.workspace = true
 blake3.workspace = true
 parking_lot.workspace = true
 rusqlite.workspace = true
+rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+trash.workspace = true
 
 [lints]
 workspace = true

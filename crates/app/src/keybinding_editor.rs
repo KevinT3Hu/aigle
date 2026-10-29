@@ -99,7 +99,8 @@ impl Draft {
 fn description(action: &str) -> (String, String) {
     let short = action.strip_prefix("aigle::").unwrap_or(action);
     let group = match short {
-        "Open" | "OpenFolder" | "Export" | "Quit" => "action_group.file",
+        "Open" | "OpenFolder" | "Export" | "Quit" | "RenamePhoto" | "MovePhotos"
+        | "TrashPhotos" => "action_group.file",
         "ShowGrid" | "ShowDevelop" | "OpenSelected" | "Left" | "Right" | "Up" | "Down"
         | "SelectAll" => "action_group.navigation",
         "Undo" | "Redo" | "CopySettings" | "PasteSettings" | "SyncSettings" | "NewPreset"
@@ -108,7 +109,9 @@ fn description(action: &str) -> (String, String) {
         | "ToggleWbPicker" | "SwapAspect" | "Cancel" => "action_group.edit",
         "ToggleZoom" | "ToggleBefore" | "ToggleSplit" | "ToggleSoftProof"
         | "ToggleGamutWarning" | "ProofSrgb" | "ProofDisplayP3" | "ProofAdobeRgb"
-        | "ToggleInfo" | "ToggleHistory" | "ToggleOverlay" => "action_group.view",
+        | "ToggleInfo" | "ToggleHistory" | "ToggleOverlay" | "ToggleMetadata" => {
+            "action_group.view"
+        }
         "LanguageEnglish" | "LanguageChinese" => "action_group.language",
         "DisplayAuto" | "DisplaySrgb" | "EditKeybindings" | "ReloadKeybindings" => {
             "action_group.settings"

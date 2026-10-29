@@ -23,16 +23,19 @@ use serde_json::Value;
 use crate::curve::CurveEditor;
 use crate::mask_panel::MaskPanel;
 use crate::meta;
+use crate::metadata_panel::MetadataPanel;
 use crate::photo::{Photo, PhotoEvent, Tool};
 use crate::retouch_panel::RetouchPanel;
 
-const PANEL_TABS: [&str; 4] = [
+const PANEL_TABS: [&str; 5] = [
     "panel.tab.adjust",
     "panel.tab.retouch",
     "panel.tab.masks",
     "panel.tab.info",
+    "panel.tab.metadata",
 ];
 const MASK_TAB: usize = 2;
+const METADATA_TAB: usize = 4;
 const GROUPS: [&[usize]; 2] = [&[0, 1, 2, 3], &[4, 5, 6, 7]];
 
 /// Buttons shown above a section's sliders.
@@ -392,6 +395,8 @@ pub struct Panel {
     curve: Entity<CurveEditor>,
     masks: Entity<MaskPanel>,
     retouch: Entity<RetouchPanel>,
+    /// Keywords and IPTC fields of the open photo, shared by every open photo.
+    metadata: Entity<MetadataPanel>,
     gesture: Option<GestureId>,
     job: Option<Task<()>>,
     import_job: Option<Task<()>>,
@@ -441,6 +446,7 @@ impl Panel {
     pub fn new(
         photo: Entity<Photo>,
         mut histogram: watch::Receiver<Option<Arc<Histogram>>>,
+        metadata: Entity<MetadataPanel>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Panel {
@@ -525,6 +531,7 @@ impl Panel {
             curve,
             masks,
             retouch,
+            metadata,
             gesture: None,
             job: None,
             import_job: None,
@@ -1446,6 +1453,7 @@ impl Render for Panel {
             match self.tab {
                 0 | 1 => self.render_tab(cx).into_any_element(),
                 MASK_TAB => self.masks.clone().into_any_element(),
+                METADATA_TAB => self.metadata.clone().into_any_element(),
                 _ => self.render_info(cx).into_any_element(),
             }
         };

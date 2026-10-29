@@ -6,7 +6,7 @@
 //! Photos are identified by their path; moving a photo outside aigle loses its history
 //! and copies.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -16,7 +16,9 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
-use crate::sidecar::{PhotoMeta, Snapshot};
+use crate::facts::Facts;
+use crate::scan::PhotoEntry;
+use crate::sidecar::{Field, PhotoMeta, Snapshot};
 
 pub type CopyId = i64;
 
@@ -57,7 +59,7 @@ pub enum CatalogError {
     Newer(i64),
 }
 
-const SCHEMA: i64 = 1;
+const SCHEMA: i64 = 2;
 
 /// [`PhotoMeta`] as stored for a virtual copy.
 #[derive(Serialize, Deserialize, Default)]
@@ -67,6 +69,9 @@ struct StoredMeta {
     label: Option<String>,
     edits: Option<EditParams>,
     snapshots: Vec<Snapshot>,
+    keywords: Vec<String>,
+    hierarchy: Vec<String>,
+    iptc: BTreeMap<Field, String>,
 }
 
 impl From<&PhotoMeta> for StoredMeta {
@@ -76,6 +81,9 @@ impl From<&PhotoMeta> for StoredMeta {
             label: m.label.clone(),
             edits: m.edits.clone(),
             snapshots: m.snapshots.clone(),
+            keywords: m.keywords.clone(),
+            hierarchy: m.hierarchy.clone(),
+            iptc: m.iptc.clone(),
         }
     }
 }
@@ -87,12 +95,21 @@ impl From<StoredMeta> for PhotoMeta {
             label: m.label,
             edits: m.edits,
             snapshots: m.snapshots,
+            keywords: m.keywords,
+            hierarchy: m.hierarchy,
+            iptc: m.iptc,
         }
     }
 }
 
 fn bytes(s: &OsStr) -> &[u8] {
     s.as_encoded_bytes()
+}
+
+/// A modification time as stored: nanoseconds since the Unix epoch.
+fn nanos(t: Option<std::time::SystemTime>) -> Option<i64> {
+    let d = t?.duration_since(std::time::UNIX_EPOCH).ok()?;
+    i64::try_from(d.as_nanos()).ok()
 }
 
 /// `(folder, file name)` columns of `path`.
@@ -147,6 +164,16 @@ impl Catalog {
                  data TEXT NOT NULL,
                  updated INTEGER NOT NULL DEFAULT (unixepoch()),
                  PRIMARY KEY (dir, file, copy)
+             );
+             CREATE TABLE IF NOT EXISTS facts (
+                 dir BLOB NOT NULL,
+                 file BLOB NOT NULL,
+                 bytes INTEGER NOT NULL,
+                 modified INTEGER NOT NULL,
+                 camera TEXT,
+                 lens TEXT,
+                 captured TEXT,
+                 PRIMARY KEY (dir, file)
              );",
         )?;
         db.pragma_update(None, "user_version", SCHEMA)?;
@@ -236,6 +263,137 @@ impl Catalog {
             "UPDATE copies SET meta = ?2 WHERE id = ?1",
             params![id, json],
         )?;
+        Ok(())
+    }
+
+    /// The stored facts of `entries` whose file has not changed size or modification time
+    /// since they were stored.
+    pub fn facts_of(
+        &self,
+        entries: &[PhotoEntry],
+    ) -> Result<HashMap<PathBuf, Facts>, CatalogError> {
+        let db = self.db.lock();
+        let mut stmt = db.prepare_cached(
+            "SELECT file, bytes, modified, camera, lens, captured FROM facts WHERE dir = ?1",
+        )?;
+        let mut by_dir: HashMap<&[u8], HashMap<&[u8], &PhotoEntry>> = HashMap::new();
+        for e in entries {
+            let (dir, file) = split(&e.path);
+            by_dir.entry(dir).or_default().insert(file, e);
+        }
+        let mut out = HashMap::new();
+        for (dir, files) in &by_dir {
+            let rows = stmt.query_map(params![dir], |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    Facts {
+                        camera: r.get(3)?,
+                        lens: r.get(4)?,
+                        captured: r.get(5)?,
+                    },
+                ))
+            })?;
+            for row in rows {
+                let (file, size, modified, facts) = row?;
+                if let Some(e) = files.get(&file[..])
+                    && i64::try_from(e.bytes).ok() == Some(size)
+                    && nanos(e.modified) == Some(modified)
+                {
+                    out.insert(e.path.clone(), facts);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Store the facts read from these files. Files without a modification time are
+    /// skipped, since a later change could not be noticed.
+    pub fn set_facts(&self, read: &[(PhotoEntry, Facts)]) -> Result<(), CatalogError> {
+        let mut db = self.db.lock();
+        let tx = db.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR REPLACE INTO facts (dir, file, bytes, modified, camera, lens, captured)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )?;
+            for (e, f) in read {
+                let (Some(modified), Ok(size)) = (nanos(e.modified), i64::try_from(e.bytes)) else {
+                    continue;
+                };
+                let (dir, file) = split(&e.path);
+                stmt.execute(params![
+                    dir, file, size, modified, f.camera, f.lens, f.captured
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn rename_copy(&self, id: CopyId, name: &str) -> Result<(), CatalogError> {
+        self.db.lock().execute(
+            "UPDATE copies SET name = ?2 WHERE id = ?1",
+            params![id, name],
+        )?;
+        Ok(())
+    }
+
+    /// The photo at `from` is now at `to`: its virtual copies and history follow it. Rows
+    /// left for an earlier photo at `to` are dropped.
+    pub fn move_photo(&self, from: &Path, to: &Path) -> Result<(), CatalogError> {
+        let (fd, ff) = split(from);
+        let (td, tf) = split(to);
+        let mut db = self.db.lock();
+        let tx = db.transaction()?;
+        tx.execute(
+            "DELETE FROM history WHERE dir = ?1 AND file = ?2",
+            params![td, tf],
+        )?;
+        tx.execute(
+            "DELETE FROM copies WHERE dir = ?1 AND file = ?2",
+            params![td, tf],
+        )?;
+        tx.execute(
+            "UPDATE history SET dir = ?3, file = ?4 WHERE dir = ?1 AND file = ?2",
+            params![fd, ff, td, tf],
+        )?;
+        tx.execute(
+            "UPDATE copies SET dir = ?3, file = ?4 WHERE dir = ?1 AND file = ?2",
+            params![fd, ff, td, tf],
+        )?;
+        tx.execute(
+            "DELETE FROM facts WHERE dir = ?1 AND file = ?2",
+            params![td, tf],
+        )?;
+        tx.execute(
+            "UPDATE facts SET dir = ?3, file = ?4 WHERE dir = ?1 AND file = ?2",
+            params![fd, ff, td, tf],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Drop everything stored for the photo at `path`: its history, its virtual copies and
+    /// theirs.
+    pub fn forget_photo(&self, path: &Path) -> Result<(), CatalogError> {
+        let (dir, file) = split(path);
+        let mut db = self.db.lock();
+        let tx = db.transaction()?;
+        tx.execute(
+            "DELETE FROM history WHERE dir = ?1 AND file = ?2",
+            params![dir, file],
+        )?;
+        tx.execute(
+            "DELETE FROM copies WHERE dir = ?1 AND file = ?2",
+            params![dir, file],
+        )?;
+        tx.execute(
+            "DELETE FROM facts WHERE dir = ?1 AND file = ?2",
+            params![dir, file],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -339,6 +497,71 @@ mod tests {
         c.remove_copy(a1).unwrap();
         assert_eq!(c.copies_of(&[a.clone(), b]).unwrap().len(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn moved_photos_keep_copies_and_history() {
+        let c = Catalog::in_memory();
+        let (a, b) = (PathBuf::from("/p/a.nef"), PathBuf::from("/q/b.nef"));
+        let id = c.create_copy(&a, "Copy 1", &meta(1.0, 3)).unwrap();
+        let d = EditParams::default();
+        let e = meta(1.0, 0).edits.unwrap();
+        c.push_history(&PhotoKey::master(&a), &d, "x", Origin::User, &e)
+            .unwrap();
+        // Leftovers of an earlier photo at the destination are dropped.
+        c.create_copy(&b, "Old", &PhotoMeta::default()).unwrap();
+        c.move_photo(&a, &b).unwrap();
+        let copies = c.copies_of(&[a.clone(), b.clone()]).unwrap();
+        assert_eq!(
+            copies.iter().map(|c| (c.id, &c.path)).collect::<Vec<_>>(),
+            [(id, &b)]
+        );
+        assert!(c.history(&PhotoKey::master(&a)).unwrap().is_none());
+        assert!(c.history(&PhotoKey::master(&b)).unwrap().is_some());
+        c.rename_copy(id, "Warm").unwrap();
+        assert_eq!(
+            c.copies_of(std::slice::from_ref(&b)).unwrap()[0].name,
+            "Warm"
+        );
+        c.forget_photo(&b).unwrap();
+        assert!(c.copies_of(std::slice::from_ref(&b)).unwrap().is_empty());
+        assert!(c.history(&PhotoKey::master(&b)).unwrap().is_none());
+    }
+
+    #[test]
+    fn facts_are_cached_while_the_file_is_unchanged() {
+        let c = Catalog::in_memory();
+        let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let entry = |name: &str, bytes: u64, modified| PhotoEntry {
+            path: PathBuf::from("/p").join(name),
+            name: name.into(),
+            bytes,
+            modified,
+        };
+        let facts = Facts {
+            camera: Some("Canon EOS 6D".into()),
+            lens: None,
+            captured: Some("2017-01-08 11:18:13".into()),
+        };
+        let (a, b) = (entry("a.cr2", 10, Some(t)), entry("b.cr2", 10, None));
+        c.set_facts(&[(a.clone(), facts.clone()), (b.clone(), facts.clone())])
+            .unwrap();
+        let found = c.facts_of(&[a.clone(), b.clone()]).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[&a.path], facts);
+        let grown = entry("a.cr2", 11, Some(t));
+        assert!(c.facts_of(&[grown]).unwrap().is_empty());
+        let touched = entry("a.cr2", 10, Some(t + std::time::Duration::from_nanos(1)));
+        assert!(c.facts_of(&[touched]).unwrap().is_empty());
+
+        c.move_photo(&a.path, Path::new("/q/a.cr2")).unwrap();
+        let moved = PhotoEntry {
+            path: PathBuf::from("/q/a.cr2"),
+            ..a.clone()
+        };
+        assert_eq!(c.facts_of(std::slice::from_ref(&moved)).unwrap().len(), 1);
+        c.forget_photo(&moved.path).unwrap();
+        assert!(c.facts_of(&[moved]).unwrap().is_empty());
     }
 
     #[test]
