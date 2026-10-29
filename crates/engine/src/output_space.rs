@@ -328,6 +328,7 @@ mod tests {
                 sharpen: None,
                 icc_data: Some(&profile),
                 resize_gamma: None,
+                overlay: None,
             };
             vips::save_file(&opts, &fill, &path).unwrap();
             let (im, hd) = vips::Image::open(&path).unwrap();

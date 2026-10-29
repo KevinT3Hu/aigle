@@ -7,6 +7,7 @@ members = [
     "crates/engine",
     "crates/doc",
     "crates/app",
+    "crates/cli",
     "crates/libraw-sys",
     "crates/rtprocess-sys",
     "crates/vips-sys",

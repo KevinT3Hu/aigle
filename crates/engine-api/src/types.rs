@@ -413,6 +413,37 @@ pub enum EncodedFormat {
     WebP {
         quality: u8,
     },
+    /// 8-bit AV1 in HEIF.
+    Avif {
+        quality: u8,
+    },
+    /// 8-bit HEVC in HEIF; needs a libheif HEVC encoder, so it may be unavailable
+    /// (`aigle_engine::format_available`).
+    Heic {
+        quality: u8,
+    },
+    /// 8-bit JPEG XL.
+    Jxl {
+        quality: u8,
+    },
+    /// Export only: the raw sensor data as a DNG, with the edits left to the sidecar.
+    Dng,
+}
+
+impl EncodedFormat {
+    /// File extension, without the dot.
+    pub fn extension(self) -> &'static str {
+        match self {
+            EncodedFormat::Jpeg { .. } => "jpg",
+            EncodedFormat::Png => "png",
+            EncodedFormat::Tiff { .. } => "tif",
+            EncodedFormat::WebP { .. } => "webp",
+            EncodedFormat::Avif { .. } => "avif",
+            EncodedFormat::Heic { .. } => "heic",
+            EncodedFormat::Jxl { .. } => "jxl",
+            EncodedFormat::Dng => "dng",
+        }
+    }
 }
 
 impl Default for EncodedFormat {
@@ -486,6 +517,79 @@ pub struct ExportOptions {
     pub artist: Option<String>,
     #[serde(default)]
     pub copyright: Option<String>,
+    /// Drawn over the output after resizing and sharpening (not on DNG exports).
+    #[serde(default)]
+    pub watermark: Option<Watermark>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum WatermarkContent {
+    /// One line of text, drawn with the system's sans-serif font.
+    Text(String),
+    /// An image file (PNG, SVG, …); its transparency is kept.
+    Image(PathBuf),
+}
+
+/// Where the watermark sits in the output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Anchor {
+    TopLeft,
+    Top,
+    TopRight,
+    Left,
+    Center,
+    Right,
+    BottomLeft,
+    Bottom,
+    #[default]
+    BottomRight,
+}
+
+impl Anchor {
+    pub const ALL: [Anchor; 9] = [
+        Anchor::TopLeft,
+        Anchor::Top,
+        Anchor::TopRight,
+        Anchor::Left,
+        Anchor::Center,
+        Anchor::Right,
+        Anchor::BottomLeft,
+        Anchor::Bottom,
+        Anchor::BottomRight,
+    ];
+
+    /// Horizontal and vertical position: 0 start, 1 centre, 2 end.
+    pub fn grid(self) -> (u32, u32) {
+        let i = Anchor::ALL.iter().position(|a| *a == self).unwrap_or(8) as u32;
+        (i % 3, i / 3)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Watermark {
+    pub content: WatermarkContent,
+    /// Height of the watermark as a fraction of the output's short edge.
+    pub size: f32,
+    pub anchor: Anchor,
+    /// Distance from the edges as a fraction of the output's short edge.
+    pub margin: f32,
+    /// 0 (invisible) to 1 (opaque).
+    pub opacity: f32,
+    /// Text colour, 8-bit sRGB.
+    pub color: [u8; 3],
+}
+
+impl Default for Watermark {
+    fn default() -> Self {
+        Watermark {
+            content: WatermarkContent::Text(String::new()),
+            size: 0.04,
+            anchor: Anchor::BottomRight,
+            margin: 0.03,
+            opacity: 0.6,
+            color: [255, 255, 255],
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -26,7 +26,7 @@ pub use files::{FileError, move_photo, sidecars_of, trash_photo};
 pub use scan::{MAX_DEPTH, PhotoEntry, scan, scan_recursive};
 pub use sidecar::{
     Error, Field, LEVEL_SEP, Loaded, PhotoMeta, SCHEMA_VERSION, Snapshot, Store, clean_keywords,
-    normalize_tag, sidecar_candidates,
+    normalize_tag, sidecar_candidates, write_dng_sidecar,
 };
 pub use worker::OPS as WORKER_OPS;
 pub use writer::{WriteReport, Writer};

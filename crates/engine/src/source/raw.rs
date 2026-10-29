@@ -266,21 +266,96 @@ pub fn decode(
         white_levels,
         color,
         noise_profile,
-        camera: CameraInfo {
-            make: meta.make.clone(),
-            model: meta.model.clone(),
-            iso: (meta.iso > 0.0).then_some(meta.iso),
-            exposure_time: (meta.shutter > 0.0).then_some(meta.shutter),
-            f_number: (meta.aperture > 0.0).then_some(meta.aperture),
-            focal_length: (meta.focal_len > 0.0).then_some(meta.focal_len),
-            focal_length_35mm: (meta.focal_35mm > 0.0).then_some(meta.focal_35mm),
-            lens_make: (!meta.lens_make.is_empty()).then(|| meta.lens_make.clone()),
-            lens_model: (!meta.lens_model.is_empty()).then(|| meta.lens_model.clone()),
-            lens_focal_range: (meta.lens_focal_range.0 > 0.0).then_some(meta.lens_focal_range),
-            shot: shot_info(&meta.shot),
-        },
+        camera: camera_info(&meta),
         sensor_clipped,
         demosaic,
+    })
+}
+
+fn camera_info(meta: &Meta) -> CameraInfo {
+    CameraInfo {
+        make: meta.make.clone(),
+        model: meta.model.clone(),
+        iso: (meta.iso > 0.0).then_some(meta.iso),
+        exposure_time: (meta.shutter > 0.0).then_some(meta.shutter),
+        f_number: (meta.aperture > 0.0).then_some(meta.aperture),
+        focal_length: (meta.focal_len > 0.0).then_some(meta.focal_len),
+        focal_length_35mm: (meta.focal_35mm > 0.0).then_some(meta.focal_35mm),
+        lens_make: (!meta.lens_make.is_empty()).then(|| meta.lens_make.clone()),
+        lens_model: (!meta.lens_model.is_empty()).then(|| meta.lens_model.clone()),
+        lens_focal_range: (meta.lens_focal_range.0 > 0.0).then_some(meta.lens_focal_range),
+        shot: shot_info(&meta.shot),
+    }
+}
+
+/// The sensor data of a Bayer or X-Trans raw for DNG export (`crate::dng`): the visible
+/// area in sensor orientation, black-subtracted and scaled so that every channel's white
+/// level (camconst when known) lands on one `white`, above a `black` pedestal that keeps
+/// noise below the black level.
+pub fn mosaic(
+    path: &Path,
+    cancel: Option<&CancelToken>,
+    admit: &mut dyn FnMut(u64) -> Result<(), LoadError>,
+) -> Result<crate::dng::Mosaic, LoadError> {
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("dng"))
+    {
+        return Err(fail("the photo is already a DNG"));
+    }
+    let mut raw = Raw::open(path).map_err(fail)?;
+    let (w, h, rw, rh) = raw.size();
+    admit(8 * w as u64 * h as u64 + 2 * rw as u64 * rh as u64 + 32 * super::MIB)?;
+    raw.unpack(&|| cancel.is_some_and(|c| c.is_cancelled()))
+        .map_err(|e| {
+            if cancel.is_some_and(|c| c.is_cancelled()) {
+                LoadError::Cancelled
+            } else {
+                fail(e)
+            }
+        })?;
+    check(cancel)?;
+    let meta = raw.meta().map_err(fail)?;
+    let kind = meta
+        .kind
+        .clone()
+        .map_err(|why| fail(format!("{}: unsupported raw ({why})", path.display())))?;
+    if kind == Kind::Rgb {
+        return Err(fail("DNG export needs mosaic (Bayer or X-Trans) raw data"));
+    }
+    let (w, h) = (meta.width, meta.height);
+    let (cfa, _, _) = raw
+        .copy_cfa(w, h, white_levels(&meta, path))
+        .map_err(fail)?;
+    drop(raw);
+    check(cancel)?;
+    let floor = meta.black[..3]
+        .iter()
+        .cloned()
+        .fold(f32::MAX, f32::min)
+        .max(0.0);
+    let black = floor.round().min(4096.0);
+    let scale = (meta.white - floor).clamp(255.0, 65535.0 - black);
+    let data: Vec<u16> = cfa
+        .par_iter()
+        .map(|v| (black + v * scale).round().clamp(0.0, 65535.0) as u16)
+        .collect();
+    let xyz_to_cam: Mat3 = [0, 1, 2].map(|r| meta.cam_xyz[r].map(|v| v as f64));
+    Ok(crate::dng::Mosaic {
+        width: w,
+        height: h,
+        cfa: meta.cfa,
+        xtrans: kind == Kind::XTrans,
+        black: black as u16,
+        white: (black + scale).round() as u16,
+        orientation: flip_to_exif(meta.flip),
+        xyz_to_cam: (xyz_to_cam.iter().flatten().any(|v| *v != 0.0)
+            && color::invert(&xyz_to_cam).is_some())
+        .then_some(xyz_to_cam),
+        as_shot: reference_wb(&meta),
+        baseline_exposure: meta.baseline_exposure,
+        camera: camera_info(&meta),
+        data,
     })
 }
 

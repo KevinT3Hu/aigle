@@ -329,8 +329,9 @@ pub fn sidecar_candidates(photo: &Path) -> [PathBuf; 2] {
     [PathBuf::from(full), photo.with_extension("xmp")]
 }
 
-/// Another photo in the same folder has the same stem (`IMG_0001.CR3` + `IMG_0001.JPG`).
-fn has_sibling(photo: &Path) -> bool {
+/// Another photo in the same folder has the same stem and satisfies `which`
+/// (`IMG_0001.CR3` + `IMG_0001.JPG`).
+fn has_sibling(photo: &Path, which: fn(&Path) -> bool) -> bool {
     let (Some(dir), Some(stem)) = (photo.parent(), photo.file_stem()) else {
         return false;
     };
@@ -339,20 +340,27 @@ fn has_sibling(photo: &Path) -> bool {
     };
     rd.flatten().any(|e| {
         let p = e.path();
-        p != photo && p.file_stem() == Some(stem) && is_photo_path(&p)
+        p != photo && p.file_stem() == Some(stem) && which(&p)
     })
 }
 
+fn is_dng(p: &Path) -> bool {
+    p.extension().is_some_and(|e| e.eq_ignore_ascii_case("dng"))
+}
+
 /// The sidecar to read (if one exists) and the one to write. The short name is shared by
-/// photos with the same stem, so it is only attributed to a raw or to a photo without such
-/// a sibling.
+/// photos with the same stem, so it is only attributed to a photo without such a sibling,
+/// or to a raw; a DNG next to the raw it was converted from leaves it to that raw.
 fn resolve(photo: &Path) -> (Option<PathBuf>, PathBuf) {
     let [full, short] = sidecar_candidates(photo);
     if full.is_file() {
         return (Some(full.clone()), full);
     }
-    let sibling = has_sibling(photo);
-    if short.is_file() && (is_raw_path(photo) || !sibling) {
+    let sibling = has_sibling(photo, is_photo_path);
+    let owns_short = !sibling
+        || (is_raw_path(photo)
+            && !(is_dng(photo) && has_sibling(photo, |p| is_raw_path(p) && !is_dng(p))));
+    if short.is_file() && owns_short {
         return (Some(short.clone()), short);
     }
     (None, if sibling { full } else { short })
@@ -657,6 +665,23 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), Error> {
         let _ = std::fs::remove_file(&tmp);
     }
     r.map_err(io_err(path))
+}
+
+/// Give `dng`, converted from the photo `source`, the source's metadata (rating, label,
+/// keywords, fields, snapshots) with `edits`, so that it opens as edited. Returns the
+/// sidecar written, `None` when there was nothing to store.
+pub fn write_dng_sidecar(
+    source: Option<&Path>,
+    dng: &Path,
+    edits: &EditParams,
+) -> Result<Option<PathBuf>, Error> {
+    let store = Store::new();
+    let mut meta = match source {
+        Some(p) => store.read(p)?.meta,
+        None => PhotoMeta::default(),
+    };
+    meta.edits = (*edits != EditParams::default()).then(|| edits.clone());
+    store.write(dng, &meta)
 }
 
 #[cfg(test)]

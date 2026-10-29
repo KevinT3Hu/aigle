@@ -214,6 +214,7 @@ mod tests {
                 sharpen: None,
                 icc_data: None,
                 resize_gamma: None,
+                overlay: None,
             };
             let bytes = vips::save_buffer(&opts, &fill).unwrap();
             let ext = &suffix[1..5];

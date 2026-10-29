@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use aigle_core::EditParams;
 use aigle_engine_api::{
-    DisplayProfileId, EncodedFormat, Engine, ExportOptions, MetadataPolicy, OutputSharpening,
-    SourceRef,
+    Anchor, DisplayProfileId, EncodedFormat, Engine, ExportOptions, MetadataPolicy,
+    OutputSharpening, SourceRef, Watermark, WatermarkContent,
 };
 use gpui::{
     Context, Entity, EventEmitter, IntoElement, ParentElement, PathPromptOptions, Render,
@@ -29,28 +29,48 @@ pub enum Format {
     Tiff8,
     Tiff16,
     WebP,
+    Avif,
+    Heic,
+    Jxl,
+    Dng,
 }
 
 impl Format {
-    const ALL: [(Format, &'static str); 5] = [
+    const ALL: [(Format, &'static str); 9] = [
         (Format::Jpeg, "JPEG"),
         (Format::Png, "PNG"),
         (Format::Tiff8, "export.format.tiff8"),
         (Format::Tiff16, "export.format.tiff16"),
         (Format::WebP, "WebP"),
+        (Format::Avif, "AVIF"),
+        (Format::Heic, "HEIC"),
+        (Format::Jxl, "JPEG XL"),
+        (Format::Dng, "DNG"),
     ];
 
+    /// The formats this build can write.
+    fn offered() -> Vec<(Format, &'static str)> {
+        Format::ALL
+            .into_iter()
+            .filter(|(f, _)| aigle_engine::format_available(f.encoded(90)))
+            .collect()
+    }
+
     pub fn extension(self) -> &'static str {
-        match self {
-            Format::Jpeg => "jpg",
-            Format::Png => "png",
-            Format::Tiff8 | Format::Tiff16 => "tif",
-            Format::WebP => "webp",
-        }
+        self.encoded(90).extension()
     }
 
     fn lossy(self) -> bool {
-        matches!(self, Format::Jpeg | Format::WebP)
+        matches!(
+            self,
+            Format::Jpeg | Format::WebP | Format::Avif | Format::Heic | Format::Jxl
+        )
+    }
+
+    /// Raw data rather than a rendering: size, colour space, sharpening and watermark do
+    /// not apply.
+    pub fn is_raw(self) -> bool {
+        self == Format::Dng
     }
 
     pub fn encoded(self, quality: u8) -> EncodedFormat {
@@ -60,11 +80,75 @@ impl Format {
             Format::Tiff8 => EncodedFormat::Tiff { sixteen_bit: false },
             Format::Tiff16 => EncodedFormat::Tiff { sixteen_bit: true },
             Format::WebP => EncodedFormat::WebP { quality },
+            Format::Avif => EncodedFormat::Avif { quality },
+            Format::Heic => EncodedFormat::Heic { quality },
+            Format::Jxl => EncodedFormat::Jxl { quality },
+            Format::Dng => EncodedFormat::Dng,
         }
     }
 }
 
 pub const DEFAULT_TEMPLATE: &str = "{name}-edit";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WatermarkKind {
+    #[default]
+    Off,
+    Text,
+    Image,
+}
+
+/// The watermark part of the export settings; text and image are both kept so switching
+/// between them loses neither.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WatermarkSettings {
+    pub kind: WatermarkKind,
+    pub text: String,
+    pub image: Option<PathBuf>,
+    /// Height in percent of the output's short edge.
+    pub size: f32,
+    /// Percent.
+    pub opacity: f32,
+    pub anchor: Anchor,
+    pub color: [u8; 3],
+}
+
+impl Default for WatermarkSettings {
+    fn default() -> Self {
+        let d = Watermark::default();
+        WatermarkSettings {
+            kind: WatermarkKind::Off,
+            text: String::new(),
+            image: None,
+            size: d.size * 100.0,
+            opacity: d.opacity * 100.0,
+            anchor: d.anchor,
+            color: d.color,
+        }
+    }
+}
+
+impl WatermarkSettings {
+    /// The engine's watermark, `None` when off or incomplete.
+    pub fn watermark(&self) -> Option<Watermark> {
+        let content = match self.kind {
+            WatermarkKind::Off => return None,
+            WatermarkKind::Text if self.text.trim().is_empty() => return None,
+            WatermarkKind::Text => WatermarkContent::Text(self.text.trim().to_string()),
+            WatermarkKind::Image => WatermarkContent::Image(self.image.clone()?),
+        };
+        Some(Watermark {
+            content,
+            size: self.size / 100.0,
+            anchor: self.anchor,
+            opacity: self.opacity / 100.0,
+            color: self.color,
+            ..Watermark::default()
+        })
+    }
+}
 
 /// Export settings, kept between exports and saved in export presets.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -82,6 +166,7 @@ pub struct Settings {
     /// Written instead of the camera's artist / copyright when not empty.
     pub artist: String,
     pub copyright: String,
+    pub watermark: WatermarkSettings,
     /// Folder of the last export; not part of presets.
     #[serde(skip)]
     pub dir: Option<PathBuf>,
@@ -99,6 +184,7 @@ impl Default for Settings {
             metadata: MetadataPolicy::All,
             artist: String::new(),
             copyright: String::new(),
+            watermark: WatermarkSettings::default(),
             dir: None,
         }
     }
@@ -165,6 +251,7 @@ pub fn with_extension(path: PathBuf, format: Format) -> PathBuf {
         .is_some_and(|e| match format {
             Format::Jpeg => e == "jpg" || e == "jpeg",
             Format::Tiff8 | Format::Tiff16 => e == "tif" || e == "tiff",
+            Format::Heic => e == "heic" || e == "heif",
             f => e == f.extension(),
         });
     if ok {
@@ -242,6 +329,9 @@ pub struct ExportDialog {
     artist: Entity<InputState>,
     copyright: Entity<InputState>,
     preset_name: Entity<InputState>,
+    wm_text: Entity<InputState>,
+    wm_size: Entity<SliderState>,
+    wm_opacity: Entity<SliderState>,
     presets: Vec<ExportPreset>,
     presets_path: Option<PathBuf>,
     error: Option<String>,
@@ -284,6 +374,39 @@ impl ExportDialog {
         });
         let preset_name =
             cx.new(|cx| InputState::new(window, cx).placeholder(crate::i18n::t("presets.name")));
+        let wm_text = cx.new(|cx| {
+            let mut s = InputState::new(window, cx)
+                .placeholder(crate::i18n::t("export.watermark.text_hint"));
+            s.set_value(settings.watermark.text.clone(), window, cx);
+            s
+        });
+        let percent = |min: f32, max: f32, v: f32| {
+            move |_: &mut Context<SliderState>| {
+                SliderState::new()
+                    .min(min)
+                    .max(max)
+                    .step(1.0)
+                    .default_value(v)
+            }
+        };
+        let wm_size = cx.new(percent(1.0, 25.0, settings.watermark.size));
+        let wm_opacity = cx.new(percent(5.0, 100.0, settings.watermark.opacity));
+        let slide = |s: &Entity<SliderState>,
+                     set: fn(&mut WatermarkSettings, f32),
+                     window: &mut Window,
+                     cx: &mut Context<Self>| {
+            cx.subscribe_in(s, window, move |d, _, ev: &SliderEvent, _, cx| {
+                let v = match ev {
+                    SliderEvent::Change(v) | SliderEvent::Release(v) => v.start(),
+                };
+                set(&mut d.settings.watermark, v.round());
+                cx.notify();
+            })
+        };
+        let wm_subs = [
+            slide(&wm_size, |w, v| w.size = v, window, cx),
+            slide(&wm_opacity, |w, v| w.opacity = v, window, cx),
+        ];
         let bind =
             |input: &Entity<InputState>, set: fn(&mut Settings, String), cx: &mut Context<Self>| {
                 cx.subscribe(input, move |d, input, ev: &InputEvent, cx| {
@@ -293,7 +416,7 @@ impl ExportDialog {
                     }
                 })
             };
-        let subs = vec![
+        let mut subs = vec![
             cx.subscribe_in(&quality, window, |d, _, ev: &SliderEvent, _, cx| {
                 let v = match ev {
                     SliderEvent::Change(v) | SliderEvent::Release(v) => v.start(),
@@ -304,12 +427,14 @@ impl ExportDialog {
             bind(&template, |s, v| s.template = v, cx),
             bind(&artist, |s, v| s.artist = v, cx),
             bind(&copyright, |s, v| s.copyright = v, cx),
+            bind(&wm_text, |s, v| s.watermark.text = v, cx),
             cx.subscribe(&preset_name, |d, _, ev: &InputEvent, cx| {
                 if let InputEvent::PressEnter { .. } = ev {
                     d.save_preset(cx);
                 }
             }),
         ];
+        subs.extend(wm_subs);
         let presets_path = presets_path();
         ExportDialog {
             presets: load_presets(presets_path.as_deref()),
@@ -321,6 +446,9 @@ impl ExportDialog {
             artist,
             copyright,
             preset_name,
+            wm_text,
+            wm_size,
+            wm_opacity,
             error: None,
             prompt: None,
             _subs: subs,
@@ -411,10 +539,15 @@ impl ExportDialog {
         let s = self.settings.clone();
         self.quality
             .update(cx, |q, cx| q.set_value(s.quality as f32, window, cx));
+        self.wm_size
+            .update(cx, |q, cx| q.set_value(s.watermark.size, window, cx));
+        self.wm_opacity
+            .update(cx, |q, cx| q.set_value(s.watermark.opacity, window, cx));
         for (input, value) in [
             (&self.template, s.template),
             (&self.artist, s.artist),
             (&self.copyright, s.copyright),
+            (&self.wm_text, s.watermark.text),
         ] {
             input.update(cx, |i, cx| i.set_value(value, window, cx));
         }
@@ -478,6 +611,136 @@ impl ExportDialog {
             }))
     }
 
+    fn choose_watermark_image(&mut self, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(crate::i18n::t("export.choose").into()),
+        });
+        self.prompt = Some(cx.spawn(async move |this, cx| {
+            let chosen = rx.await;
+            let _ = this.update(cx, |d, cx| {
+                d.prompt = None;
+                if let Ok(Ok(Some(paths))) = chosen
+                    && let Some(p) = paths.into_iter().next()
+                {
+                    d.settings.watermark.image = Some(p);
+                    d.settings.watermark.kind = WatermarkKind::Image;
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn render_watermark(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let w = self.settings.watermark.clone();
+        let muted = cx.theme().muted_foreground;
+        let label = |t: String| div().text_xs().text_color(muted).child(t);
+        let slider_row = |key: &str, value: f32, slider: &Entity<SliderState>| {
+            v_flex()
+                .gap_1()
+                .child(
+                    h_flex()
+                        .justify_between()
+                        .child(label(crate::i18n::t(key)))
+                        .child(div().text_xs().child(format!("{value:.0} %"))),
+                )
+                .child(Slider::new(slider))
+        };
+        let grid = v_flex().gap_1().children((0..3).map(|row| {
+            h_flex().gap_1().children((0..3).map(|col| {
+                let a = Anchor::ALL[row * 3 + col];
+                Button::new(SharedString::from(format!("wm-anchor-{}", row * 3 + col)))
+                    .label("●")
+                    .xsmall()
+                    .selected(a == w.anchor)
+                    .tooltip(crate::i18n::t(anchor_key(a)))
+                    .on_click(cx.listener(move |d, _, _, cx| {
+                        d.settings.watermark.anchor = a;
+                        cx.notify();
+                    }))
+            }))
+        }));
+        let image_name = w
+            .image
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| crate::i18n::t("export.watermark.no_image"));
+        v_flex()
+            .gap_2()
+            .child(self.choice(
+                "wm-kind",
+                vec![
+                    (WatermarkKind::Off, "export.watermark.off"),
+                    (WatermarkKind::Text, "export.watermark.text"),
+                    (WatermarkKind::Image, "export.watermark.image"),
+                ],
+                w.kind,
+                |s, k| s.watermark.kind = k,
+                cx,
+            ))
+            .when(w.kind == WatermarkKind::Text, |d| {
+                d.child(Input::new(&self.wm_text).small())
+                    .child(self.choice(
+                        "wm-color",
+                        vec![
+                            ([255, 255, 255], "export.watermark.white"),
+                            ([128, 128, 128], "export.watermark.grey"),
+                            ([0, 0, 0], "export.watermark.black"),
+                        ],
+                        w.color,
+                        |s, c| s.watermark.color = c,
+                        cx,
+                    ))
+            })
+            .when(w.kind == WatermarkKind::Image, |d| {
+                d.child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_xs()
+                                .truncate()
+                                .child(image_name),
+                        )
+                        .child(
+                            Button::new("wm-image")
+                                .label(crate::i18n::t("export.change_dir"))
+                                .small()
+                                .on_click(cx.listener(|d, _, _, cx| d.choose_watermark_image(cx))),
+                        ),
+                )
+            })
+            .when(w.kind != WatermarkKind::Off, |d| {
+                d.child(
+                    h_flex()
+                        .gap_3()
+                        .items_start()
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .gap_2()
+                                .child(slider_row("export.watermark.size", w.size, &self.wm_size))
+                                .child(slider_row(
+                                    "export.watermark.opacity",
+                                    w.opacity,
+                                    &self.wm_opacity,
+                                )),
+                        )
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(label(crate::i18n::t("export.watermark.position")))
+                                .child(grid),
+                        ),
+                )
+            })
+    }
+
     fn render_presets(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let chips = self.presets.iter().enumerate().map(|(i, p)| {
             h_flex()
@@ -516,6 +779,21 @@ impl ExportDialog {
     }
 }
 
+/// Catalog key of the name of a watermark position.
+fn anchor_key(a: Anchor) -> &'static str {
+    match a {
+        Anchor::TopLeft => "export.watermark.top_left",
+        Anchor::Top => "export.watermark.top",
+        Anchor::TopRight => "export.watermark.top_right",
+        Anchor::Left => "export.watermark.left",
+        Anchor::Center => "export.watermark.center",
+        Anchor::Right => "export.watermark.right",
+        Anchor::BottomLeft => "export.watermark.bottom_left",
+        Anchor::Bottom => "export.watermark.bottom",
+        Anchor::BottomRight => "export.watermark.bottom_right",
+    }
+}
+
 /// Start the export job; dropping the returned job cancels it.
 pub fn run(
     engine: &Engine,
@@ -524,20 +802,33 @@ pub fn run(
     path: PathBuf,
 ) -> aigle_engine_api::Job<aigle_engine_api::ExportResult> {
     let text = |s: &str| (!s.trim().is_empty()).then(|| s.trim().to_string());
+    let raw = settings.format.is_raw();
     engine.export(
         request.source.clone(),
         request.params.clone(),
         ExportOptions {
             path,
             format: settings.format.encoded(settings.quality),
-            long_edge: settings.long_edge,
+            long_edge: settings.long_edge.filter(|_| !raw),
             output: settings.output.clone(),
             sharpening: settings.sharpening,
             metadata: settings.metadata,
             artist: text(&settings.artist),
             copyright: text(&settings.copyright),
+            watermark: settings.watermark.watermark().filter(|_| !raw),
         },
     )
+}
+
+/// Give an exported DNG the photo's sidecar metadata with `request.params` as its edits.
+pub fn write_dng_sidecar(request: &Request, dng: &Path) -> Result<(), String> {
+    let source = match &request.source {
+        SourceRef::File(p) => Some(p.as_path()),
+        _ => None,
+    };
+    aigle_library::write_dng_sidecar(source, dng, &request.params)
+        .map(drop)
+        .map_err(|e| e.to_string())
 }
 
 impl Render for ExportDialog {
@@ -566,6 +857,59 @@ impl Render for ExportDialog {
             )
         });
         let dir = self.dir();
+        let raw = s.format.is_raw();
+        let rendering = (!raw).then(|| {
+            v_flex()
+                .gap_3()
+                .child(label(crate::i18n::t("export.long_edge")))
+                .child(self.choice(
+                    "size",
+                    SIZES.to_vec(),
+                    s.long_edge,
+                    |s, v| s.long_edge = v,
+                    cx,
+                ))
+                .child(label(crate::i18n::t("export.color_space")))
+                .child(self.choice(
+                    "cs",
+                    vec![
+                        (DisplayProfileId::Srgb, "sRGB"),
+                        (DisplayProfileId::DisplayP3, "Display P3"),
+                        (DisplayProfileId::AdobeRgb, "Adobe RGB"),
+                        (DisplayProfileId::ProPhoto, "ProPhoto RGB"),
+                        (DisplayProfileId::Rec2020, "Rec. 2020"),
+                    ],
+                    s.output.clone(),
+                    |s, v| s.output = v,
+                    cx,
+                ))
+                .when(
+                    s.output == DisplayProfileId::ProPhoto && s.format != Format::Tiff16,
+                    |d| {
+                        d.child(
+                            div()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(crate::i18n::t("export.prophoto_note")),
+                        )
+                    },
+                )
+                .child(label(crate::i18n::t("export.sharpening")))
+                .child(self.choice(
+                    "sharpen",
+                    vec![
+                        (OutputSharpening::Off, "export.sharpening.off"),
+                        (OutputSharpening::Low, "export.sharpening.low"),
+                        (OutputSharpening::Standard, "export.sharpening.standard"),
+                        (OutputSharpening::High, "export.sharpening.high"),
+                    ],
+                    s.sharpening,
+                    |s, v| s.sharpening = v,
+                    cx,
+                ))
+                .child(label(crate::i18n::t("export.watermark")))
+                .child(self.render_watermark(cx))
+        });
         let card = v_flex()
             .id("export-card")
             .w(px(480.0))
@@ -588,13 +932,7 @@ impl Render for ExportDialog {
             .child(label(crate::i18n::t("export.presets")))
             .child(self.render_presets(cx))
             .child(label(crate::i18n::t("export.format")))
-            .child(self.choice(
-                "fmt",
-                Format::ALL.to_vec(),
-                s.format,
-                |s, f| s.format = f,
-                cx,
-            ))
+            .child(self.choice("fmt", Format::offered(), s.format, |s, f| s.format = f, cx))
             .when(s.format.lossy(), |d| {
                 d.child(
                     h_flex()
@@ -604,52 +942,15 @@ impl Render for ExportDialog {
                 )
                 .child(Slider::new(&self.quality))
             })
-            .child(label(crate::i18n::t("export.long_edge")))
-            .child(self.choice(
-                "size",
-                SIZES.to_vec(),
-                s.long_edge,
-                |s, v| s.long_edge = v,
-                cx,
-            ))
-            .child(label(crate::i18n::t("export.color_space")))
-            .child(self.choice(
-                "cs",
-                vec![
-                    (DisplayProfileId::Srgb, "sRGB"),
-                    (DisplayProfileId::DisplayP3, "Display P3"),
-                    (DisplayProfileId::AdobeRgb, "Adobe RGB"),
-                    (DisplayProfileId::ProPhoto, "ProPhoto RGB"),
-                    (DisplayProfileId::Rec2020, "Rec. 2020"),
-                ],
-                s.output.clone(),
-                |s, v| s.output = v,
-                cx,
-            ))
-            .when(
-                s.output == DisplayProfileId::ProPhoto && s.format != Format::Tiff16,
-                |d| {
-                    d.child(
-                        div()
-                            .text_xs()
-                            .text_color(muted)
-                            .child(crate::i18n::t("export.prophoto_note")),
-                    )
-                },
-            )
-            .child(label(crate::i18n::t("export.sharpening")))
-            .child(self.choice(
-                "sharpen",
-                vec![
-                    (OutputSharpening::Off, "export.sharpening.off"),
-                    (OutputSharpening::Low, "export.sharpening.low"),
-                    (OutputSharpening::Standard, "export.sharpening.standard"),
-                    (OutputSharpening::High, "export.sharpening.high"),
-                ],
-                s.sharpening,
-                |s, v| s.sharpening = v,
-                cx,
-            ))
+            .when(raw, |d| {
+                d.child(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(crate::i18n::t("export.dng_note")),
+                )
+            })
+            .when_some(rendering, |d, r| d.child(r))
             .child(label(crate::i18n::t("export.metadata")))
             .child(self.choice(
                 "meta",
@@ -784,6 +1085,69 @@ mod tests {
         assert_eq!(p, PathBuf::from("/x/a.tif"));
         let p = with_extension(PathBuf::from("/x/a.png"), Format::WebP);
         assert_eq!(p, PathBuf::from("/x/a.webp"));
+    }
+
+    #[test]
+    fn watermark_settings_to_engine() {
+        let mut w = WatermarkSettings::default();
+        assert_eq!(w.watermark(), None);
+        w.kind = WatermarkKind::Text;
+        assert_eq!(w.watermark(), None, "empty text draws nothing");
+        w.text = " © Me ".into();
+        w.size = 10.0;
+        let e = w.watermark().unwrap();
+        assert_eq!(e.content, WatermarkContent::Text("© Me".into()));
+        assert!((e.size - 0.1).abs() < 1e-6 && (e.opacity - 0.6).abs() < 1e-6);
+        w.kind = WatermarkKind::Image;
+        assert_eq!(w.watermark(), None, "no image chosen");
+        w.image = Some(PathBuf::from("/logo.png"));
+        assert_eq!(
+            w.watermark().unwrap().content,
+            WatermarkContent::Image(PathBuf::from("/logo.png"))
+        );
+        assert_eq!(
+            with_extension(PathBuf::from("/x/a.HEIF"), Format::Heic),
+            PathBuf::from("/x/a.HEIF")
+        );
+        assert_eq!(
+            with_extension(PathBuf::from("/x/a.jpg"), Format::Jxl),
+            PathBuf::from("/x/a.jxl")
+        );
+    }
+
+    #[test]
+    fn dng_gets_the_photos_metadata_and_edits() {
+        let dir = std::env::temp_dir().join(format!("aigle-dng-meta-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let photo = dir.join("a.nef");
+        std::fs::write(&photo, b"").unwrap();
+        let store = aigle_library::Store::new();
+        let meta = aigle_library::PhotoMeta {
+            rating: 4,
+            keywords: vec!["tree".into()],
+            ..Default::default()
+        };
+        store.write(&photo, &meta).unwrap();
+        let mut params = EditParams::default();
+        params.light.exposure = 0.7;
+        let request = Request {
+            params: Arc::new(params.clone()),
+            ..request(photo.to_str().unwrap())
+        };
+        let dng = dir.join("a.dng");
+        std::fs::write(&dng, b"").unwrap();
+        write_dng_sidecar(&request, &dng).unwrap();
+        let read = aigle_library::Store::new().read(&dng).unwrap();
+        assert_eq!(read.sidecar, Some(dir.join("a.dng.xmp")));
+        assert_eq!(read.meta.rating, 4);
+        assert_eq!(read.meta.keywords, ["tree"]);
+        assert_eq!(read.meta.edits, Some(params));
+        let own = aigle_library::Store::new().read(&photo).unwrap();
+        assert_eq!(
+            (own.sidecar, own.meta.edits),
+            (Some(dir.join("a.xmp")), None)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

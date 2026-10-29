@@ -1,0 +1,26 @@
+[package]
+name = "aigle-cli"
+description = "aigle command line: batch export without the GUI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "aigle"
+path = "src/main.rs"
+
+[dependencies]
+aigle-core.workspace = true
+aigle-engine.workspace = true
+aigle-engine-api.workspace = true
+aigle-isolate.workspace = true
+aigle-library.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+signal-hook = "0.4"
+tracing.workspace = true
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+
+[lints]
+workspace = true

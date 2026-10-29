@@ -558,3 +558,104 @@ fn decode_cancels_within_the_demosaic() {
         );
     }
 }
+
+/// DNG export keeps the raw data: the DNG renders like the original under the same edits,
+/// carries the camera and lens facts and an embedded preview. With `AIGLE_TEST_OUT` set the
+/// DNGs are kept there.
+#[test]
+fn dng_export_round_trips() {
+    let keep = std::env::var_os("AIGLE_TEST_OUT").map(std::path::PathBuf::from);
+    let dir = keep
+        .clone()
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("aigle-dng-{}", std::process::id())));
+    std::fs::create_dir_all(&dir).unwrap();
+    for path in samples() {
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("dng"))
+        {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let e = engine();
+        let mut p = EditParams::default();
+        p.light.exposure = 0.3;
+        let p = Arc::new(p);
+        let out = dir.join(format!("{name}.dng"));
+        let t0 = Instant::now();
+        let r = e
+            .export(
+                SourceRef::File(path.clone()),
+                p.clone(),
+                aigle_engine_api::ExportOptions {
+                    path: out.clone(),
+                    format: EncodedFormat::Dng,
+                    ..Default::default()
+                },
+            )
+            .wait();
+        let r = match r {
+            Ok(r) => r,
+            Err(err) => {
+                eprintln!("{name}: no DNG ({err})");
+                continue;
+            }
+        };
+        let size = std::fs::metadata(&out).unwrap().len();
+        eprintln!(
+            "{name}: DNG {}×{} {:.1} MB (raw {:.1} MB) in {:.2?}",
+            r.width,
+            r.height,
+            size as f64 / 1e6,
+            std::fs::metadata(&path).unwrap().len() as f64 / 1e6,
+            t0.elapsed()
+        );
+        let render = |src: &std::path::Path| {
+            let s = e.open(SourceRef::File(src.to_path_buf()));
+            let info = wait_ready(&s);
+            let img = s
+                .render_offscreen(
+                    p.clone(),
+                    OffscreenOpts {
+                        long_edge: 600,
+                        format: EncodedFormat::Png,
+                        before_after: false,
+                    },
+                )
+                .wait()
+                .unwrap();
+            (info, aigle_vips_sys::decode_rgb8(&img.bytes).unwrap())
+        };
+        let (ia, a) = render(&path);
+        let (ib, b) = render(&out);
+        assert_eq!(ia.source_size, ib.source_size, "{name}");
+        assert_eq!((r.width, r.height), (ia.source_size.w, ia.source_size.h));
+        let (ca, cb) = (ia.camera.clone().unwrap(), ib.camera.clone().unwrap());
+        assert_eq!((ca.make, ca.model), (cb.make, cb.model), "{name}");
+        assert_eq!(ca.lens_model, cb.lens_model, "{name}");
+        assert_eq!(ca.iso, cb.iso, "{name}");
+        assert!(
+            (ia.as_shot.temperature - ib.as_shot.temperature).abs() < 30.0,
+            "{name}: as-shot {:?} vs {:?}",
+            ia.as_shot,
+            ib.as_shot
+        );
+        assert_eq!((a.0, a.1), (b.0, b.1), "{name}");
+        let mean =
+            a.2.iter()
+                .zip(&b.2)
+                .map(|(x, y)| x.abs_diff(*y) as f64)
+                .sum::<f64>()
+                / a.2.len() as f64;
+        eprintln!("{name}: mean |Δ| {mean:.3}");
+        assert!(mean < 1.0, "{name}: DNG renders differently ({mean:.3})");
+        let t = e
+            .thumbnail(SourceRef::File(out.clone()), None, 256, Priority::default())
+            .wait()
+            .unwrap();
+        assert!(t.embedded, "{name}: no embedded preview");
+    }
+    if keep.is_none() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

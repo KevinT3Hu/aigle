@@ -463,6 +463,80 @@ fn wide_gamut_exports_decode_like_srgb() {
 }
 
 #[test]
+fn export_modern_formats_with_watermark() {
+    use aigle_engine_api::{Anchor, Watermark, WatermarkContent};
+    let e = engine();
+    let dir = std::env::temp_dir().join(format!("aigle-test-wm-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let decode =
+        |p: &std::path::Path| aigle_vips_sys::decode_rgb8(&std::fs::read(p).unwrap()).unwrap();
+    let export = |format: EncodedFormat, watermark: Option<Watermark>, name: &str| {
+        let path = dir.join(name);
+        e.export(
+            synthetic(800, 400),
+            Arc::new(EditParams::default()),
+            ExportOptions {
+                path: path.clone(),
+                format,
+                watermark,
+                ..Default::default()
+            },
+        )
+        .wait()
+        .unwrap();
+        path
+    };
+    let plain = decode(&export(EncodedFormat::Png, None, "plain.png"));
+    let mark = Watermark {
+        content: WatermarkContent::Text("aigle".into()),
+        size: 0.2,
+        anchor: Anchor::TopLeft,
+        margin: 0.0,
+        opacity: 1.0,
+        color: [255, 0, 255],
+    };
+    let marked = decode(&export(EncodedFormat::Png, Some(mark.clone()), "mark.png"));
+    let region = |img: &(u32, u32, Vec<u8>), x0: u32, x1: u32, y0: u32, y1: u32| {
+        let mut changed = 0;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = ((y * img.0 + x) * 3) as usize;
+                let (a, b) = (&img.2[i..i + 3], &plain.2[i..i + 3]);
+                if a.iter().zip(b).any(|(p, q)| p.abs_diff(*q) > 40) {
+                    changed += 1;
+                }
+            }
+        }
+        changed
+    };
+    assert!(
+        region(&marked, 0, 200, 0, 80) > 500,
+        "no watermark top left"
+    );
+    assert_eq!(
+        region(&marked, 300, 800, 100, 400),
+        0,
+        "watermark elsewhere"
+    );
+    for (format, name) in [
+        (EncodedFormat::Avif { quality: 80 }, "out.avif"),
+        (EncodedFormat::Jxl { quality: 80 }, "out.jxl"),
+    ] {
+        let p = export(format, Some(mark.clone()), name);
+        let img = decode(&p);
+        assert_eq!((img.0, img.1), (800, 400), "{name}");
+        assert!(region(&img, 0, 200, 0, 80) > 500, "{name}: no watermark");
+    }
+    let leftovers: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .filter(|f| f.file_name().to_string_lossy().starts_with('.'))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn export_and_thumbnail() {
     let e = engine();
     let dir = std::env::temp_dir().join(format!("aigle-test-{}", std::process::id()));

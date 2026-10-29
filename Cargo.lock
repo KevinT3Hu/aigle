@@ -159,6 +159,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "aigle-cli"
+version = "0.1.0"
+dependencies = [
+ "aigle-core",
+ "aigle-engine",
+ "aigle-engine-api",
+ "aigle-isolate",
+ "aigle-library",
+ "serde",
+ "serde_json",
+ "signal-hook",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "aigle-core"
 version = "0.1.0"
 dependencies = [

@@ -36,6 +36,7 @@ pub mod camconst;
 pub mod data;
 pub mod detail;
 pub mod disk_cache;
+pub mod dng;
 pub mod encode;
 mod engine;
 pub mod icc;
@@ -51,8 +52,10 @@ pub mod retouch;
 pub mod scheduler;
 mod session;
 pub mod source;
+pub use encode::available as format_available;
 pub use source::worker::OPS as WORKER_OPS;
 mod view;
+mod watermark;
 
 use std::sync::Arc;
 

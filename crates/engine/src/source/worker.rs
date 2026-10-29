@@ -11,9 +11,14 @@ use super::{ATier, FileDecoded, FileHeader, LoadError};
 
 const DECODE: &str = "engine.decode";
 const PREVIEW: &str = "engine.preview";
+const MOSAIC: &str = "engine.mosaic";
 
 /// The engine's worker operations, for [`aigle_isolate::serve`].
-pub const OPS: &[(&str, Handler)] = &[(DECODE, serve_decode), (PREVIEW, serve_preview)];
+pub const OPS: &[(&str, Handler)] = &[
+    (DECODE, serve_decode),
+    (PREVIEW, serve_preview),
+    (MOSAIC, serve_mosaic),
+];
 
 #[derive(Serialize, Deserialize)]
 struct DecodeRequest {
@@ -131,4 +136,53 @@ fn serve_preview(body: &[u8], _: &mut Task) -> Result<Reply, Failure> {
     let path: PathBuf = request(body)?;
     let (w, h, rgb) = super::raw::embedded_preview(&path)?;
     Ok(Reply::new(&(w, h))?.blob(rgb))
+}
+
+/// The raw mosaic of `path` for DNG export ([`super::raw::mosaic`]), read in a worker
+/// process when isolation is on.
+pub fn mosaic(
+    path: &Path,
+    admit: &mut dyn FnMut(u64) -> Result<(), LoadError>,
+    cancel: Option<&CancelToken>,
+) -> Result<crate::dng::Mosaic, LoadError> {
+    if !aigle_isolate::enabled() {
+        return super::raw::mosaic(path, cancel, admit);
+    }
+    let err = |e| load_error(path, e);
+    let mut call = Call::start(MOSAIC, &path, cancel).map_err(err)?;
+    let mut m: crate::dng::Mosaic = loop {
+        match call.event().map_err(err)? {
+            Event::Admit(peak) => {
+                let r = admit(peak);
+                call.admitted(r.is_ok()).map_err(err)?;
+                if let Err(e) = r {
+                    let _ = call.event::<crate::dng::Mosaic>();
+                    return Err(e);
+                }
+            }
+            Event::Done(m) => break m,
+        }
+    };
+    m.data = call.blob().map_err(err)?;
+    if m.data.len() != m.width as usize * m.height as usize {
+        return Err(LoadError::Failed(format!(
+            "{}: the decoder returned inconsistent data",
+            path.display()
+        )));
+    }
+    Ok(m)
+}
+
+fn serve_mosaic(body: &[u8], task: &mut Task) -> Result<Reply, Failure> {
+    let path: PathBuf = request(body)?;
+    let cancel = task.cancel_token().clone();
+    let mut admit = |peak: u64| {
+        task.admit(peak).map_err(|f| match f {
+            Failure::Cancelled => LoadError::Cancelled,
+            Failure::Failed(m) => LoadError::Failed(m),
+        })
+    };
+    let mut m = super::raw::mosaic(&path, Some(&cancel), &mut admit).map_err(failure)?;
+    let data = std::mem::take(&mut m.data);
+    Ok(Reply::new(&m)?.blob(data))
 }

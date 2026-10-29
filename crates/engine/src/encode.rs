@@ -25,7 +25,47 @@ pub fn suffix(fmt: EncodedFormat) -> String {
         EncodedFormat::Png => ".png[compression=6]".into(),
         EncodedFormat::Tiff { .. } => ".tif[compression=deflate,predictor=horizontal]".into(),
         EncodedFormat::WebP { quality } => format!(".webp[Q={}]", quality.clamp(1, 100)),
+        EncodedFormat::Avif { quality } => {
+            format!(".avif[Q={},compression=av1]", quality.clamp(1, 100))
+        }
+        EncodedFormat::Heic { quality } => {
+            format!(".heic[Q={},compression=hevc]", quality.clamp(1, 100))
+        }
+        EncodedFormat::Jxl { quality } => format!(".jxl[Q={}]", quality.clamp(1, 100)),
+        EncodedFormat::Dng => ".dng".into(),
     }
+}
+
+/// The in-memory form of [`suffix`]: libvips' HEIF buffer saver only knows `.heif`.
+fn buffer_suffix(fmt: EncodedFormat) -> String {
+    let s = suffix(fmt);
+    match fmt {
+        EncodedFormat::Avif { .. } | EncodedFormat::Heic { .. } => {
+            format!(".heif{}", &s[s.find('[').unwrap_or(s.len())..])
+        }
+        _ => s,
+    }
+}
+
+/// Whether this libvips can write `fmt` (HEIC needs a libheif HEVC encoder plugin, which
+/// distributions often leave out). Probed once per format with a tiny encode.
+pub fn available(fmt: EncodedFormat) -> bool {
+    use std::sync::OnceLock;
+    static PROBES: [OnceLock<bool>; 3] = [OnceLock::new(), OnceLock::new(), OnceLock::new()];
+    let i = match fmt {
+        EncodedFormat::Avif { .. } => 0,
+        EncodedFormat::Heic { .. } => 1,
+        EncodedFormat::Jxl { .. } => 2,
+        _ => return true,
+    };
+    *PROBES[i].get_or_init(|| {
+        let px = [128u8, 128, 128, 255].repeat(16 * 16);
+        let ok = encode(16, 16, &px, fmt, &DisplayProfileId::Srgb, None).is_ok();
+        if !ok {
+            tracing::info!("export format {fmt:?} is not available in this libvips");
+        }
+        ok
+    })
 }
 
 pub fn sixteen_bit(fmt: EncodedFormat) -> bool {
@@ -111,6 +151,9 @@ pub fn encode(
     display: &DisplayProfileId,
     exif: Option<&vips::Exif>,
 ) -> Result<Vec<u8>, String> {
+    if fmt == EncodedFormat::Dng {
+        return Err("encode: DNG holds raw data and is written by export only".into());
+    }
     let fill = |x: u32, y: u32, w: u32, h: u32, out: &mut [u8], stride: usize| {
         for j in 0..h as usize {
             let src = &bgra[((y as usize + j) * width as usize + x as usize) * 4..];
@@ -132,13 +175,14 @@ pub fn encode(
         out_size: (width, height),
         icc: name,
         exif,
-        suffix: &suffix(match fmt {
+        suffix: &buffer_suffix(match fmt {
             EncodedFormat::Tiff { .. } => EncodedFormat::Tiff { sixteen_bit: false },
             f => f,
         }),
         sharpen: None,
         icc_data: data,
         resize_gamma: None,
+        overlay: None,
     };
     vips::save_buffer(&opts, &fill).map_err(|e| format!("encode: {e}"))
 }
@@ -314,5 +358,29 @@ mod tests {
         ] {
             assert!(!encode(4, 4, &px, fmt, &d, Some(&exif)).unwrap().is_empty());
         }
+    }
+
+    #[test]
+    fn modern_formats_round_trip() {
+        let px = [0u8, 0, 255, 255].repeat(64 * 64);
+        let d = DisplayProfileId::Srgb;
+        assert!(available(EncodedFormat::Avif { quality: 80 }));
+        assert!(available(EncodedFormat::Jxl { quality: 80 }));
+        let exif = exif_for(None);
+        for fmt in [
+            EncodedFormat::Avif { quality: 90 },
+            EncodedFormat::Heic { quality: 90 },
+            EncodedFormat::Jxl { quality: 90 },
+        ] {
+            if !available(fmt) {
+                continue;
+            }
+            let bytes = encode(64, 64, &px, fmt, &d, Some(&exif)).unwrap();
+            let (w, h, rgb) = vips::decode_rgb8(&bytes).unwrap();
+            assert_eq!((w, h), (64, 64), "{fmt:?}");
+            let p = &rgb[(32 * 64 + 32) * 3..][..3];
+            assert!(p[0] > 240 && p[1] < 16 && p[2] < 16, "{fmt:?}: {p:?}");
+        }
+        assert!(encode(4, 4, &px[..64], EncodedFormat::Dng, &d, None).is_err());
     }
 }

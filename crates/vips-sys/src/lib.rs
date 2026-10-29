@@ -52,6 +52,12 @@ struct SaveOptsC {
     icc_data: *const c_void,
     icc_len: usize,
     resize_gamma: f64,
+    ov_rgb: *const c_void,
+    ov_alpha: *const u8,
+    ov_x: c_int,
+    ov_y: c_int,
+    ov_w: c_int,
+    ov_h: c_int,
 }
 
 type FillFn =
@@ -92,6 +98,21 @@ unsafe extern "C" {
     fn aigle_vips_decode_rgb8(
         data: *const c_void,
         len: usize,
+        w: *mut c_int,
+        h: *mut c_int,
+        out: *mut *mut u8,
+    ) -> c_int;
+    fn aigle_vips_text_mask(
+        text: *const c_char,
+        font: *const c_char,
+        height: c_int,
+        w: *mut c_int,
+        h: *mut c_int,
+        out: *mut *mut u8,
+    ) -> c_int;
+    fn aigle_vips_load_rgba8(
+        path: *const c_char,
+        height: c_int,
         w: *mut c_int,
         h: *mut c_int,
         out: *mut *mut u8,
@@ -267,6 +288,22 @@ pub struct SaveOpts<'a> {
     /// `Some(γ)`: the samples are encoded with a power curve of γ (Adobe RGB, ProPhoto…),
     /// so resizing linearises with it instead of the sRGB curve.
     pub resize_gamma: Option<f64>,
+    /// Blended over the output after resizing and sharpening.
+    pub overlay: Option<Overlay<'a>>,
+}
+
+/// An image blended over the output at (x, y) in output pixels.
+#[derive(Clone, Copy, Debug)]
+pub struct Overlay<'a> {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    /// Interleaved RGB in the output's sample format (`u8`, or native-endian `u16` when
+    /// [`SaveOpts::sixteen_bit`]) and colour space.
+    pub rgb: &'a [u8],
+    /// 8-bit coverage, one per pixel.
+    pub alpha: &'a [u8],
 }
 
 /// Fills the RGB samples of rectangle (x, y, w, h); row `j` starts at byte `j · stride` of
@@ -317,6 +354,14 @@ impl Strings {
 
 fn with_opts<R>(o: &SaveOpts<'_>, f: impl FnOnce(&SaveOptsC) -> R) -> Result<R, Error> {
     init()?;
+    let ov = o.overlay;
+    if let Some(v) = ov {
+        let n = v.width as usize * v.height as usize;
+        let bps = if o.sixteen_bit { 2 } else { 1 };
+        if v.rgb.len() != n * 3 * bps || v.alpha.len() != n {
+            return Err(Error::Vips("watermark buffer size mismatch".into()));
+        }
+    }
     let mut keep = Strings(Vec::new());
     let exif = o.exif.map(|x| ExifC {
         make: keep.opt(&x.make),
@@ -353,6 +398,12 @@ fn with_opts<R>(o: &SaveOpts<'_>, f: impl FnOnce(&SaveOptsC) -> R) -> Result<R, 
             .map_or(std::ptr::null(), |d| d.as_ptr() as *const c_void),
         icc_len: o.icc_data.map_or(0, <[u8]>::len),
         resize_gamma: o.resize_gamma.unwrap_or(0.0),
+        ov_rgb: ov.map_or(std::ptr::null(), |v| v.rgb.as_ptr().cast()),
+        ov_alpha: ov.map_or(std::ptr::null(), |v| v.alpha.as_ptr()),
+        ov_x: ov.map_or(0, |v| v.x as c_int),
+        ov_y: ov.map_or(0, |v| v.y as c_int),
+        ov_w: ov.map_or(0, |v| v.width as c_int),
+        ov_h: ov.map_or(0, |v| v.height as c_int),
     };
     Ok(f(&c))
 }
@@ -434,6 +485,65 @@ pub fn decode_rgb8(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), Error> {
     Ok((w as u32, h as u32, v))
 }
 
+fn take_pixels(
+    rc: c_int,
+    w: c_int,
+    h: c_int,
+    out: *mut u8,
+    bpp: usize,
+) -> Result<(u32, u32, Vec<u8>), Error> {
+    if rc != 0 {
+        return Err(last_error());
+    }
+    let n = w as usize * h as usize * bpp;
+    // SAFETY: on success the shim wrote `w · h · bpp` bytes at `out` (g_malloc).
+    let v = unsafe { std::slice::from_raw_parts(out, n) }.to_vec();
+    // SAFETY: allocated by libvips with g_malloc, freed once.
+    unsafe { aigle_vips_free(out.cast()) };
+    Ok((w as u32, h as u32, v))
+}
+
+/// One line of `text` in the Pango font family `font`, `height` px tall: an 8-bit coverage
+/// mask (width, height, mask).
+pub fn text_mask(text: &str, font: &str, height: u32) -> Result<(u32, u32, Vec<u8>), Error> {
+    init()?;
+    let text = CString::new(text.replace('\0', "")).expect("no NUL");
+    let font = CString::new(font.replace('\0', "")).expect("no NUL");
+    let (mut w, mut h) = (0, 0);
+    let mut out: *mut u8 = std::ptr::null_mut();
+    // SAFETY: NUL-terminated strings and out-pointers valid for the call.
+    let rc = unsafe {
+        aigle_vips_text_mask(
+            text.as_ptr(),
+            font.as_ptr(),
+            height.min(i32::MAX as u32) as c_int,
+            &mut w,
+            &mut h,
+            &mut out,
+        )
+    };
+    take_pixels(rc, w, h, out, 1)
+}
+
+/// The image at `path` in sRGB, `height` px tall, as RGBA8 (width, height, pixels).
+pub fn load_rgba8(path: &Path, height: u32) -> Result<(u32, u32, Vec<u8>), Error> {
+    init()?;
+    let p = cpath(path)?;
+    let (mut w, mut h) = (0, 0);
+    let mut out: *mut u8 = std::ptr::null_mut();
+    // SAFETY: NUL-terminated path and out-pointers valid for the call.
+    let rc = unsafe {
+        aigle_vips_load_rgba8(
+            p.as_ptr(),
+            height.min(i32::MAX as u32) as c_int,
+            &mut w,
+            &mut h,
+            &mut out,
+        )
+    };
+    take_pixels(rc, w, h, out, 4)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,6 +578,7 @@ mod tests {
             sharpen: None,
             icc_data: None,
             resize_gamma: None,
+            overlay: None,
         };
         let png = save_buffer(&opts, &f).unwrap();
         let (dw, dh, px) = decode_rgb8(&png).unwrap();
@@ -509,6 +620,7 @@ mod tests {
             sharpen: None,
             icc_data: None,
             resize_gamma: None,
+            overlay: None,
         };
         let row = |o: &SaveOpts<'_>| {
             let (_, _, px) = decode_rgb8(&save_buffer(o, &f).unwrap()).unwrap();
@@ -558,6 +670,7 @@ mod tests {
             sharpen: None,
             icc_data: None,
             resize_gamma: None,
+            overlay: None,
         };
         save_file(&opts, &f, &path).unwrap();
         let jpg = dir.join("white");
@@ -607,6 +720,7 @@ mod tests {
             sharpen: None,
             icc_data: None,
             resize_gamma: None,
+            overlay: None,
         };
         assert!(save_buffer(&opts, &|_, _, _, _, _, _| false).is_err());
     }

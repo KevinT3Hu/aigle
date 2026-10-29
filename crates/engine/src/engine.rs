@@ -238,6 +238,11 @@ impl EngineInner {
         let exif = encode::export_exif(src.info.camera.as_ref(), opts);
         let icc = crate::output_space::icc(&opts.output);
         let (icc_name, icc_data) = encode::icc_args(&icc);
+        let watermark = match &opts.watermark {
+            Some(wm) => crate::watermark::prepare(wm, (out.w, out.h), &opts.output, sixteen)
+                .map_err(JobError::Failed)?,
+            None => None,
+        };
         let vopts = aigle_vips_sys::SaveOpts {
             width: w,
             height: h,
@@ -249,6 +254,7 @@ impl EngineInner {
             sharpen: encode::sharpen(opts.sharpening),
             icc_data,
             resize_gamma: crate::output_space::resize_gamma(&opts.output),
+            overlay: watermark.as_ref().map(crate::watermark::Prepared::overlay),
         };
         encode::save_streamed(&opts.path, &vopts, &fill).map_err(|e| {
             if cancel.is_cancelled() {
@@ -258,6 +264,60 @@ impl EngineInner {
             }
         })?;
         Ok((out.w, out.h))
+    }
+
+    /// DNG export (`crate::dng`): the raw's sensor data, a preview rendered with `params`,
+    /// written atomically. Returns the oriented size of the sensor data.
+    pub fn export_dng(
+        &self,
+        owner: u64,
+        src_ref: &SourceRef,
+        params: &EditParams,
+        opts: &ExportOptions,
+        cancel: &CancelToken,
+    ) -> JobResult<(u32, u32)> {
+        let SourceRef::File(path) = src_ref else {
+            return Err(JobError::Failed("DNG export needs a raw file".into()));
+        };
+        if !source::is_raw_source(src_ref) {
+            return Err(JobError::Failed(format!(
+                "{}: DNG export needs a raw file",
+                path.display()
+            )));
+        }
+        let preview = {
+            let source = self
+                .source_for(src_ref, params, Some(cancel))
+                .map_err(load_err)?;
+            self.render_full(
+                owner,
+                &source,
+                params,
+                Some(1024),
+                &DisplayProfileId::Srgb,
+                Some(cancel),
+            )?
+        };
+        let mut reservation = None;
+        let mut admit = |peak: u64| -> Result<(), LoadError> {
+            reservation = Some(
+                self.ledger
+                    .admit(peak, Some(cancel))
+                    .ok_or(LoadError::Cancelled)?,
+            );
+            Ok(())
+        };
+        let m = source::worker::mosaic(path, &mut admit, Some(cancel)).map_err(load_err)?;
+        let o = aigle_core::geometry::Orientation::from_exif(m.orientation);
+        let preview = sensor_preview(&preview, o);
+        if cancel.is_cancelled() {
+            return Err(JobError::Cancelled);
+        }
+        let bytes = crate::dng::build(&m, Some(&preview), opts);
+        drop(reservation);
+        encode::write_atomic(&opts.path, &bytes).map_err(JobError::Failed)?;
+        let size = o.apply_size(Size::new(m.width, m.height));
+        Ok((size.w, size.h))
     }
 
     /// Render the whole crop. `long_edge = None` renders at full resolution (render scale 1).
@@ -297,6 +357,27 @@ impl EngineInner {
             cancel,
         )
         .map_err(|_| JobError::Cancelled)
+    }
+}
+
+/// A rendered BGRA image turned back into sensor orientation (undoing `o`), as RGB.
+fn sensor_preview(r: &Rendered, o: aigle_core::geometry::Orientation) -> crate::dng::Preview {
+    let from = Size::new(r.width, r.height);
+    let inv = o.inverse();
+    let to = inv.apply_size(from);
+    let mut rgb = vec![0u8; to.area() as usize * 3];
+    for y in 0..r.height {
+        for x in 0..r.width {
+            let (sx, sy) = inv.apply_pixel(x, y, from);
+            let s = (y * r.width + x) as usize * 4;
+            let d = (sy * to.w + sx) as usize * 3;
+            rgb[d..d + 3].copy_from_slice(&[r.data[s + 2], r.data[s + 1], r.data[s]]);
+        }
+    }
+    crate::dng::Preview {
+        width: to.w,
+        height: to.h,
+        rgb,
     }
 }
 
@@ -442,11 +523,14 @@ impl EngineImpl for AigleEngine {
                 let params = sanitized(&params)?;
                 let owner = engine.next_id();
                 let _guard = OwnerGuard(&engine, owner);
-                let source = engine
-                    .source_for(&src, &params, Some(cancel))
-                    .map_err(load_err)?;
-                let (w, h) =
-                    engine.export_streamed(owner, &src, &source, &params, &opts, cancel)?;
+                let (w, h) = if opts.format == aigle_engine_api::EncodedFormat::Dng {
+                    engine.export_dng(owner, &src, &params, &opts, cancel)?
+                } else {
+                    let source = engine
+                        .source_for(&src, &params, Some(cancel))
+                        .map_err(load_err)?;
+                    engine.export_streamed(owner, &src, &source, &params, &opts, cancel)?
+                };
                 Ok(ExportResult {
                     path: opts.path,
                     width: w,

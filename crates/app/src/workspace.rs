@@ -1221,7 +1221,21 @@ impl Workspace {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                match export::run(&engine, &request, &settings, path).await {
+                match export::run(&engine, &request, &settings, path.clone()).await {
+                    Ok(done) if settings.format.is_raw() => {
+                        let written = cx
+                            .background_spawn(
+                                async move { export::write_dng_sidecar(&request, &path) },
+                            )
+                            .await;
+                        match written {
+                            Ok(()) => last = Some((shown, done)),
+                            Err(e) => failures.push((
+                                shown,
+                                rust_i18n::t!("export.dng_sidecar_failed", e = e).into_owned(),
+                            )),
+                        }
+                    }
                     Ok(done) => last = Some((shown, done)),
                     Err(e) => failures.push((shown, e.to_string())),
                 }

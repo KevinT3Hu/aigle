@@ -300,6 +300,11 @@ typedef struct {
   const void *icc_data; // ICC profile to embed instead of `icc`, or NULL
   size_t icc_len;
   double resize_gamma;  // > 0: resize linearised by this power instead of the sRGB curve
+  // Watermark blended over the output after resizing and sharpening: `ov_w × ov_h` RGB
+  // samples in the output's format and an 8-bit alpha, at (ov_x, ov_y). NULL = none.
+  const void *ov_rgb;
+  const unsigned char *ov_alpha;
+  int ov_x, ov_y, ov_w, ov_h;
 } aigle_vips_save_opts;
 
 // `x` in [0, ∞) with negative ringing folded to 0: (x + |x|) / 2.
@@ -366,6 +371,21 @@ static int build(const aigle_vips_save_opts *o, aigle_vips_fill_fn fill, void *u
         vips_colourspace(t[5], &t[6], interp, NULL))
       return fail();
     im = t[6];
+  }
+  if (o->ov_rgb && o->ov_alpha && o->ov_w > 0 && o->ov_h > 0) {
+    VipsImage **w = (VipsImage **)vips_object_local_array(ctx, 6);
+    size_t bps = o->sixteen_bit ? 2 : 1;
+    w[0] = vips_image_new_from_memory(o->ov_rgb, (size_t)o->ov_w * o->ov_h * 3 * bps, o->ov_w,
+                                      o->ov_h, 3, fmt);
+    w[1] = vips_image_new_from_memory(o->ov_alpha, (size_t)o->ov_w * o->ov_h, o->ov_w, o->ov_h,
+                                      1, VIPS_FORMAT_UCHAR);
+    if (!w[0] || !w[1] ||
+        vips_embed(w[0], &w[2], o->ov_x, o->ov_y, im->Xsize, im->Ysize, NULL) ||
+        vips_embed(w[1], &w[3], o->ov_x, o->ov_y, im->Xsize, im->Ysize, NULL) ||
+        vips_ifthenelse(w[3], w[2], im, &w[4], "blend", TRUE, NULL) ||
+        vips_copy(w[4], &w[5], "interpretation", interp, NULL))
+      return fail();
+    im = w[5];
   }
   if (vips_copy(im, &t[4], NULL))
     return fail();
@@ -437,6 +457,81 @@ int aigle_vips_decode_rgb8(const void *data, size_t len, int *w, int *h, unsigne
       *h = t[2]->Ysize;
     }
   }
+  g_object_unref(ctx);
+  return rc;
+}
+
+
+// Watermark sources. Both return `*w × *h` pixels allocated with g_malloc.
+
+// One line of `text` (Pango markup is not interpreted) in `font` (a Pango description
+// without size), scaled to exactly `height` px: an 8-bit coverage mask.
+int aigle_vips_text_mask(const char *text, const char *font, int height, int *w, int *h,
+                         unsigned char **out) {
+  VipsObject *ctx = VIPS_OBJECT(vips_image_new());
+  VipsImage **t = (VipsImage **)vips_object_local_array(ctx, 3);
+  int rc = 0;
+  char *escaped = g_markup_escape_text(text, -1);
+  char *desc = g_strdup_printf("%s %d", font, height > 1 ? height : 1);
+  if (vips_text(&t[0], escaped, "font", desc, "dpi", 72, NULL)) {
+    rc = fail();
+  } else if (t[0]->Ysize < 1 || t[0]->Xsize < 1) {
+    g_strlcpy(last_error, "watermark text renders empty", sizeof(last_error));
+    rc = -1;
+  } else {
+    double s = (double)height / t[0]->Ysize;
+    if (vips_resize(t[0], &t[1], s, NULL) || vips_cast(t[1], &t[2], VIPS_FORMAT_UCHAR, NULL)) {
+      rc = fail();
+    } else {
+      size_t n;
+      *out = vips_image_write_to_memory(t[2], &n);
+      if (!*out) {
+        rc = fail();
+      } else {
+        *w = t[2]->Xsize;
+        *h = t[2]->Ysize;
+      }
+    }
+  }
+  g_free(desc);
+  g_free(escaped);
+  g_object_unref(ctx);
+  return rc;
+}
+
+// The image at `path`, converted to sRGB through its profile, scaled to `height` px tall
+// (vector formats are rendered at that size), as RGBA8 (opaque if it has no alpha).
+int aigle_vips_load_rgba8(const char *path, int height, int *w, int *h, unsigned char **out) {
+  VipsObject *ctx = VIPS_OBJECT(vips_image_new());
+  VipsImage **t = (VipsImage **)vips_object_local_array(ctx, 4);
+  int rc = 0;
+  if (vips_thumbnail(path, &t[0], VIPS_MAX_COORD, "height", height > 1 ? height : 1, NULL) ||
+      vips_colourspace(t[0], &t[1], VIPS_INTERPRETATION_sRGB, NULL) ||
+      vips_cast(t[1], &t[2], VIPS_FORMAT_UCHAR, NULL)) {
+    rc = fail();
+  } else {
+    VipsImage *im = t[2];
+    if (im->Bands == 3) {
+      if (vips_bandjoin_const1(im, &t[3], 255, NULL)) {
+        rc = fail();
+        goto done;
+      }
+      im = t[3];
+    } else if (im->Bands != 4) {
+      g_strlcpy(last_error, "watermark image is not RGB", sizeof(last_error));
+      rc = -1;
+      goto done;
+    }
+    size_t n;
+    *out = vips_image_write_to_memory(im, &n);
+    if (!*out) {
+      rc = fail();
+    } else {
+      *w = im->Xsize;
+      *h = im->Ysize;
+    }
+  }
+done:
   g_object_unref(ctx);
   return rc;
 }
