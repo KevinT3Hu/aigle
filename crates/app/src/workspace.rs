@@ -98,6 +98,7 @@ pub struct Workspace {
     show_metadata: bool,
     rename_dialog: Option<(Entity<RenameDialog>, Subscription)>,
     mode: Mode,
+    survey: Option<(Entity<crate::compare::Survey>, Subscription)>,
     open: Option<OpenPhoto>,
     show_history: bool,
     focus: FocusHandle,
@@ -179,6 +180,7 @@ impl Workspace {
             show_metadata: true,
             rename_dialog: None,
             mode: Mode::Library,
+            survey: None,
             open: None,
             show_history: true,
             focus,
@@ -228,6 +230,47 @@ impl Workspace {
         self.open_source(SourceRef::File(path), None, initial, window, cx);
     }
 
+    fn compare_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selection = self.library.read(cx).selection();
+        if !(2..=4).contains(&selection.len()) {
+            window.push_notification(crate::i18n::t("compare.choose"), cx);
+            return;
+        }
+        self.save_history(true, cx);
+        self.library.update(cx, |l, cx| l.flush(cx));
+        let mut photos = Vec::new();
+        for index in selection {
+            let (item, meta) = self.library.update(cx, |l, _| {
+                (
+                    l.item(index).map(|it| (it.key(), it.copy.clone())),
+                    l.meta_now(index),
+                )
+            });
+            let Some((key, copy)) = item else { continue };
+            let name = self.library.read(cx).item(index).unwrap().name();
+            let photo = cx.new(|cx| {
+                Photo::open(
+                    &self.engine,
+                    SourceRef::File(key.path.clone()),
+                    copy,
+                    meta.edits.unwrap_or_default(),
+                    meta.snapshots,
+                    None,
+                    cx,
+                )
+            });
+            photos.push((key, name, photo));
+        }
+        let survey =
+            cx.new(|cx| crate::compare::Survey::new(photos, self.library.clone(), window, cx));
+        let sub = cx.subscribe(&survey, |w, _, _: &crate::compare::Closed, cx| {
+            w.survey = None;
+            cx.notify();
+        });
+        self.survey = Some((survey, sub));
+        cx.notify();
+    }
+
     fn open_index(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let (item, meta) = self.library.update(cx, |l, cx| {
             l.select(index, cx);
@@ -256,6 +299,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.survey = None;
         self.close_photo(cx);
         let engine = self.engine.clone();
         let catalog = self.library.read(cx).catalog.clone();
@@ -373,6 +417,7 @@ impl Workspace {
     }
 
     fn set_mode(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
+        self.survey = None;
         if mode == Mode::Develop {
             let selected = self.library.read(cx).selected;
             let selected_key = self.library.read(cx).selected_item().map(|it| it.key());
@@ -515,6 +560,10 @@ impl Workspace {
 
     /// Esc: drop a pending mask, else leave the tool, else stop picking.
     fn cancel(&mut self, cx: &mut Context<Self>) {
+        if self.survey.take().is_some() {
+            cx.notify();
+            return;
+        }
         if self.export_dialog.take().is_some()
             || self.copy_dialog.take().is_some()
             || self.rename_dialog.take().is_some()
@@ -1782,6 +1831,11 @@ impl Workspace {
                             !develop,
                         )
                         .separator()
+                        .menu_with_icon(
+                            crate::i18n::t("action.CompareSelected"),
+                            crate::ui::Glyph::Grid.icon(),
+                            Box::new(CompareSelected),
+                        )
                         .menu_with_check_and_disabled(
                             crate::i18n::t("action.ToggleMetadata"),
                             show_metadata,
@@ -2030,33 +2084,37 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let body = match self.mode {
-            Mode::Library => {
-                let border = cx.theme().border;
-                v_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .child(crate::library_bar::filter_bar(&self.library, cx))
-                    .child(
-                        h_flex()
-                            .flex_1()
-                            .min_h_0()
-                            .child(div().flex_1().h_full().min_w_0().child(self.grid.clone()))
-                            .when(self.show_metadata, |d| {
-                                d.child(
-                                    div()
-                                        .w(px(METADATA_W))
-                                        .h_full()
-                                        .flex_none()
-                                        .border_l_1()
-                                        .border_color(border)
-                                        .child(self.metadata.clone()),
-                                )
-                            }),
-                    )
-                    .into_any_element()
+        let body = if let Some((survey, _)) = &self.survey {
+            survey.clone().into_any_element()
+        } else {
+            match self.mode {
+                Mode::Library => {
+                    let border = cx.theme().border;
+                    v_flex()
+                        .flex_1()
+                        .min_h_0()
+                        .child(crate::library_bar::filter_bar(&self.library, cx))
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .min_h_0()
+                                .child(div().flex_1().h_full().min_w_0().child(self.grid.clone()))
+                                .when(self.show_metadata, |d| {
+                                    d.child(
+                                        div()
+                                            .w(px(METADATA_W))
+                                            .h_full()
+                                            .flex_none()
+                                            .border_l_1()
+                                            .border_color(border)
+                                            .child(self.metadata.clone()),
+                                    )
+                                }),
+                        )
+                        .into_any_element()
+                }
+                Mode::Develop => self.develop(cx),
             }
-            Mode::Develop => self.develop(cx),
         };
         let dialog = self.export_dialog.as_ref().map(|(d, _)| d.clone());
         let copy_dialog = self.copy_dialog.as_ref().map(|(d, _)| d.clone());
@@ -2070,6 +2128,9 @@ impl Render for Workspace {
             .text_color(cx.theme().foreground)
             .on_action(cx.listener(|w, _: &Open, window, cx| w.prompt_open(false, window, cx)))
             .on_action(cx.listener(|w, _: &OpenFolder, window, cx| w.prompt_open(true, window, cx)))
+            .on_action(
+                cx.listener(|w, _: &CompareSelected, window, cx| w.compare_selected(window, cx)),
+            )
             .on_action(cx.listener(|w, _: &Import, window, cx| w.open_import(window, cx)))
             .on_action(cx.listener(|w, _: &ToggleSubfolders, _, cx| {
                 w.library.update(cx, |l, cx| {

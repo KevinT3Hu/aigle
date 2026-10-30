@@ -723,5 +723,11 @@
   "library.search.placeholder": "搜索照片…",
   "library.search.saved": "已保存的搜索",
   "library.search.save": "保存当前筛选和排序；同名搜索将被替换",
-  "library.search.delete": "删除已保存的搜索"
+  "library.search.delete": "删除已保存的搜索",
+  "action.CompareSelected": "比较所选照片",
+  "compare.choose": "请在图库中选择两到四张照片进行比较。",
+  "compare.link": "同步照片的缩放和平移",
+  "compare.remove": "从比较中移除",
+  "compare.reject": "拒绝此照片",
+  "compare.unreject": "清除拒绝评分"
 }

@@ -64,6 +64,14 @@ pub enum Compare {
     Split,
 }
 
+/// Linked comparison uses a normalized crop center and the same pixel magnification.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Navigation {
+    pub zoom: crate::viewport::Zoom,
+    pub center: (f64, f64),
+}
+impl gpui::EventEmitter<Navigation> for Canvas {}
+
 struct CropDrag {
     /// `None`: rotate (the drag started outside the crop).
     handle: Option<Handle>,
@@ -129,6 +137,7 @@ pub struct Canvas {
     hdr_status: Option<String>,
     view: View,
     state: ViewState,
+    navigation_sent: Option<Navigation>,
     frame: Option<Shown>,
     _frames: Task<anyhow::Result<()>>,
     /// Whole-image backing remains visible outside the last detailed viewport.
@@ -276,6 +285,7 @@ impl Canvas {
             hdr_status: native_message,
             view,
             state: ViewState::default(),
+            navigation_sent: None,
             frame: None,
             _frames: frames,
             overview,
@@ -400,10 +410,18 @@ impl Canvas {
     }
 
     /// Send the viewport if it changed; `force` re-sends it (load, tool switch).
-    fn update_viewport(&mut self, hint: Interaction, force: bool, cx: &App) {
+    fn update_viewport(&mut self, hint: Interaction, force: bool, cx: &mut Context<Self>) {
         let Some((crop, out, _)) = self.geometry(cx) else {
             return;
         };
+        let navigation = Navigation {
+            zoom: self.state.zoom,
+            center: (self.state.center.0 / crop.0, self.state.center.1 / crop.1),
+        };
+        if self.navigation_sent != Some(navigation) {
+            self.navigation_sent = Some(navigation);
+            cx.emit(navigation);
+        }
         // Keep this target independent of pan/zoom: a gesture must never cancel
         // the full-image backing that supplies newly exposed pixels.
         let overview = Viewport {
@@ -459,6 +477,23 @@ impl Canvas {
     pub fn toggle_hdr(&mut self, cx: &mut Context<Self>) {
         self.hdr_enabled = !self.hdr_enabled;
         self.update_viewport(Interaction::Final, false, cx);
+        cx.notify();
+    }
+
+    pub fn apply_navigation(&mut self, nav: Navigation, cx: &mut Context<Self>) {
+        if self.navigation_sent == Some(nav) {
+            return;
+        }
+        let Some((crop, _, _)) = self.geometry(cx) else {
+            return;
+        };
+        self.state = ViewState {
+            zoom: nav.zoom,
+            center: (nav.center.0 * crop.0, nav.center.1 * crop.1),
+        };
+        // Suppress feedback from subscribers linking multiple canvases.
+        self.navigation_sent = Some(nav);
+        self.update_viewport(Interaction::Continuous, false, cx);
         cx.notify();
     }
 

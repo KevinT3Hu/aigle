@@ -10,6 +10,7 @@ actions!(
         ToggleSubfolders,
         ShowGrid,
         ShowDevelop,
+        CompareSelected,
         OpenSelected,
         Left,
         Right,

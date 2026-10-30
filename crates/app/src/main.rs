@@ -8,6 +8,7 @@ rust_i18n::i18n!("locales", fallback = "en");
 mod actions;
 mod auto_tone;
 mod canvas;
+mod compare;
 mod copy_settings;
 mod crash;
 mod crop;

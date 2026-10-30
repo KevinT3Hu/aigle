@@ -1036,6 +1036,24 @@ impl Library {
         }
     }
 
+    pub fn item_by_key(&self, key: &PhotoKey) -> Option<&Item> {
+        self.slots.get(key).map(|&s| &self.all[s])
+    }
+
+    pub fn set_rating_by_key(&mut self, key: &PhotoKey, rating: i8, cx: &mut Context<Self>) {
+        let Some(&s) = self.slots.get(key) else {
+            return;
+        };
+        self.meta_at(s);
+        if let Some(meta) = self.all[s].meta.as_mut()
+            && meta.rating != rating
+        {
+            meta.rating = rating;
+            self.save(s, cx);
+            cx.notify();
+        }
+    }
+
     pub fn set_rating(&mut self, index: usize, rating: i8, cx: &mut Context<Self>) {
         self.change_meta(index, cx, |m| {
             std::mem::replace(&mut m.rating, rating) != rating
