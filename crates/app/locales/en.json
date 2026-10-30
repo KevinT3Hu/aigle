@@ -707,5 +707,17 @@
   "panel.scope.green_hint": "Toggle green in RGB histograms and parade.",
   "panel.scope.blue_hint": "Toggle blue in RGB histograms and parade.",
   "panel.scope.target_hint": "Check chromatic gamut against this export color space",
-  "panel.scope.help": "Scope guides and measurement details"
+  "panel.scope.help": "Scope guides and measurement details",
+  "masks.range.low": "Lower luminance",
+  "masks.range.high": "Upper luminance",
+  "masks.range.smoothness": "Range feathering",
+  "masks.range.tolerance": "Color tolerance",
+  "masks.range.color": "Color range mask",
+  "masks.range.luminance": "Luminance range mask",
+  "masks.range.pick": "Click the image to sample the mask color",
+  "masks.combine.add": "Add mask coverage",
+  "masks.combine.subtract": "Subtract mask coverage",
+  "masks.combine.intersect": "Intersect mask coverage",
+  "masks.combine.hint": "Choose a mask to copy its current coverage. Its adjustments remain independent; opacity is not copied. Undo to revert.",
+  "masks.combine.limit": "This mask combination is too deeply nested. Undo or combine simpler masks."
 }

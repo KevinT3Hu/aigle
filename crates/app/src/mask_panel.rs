@@ -1,7 +1,7 @@
 //! Mask tool panel: add, pick and delete local adjustments and edit the selected one
 //! (doc 02 §9). Shapes are edited on the canvas.
 
-use aigle_core::masks::{LocalAdjustment, LocalParams, MaskShape};
+use aigle_core::masks::{CombineOp, LocalAdjustment, LocalParams, MaskShape, RangeKind};
 use aigle_doc::{GestureId, ParamOp};
 use aigle_engine_api::Interaction;
 use gpui::{
@@ -9,8 +9,9 @@ use gpui::{
     Window, div, prelude::*,
 };
 use gpui_component::button::Button;
+use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::slider::{Slider, SliderEvent, SliderState};
-use gpui_component::{ActiveTheme, Selectable, Sizable, h_flex, v_flex};
+use gpui_component::{ActiveTheme, Disableable, Selectable, Sizable, h_flex, v_flex};
 use serde_json::Value;
 
 use crate::photo::{Photo, PhotoEvent};
@@ -25,6 +26,10 @@ enum Key {
     BrushSize,
     BrushFeather,
     BrushFlow,
+    Low,
+    High,
+    Smoothness,
+    Tolerance,
 }
 
 fn local_label(name: &str) -> &'static str {
@@ -79,6 +84,26 @@ impl MaskPanel {
             (Key::Opacity, "masks.opacity", 0.0, 100.0, 1.0, 100.0),
             (Key::Feather, "masks.feather", 0.0, 100.0, 1.0, 50.0),
         ];
+        defs.extend([
+            (Key::Low, "masks.range.low", 0.0, 1.0, 0.01, 0.0),
+            (Key::High, "masks.range.high", 0.0, 1.0, 0.01, 1.0),
+            (
+                Key::Smoothness,
+                "masks.range.smoothness",
+                0.0,
+                100.0,
+                1.0,
+                20.0,
+            ),
+            (
+                Key::Tolerance,
+                "masks.range.tolerance",
+                0.0,
+                100.0,
+                1.0,
+                20.0,
+            ),
+        ]);
         for (i, s) in LocalParams::SPECS.iter().enumerate() {
             defs.push((
                 Key::Local(i),
@@ -155,6 +180,30 @@ impl MaskPanel {
                 MaskShape::Radial { feather, .. } => *feather,
                 _ => return None,
             },
+            Key::Low | Key::High => match &sel?.shape {
+                MaskShape::Range {
+                    range: RangeKind::Luminance { low, high },
+                    ..
+                } => {
+                    if key == Key::Low {
+                        *low
+                    } else {
+                        *high
+                    }
+                }
+                _ => return None,
+            },
+            Key::Smoothness => match &sel?.shape {
+                MaskShape::Range { smoothness, .. } => *smoothness,
+                _ => return None,
+            },
+            Key::Tolerance => match &sel?.shape {
+                MaskShape::Range {
+                    range: RangeKind::Color { tolerance, .. },
+                    ..
+                } => *tolerance,
+                _ => return None,
+            },
             Key::Local(i) => local_value(&sel?.adjust, LocalParams::SPECS[i].name),
         })
     }
@@ -208,6 +257,23 @@ impl MaskPanel {
         let op = match key {
             Key::Opacity => ParamOp::set(&format!("masks.{index}.opacity"), v / 100.0),
             Key::Feather => ParamOp::set(&format!("masks.{index}.shape.feather"), v),
+            Key::Low | Key::High | Key::Smoothness | Key::Tolerance => {
+                let p = self.photo.read(cx);
+                let mut shape = p.head().masks[index].shape.clone();
+                if let MaskShape::Range { range, smoothness } = &mut shape {
+                    match (key, range) {
+                        (Key::Low, RangeKind::Luminance { low, high }) => *low = v.min(*high),
+                        (Key::High, RangeKind::Luminance { low, high }) => *high = v.max(*low),
+                        (Key::Tolerance, RangeKind::Color { tolerance, .. }) => *tolerance = v,
+                        (Key::Smoothness, _) => *smoothness = v,
+                        _ => return,
+                    }
+                }
+                ParamOp::set(
+                    &format!("masks.{index}.shape"),
+                    serde_json::to_value(shape).unwrap(),
+                )
+            }
             Key::Local(j) => {
                 let path = format!("masks.{index}.adjust.{}", LocalParams::SPECS[j].name);
                 let value = if v == 0.0 {
@@ -306,6 +372,59 @@ impl MaskPanel {
         })
     }
 
+    fn range_button(&self, color: bool) -> Button {
+        let photo = self.photo.clone();
+        let label = crate::i18n::t(if color {
+            "masks.range.color"
+        } else {
+            "masks.range.luminance"
+        });
+        crate::ui::icon_button(
+            if color { "range-color" } else { "range-luma" },
+            if color {
+                crate::ui::Glyph::Picker
+            } else {
+                crate::ui::Glyph::Filter
+            },
+            label.clone(),
+        )
+        .small()
+        .on_click(move |_, _, cx| {
+            photo.update(cx, |p, cx| {
+                let mut mask = tools::new_mask(p.head(), NewMask::Brush, Default::default());
+                mask.name = label.clone();
+                mask.shape = MaskShape::Range {
+                    range: if color {
+                        RangeKind::Color {
+                            samples: vec![[0.18; 3]],
+                            tolerance: 20.0,
+                        }
+                    } else {
+                        RangeKind::Luminance {
+                            low: 0.0,
+                            high: 1.0,
+                        }
+                    },
+                    smoothness: 20.0,
+                };
+                let id = mask.id;
+                if p.command(
+                    &label,
+                    vec![ParamOp::AddMask { mask }],
+                    None,
+                    Interaction::Final,
+                    cx,
+                ) {
+                    p.pending_mask = None;
+                    p.select_mask(Some(id), cx);
+                    if color {
+                        p.color_mask_pick = Some(id);
+                    }
+                }
+            })
+        })
+    }
+
     fn list(&self, masks: &[LocalAdjustment], cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = cx.theme();
         let selected = self.photo.read(cx).selected_mask;
@@ -366,7 +485,9 @@ impl Render for MaskPanel {
                         .flex_wrap()
                         .child(self.add_button(NewMask::Linear, pending))
                         .child(self.add_button(NewMask::Radial, pending))
-                        .child(self.add_button(NewMask::Brush, pending)),
+                        .child(self.add_button(NewMask::Brush, pending))
+                        .child(self.range_button(false))
+                        .child(self.range_button(true)),
                 )
                 .when(masks.is_empty(), |d| {
                     d.child(
@@ -483,6 +604,101 @@ impl Render for MaskPanel {
                 .child(self.knob(Key::BrushFeather, cx))
                 .child(self.knob(Key::BrushFlow, cx));
         }
+        if let MaskShape::Range { range, .. } = &sel.shape {
+            shape = shape.child(self.knob(Key::Smoothness, cx));
+            match range {
+                RangeKind::Luminance { .. } => {
+                    shape = shape
+                        .child(self.knob(Key::Low, cx))
+                        .child(self.knob(Key::High, cx));
+                }
+                RangeKind::Color { .. } => {
+                    let photo = self.photo.clone();
+                    shape = shape.child(self.knob(Key::Tolerance, cx)).child(
+                        crate::ui::icon_button(
+                            "range-pick",
+                            crate::ui::Glyph::Picker,
+                            crate::i18n::t("masks.range.pick"),
+                        )
+                        .small()
+                        .selected(self.photo.read(cx).color_mask_pick == Some(id))
+                        .on_click(move |_, _, cx| {
+                            photo.update(cx, |p, cx| {
+                                p.color_mask_pick = if p.color_mask_pick == Some(id) {
+                                    None
+                                } else {
+                                    Some(id)
+                                };
+                                p.wb_pick = false;
+                                cx.notify();
+                            })
+                        }),
+                    );
+                }
+            }
+        }
+        // A snapshot of another mask's coverage; its adjustment stays independent.
+        for (op, key, glyph) in [
+            (CombineOp::Add, "masks.combine.add", crate::ui::Glyph::Add),
+            (
+                CombineOp::Subtract,
+                "masks.combine.subtract",
+                crate::ui::Glyph::Erase,
+            ),
+            (
+                CombineOp::Intersect,
+                "masks.combine.intersect",
+                crate::ui::Glyph::Filter,
+            ),
+        ] {
+            let photo = self.photo.clone();
+            let choices: Vec<_> = masks.iter().filter(|m| m.id != id).cloned().collect();
+            let label = crate::i18n::t(key);
+            shape = shape.child(
+                crate::ui::labeled_button(SharedString::from(key), glyph, label.clone())
+                    .small()
+                    .disabled(choices.is_empty())
+                    .tooltip(crate::i18n::t("masks.combine.hint"))
+                    .dropdown_menu(move |menu, _, _| {
+                        choices.iter().fold(menu, |menu, target| {
+                            let target = target.clone();
+                            let photo = photo.clone();
+                            let label = label.clone();
+                            menu.item(PopupMenuItem::new(target.name.clone()).on_click(
+                                move |_, _, cx| {
+                                    photo.update(cx, |p, cx| {
+                                        if let Some((i, selected)) = p.selected() {
+                                            let shape = combine_coverage(selected, &target, op);
+                                            if stack_usage(&shape) > 8 {
+                                                cx.emit(PhotoEvent::Notice(crate::i18n::t(
+                                                    "masks.combine.limit",
+                                                )));
+                                                return;
+                                            }
+                                            p.command(
+                                                &label,
+                                                vec![
+                                                    ParamOp::set(
+                                                        &format!("masks.{i}.shape"),
+                                                        serde_json::to_value(shape).unwrap(),
+                                                    ),
+                                                    ParamOp::set(
+                                                        &format!("masks.{i}.invert"),
+                                                        false,
+                                                    ),
+                                                ],
+                                                None,
+                                                Interaction::Final,
+                                                cx,
+                                            );
+                                        }
+                                    });
+                                },
+                            ))
+                        })
+                    }),
+            );
+        }
         body = body.child(shape);
         let mut adjust = v_flex()
             .gap_2()
@@ -491,5 +707,75 @@ impl Render for MaskPanel {
             adjust = adjust.child(self.knob(Key::Local(i), cx));
         }
         body.child(adjust)
+    }
+}
+
+/// Inversion belongs to coverage; opacity and local adjustments remain independent.
+fn coverage(mask: &LocalAdjustment) -> MaskShape {
+    if mask.invert {
+        MaskShape::Combine {
+            op: CombineOp::Subtract,
+            parts: vec![
+                MaskShape::Range {
+                    range: RangeKind::Luminance {
+                        low: 0.0,
+                        high: 1.0,
+                    },
+                    smoothness: 0.0,
+                },
+                mask.shape.clone(),
+            ],
+        }
+    } else {
+        mask.shape.clone()
+    }
+}
+
+fn combine_coverage(a: &LocalAdjustment, b: &LocalAdjustment, op: CombineOp) -> MaskShape {
+    MaskShape::Combine {
+        op,
+        parts: vec![coverage(a), coverage(b)],
+    }
+}
+
+fn stack_usage(shape: &MaskShape) -> usize {
+    match shape {
+        MaskShape::Combine { parts, .. } => parts
+            .iter()
+            .enumerate()
+            .map(|(i, p)| stack_usage(p) + usize::from(i > 0))
+            .max()
+            .unwrap_or(1),
+        _ => 1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn combinations_preserve_inversion_and_roundtrip() {
+        let mut a = tools::new_mask(&Default::default(), NewMask::Brush, Default::default());
+        a.invert = true;
+        let b = a.clone();
+        let shape = combine_coverage(&a, &b, CombineOp::Intersect);
+        let MaskShape::Combine {
+            op: CombineOp::Intersect,
+            parts,
+        } = &shape
+        else {
+            panic!()
+        };
+        assert!(matches!(
+            parts[0],
+            MaskShape::Combine {
+                op: CombineOp::Subtract,
+                ..
+            }
+        ));
+        let roundtrip: MaskShape =
+            serde_json::from_value(serde_json::to_value(&shape).unwrap()).unwrap();
+        assert_eq!(shape, roundtrip);
+        assert!(a.invert);
     }
 }

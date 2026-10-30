@@ -49,6 +49,7 @@ pub struct Photo {
     pub load: LoadState,
     /// The white balance picker is active on the canvas.
     pub wb_pick: bool,
+    pub color_mask_pick: Option<MaskId>,
     pick_job: Option<Task<()>>,
     next_gesture: u64,
     /// The canvas tool in use.
@@ -215,6 +216,7 @@ impl Photo {
             snapshots,
             load: LoadState::Loading,
             wb_pick: false,
+            color_mask_pick: None,
             pick_job: None,
             next_gesture: 1,
             tool: Tool::None,
@@ -653,6 +655,9 @@ impl Photo {
 
     pub fn set_wb_pick(&mut self, on: bool, cx: &mut Context<Self>) {
         let on = on && self.info().is_some();
+        if on {
+            self.color_mask_pick = None;
+        }
         if self.wb_pick != on {
             self.wb_pick = on;
             cx.notify();
@@ -714,6 +719,50 @@ impl Photo {
                 )),
             });
         }));
+    }
+
+    pub fn pick_mask_color(&mut self, at: ImagePoint, radius: f32, cx: &mut Context<Self>) {
+        let Some(id) = self.color_mask_pick.take() else {
+            return;
+        };
+        let job = self
+            .session
+            .sample(at, radius, aigle_engine_api::SampleStage::SceneLinear);
+        self.pick_job = Some(cx.spawn(async move |this, cx| {
+            let result = job.await;
+            let _ = this.update(cx, |p, cx| {
+                match result {
+                    Ok(sample) => {
+                        let Some((i, mask)) =
+                            p.head().masks.iter().enumerate().find(|(_, m)| m.id == id)
+                        else {
+                            return;
+                        };
+                        let mut shape = mask.shape.clone();
+                        if let aigle_core::masks::MaskShape::Range {
+                            range: aigle_core::masks::RangeKind::Color { samples, .. },
+                            ..
+                        } = &mut shape
+                        {
+                            *samples = vec![sample.rgb];
+                            p.command(
+                                crate::i18n::t("masks.range.pick"),
+                                vec![ParamOp::set(
+                                    &format!("masks.{i}.shape"),
+                                    serde_json::to_value(shape).unwrap(),
+                                )],
+                                None,
+                                Interaction::Final,
+                                cx,
+                            );
+                        }
+                    }
+                    Err(e) => cx.emit(PhotoEvent::Notice(e.to_string())),
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
     }
 
     /// Set the white balance so that the disc of `radius` around `at` (Crop space) becomes

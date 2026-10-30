@@ -524,7 +524,7 @@ impl Workspace {
             return;
         }
         self.with_photo(cx, |p, cx| {
-            if p.pending_mask.take().is_some() {
+            if p.color_mask_pick.take().is_some() || p.pending_mask.take().is_some() {
                 cx.notify();
             } else if p.wb_pick {
                 p.set_wb_pick(false, cx);

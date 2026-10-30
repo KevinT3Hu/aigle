@@ -707,5 +707,17 @@
   "panel.scope.green_hint": "切换 RGB 直方图及分量波形中的绿色通道。",
   "panel.scope.blue_hint": "切换 RGB 直方图及分量波形中的蓝色通道。",
   "panel.scope.target_hint": "检查超出此导出色彩空间的色度",
-  "panel.scope.help": "示波器参考线及测量说明"
+  "panel.scope.help": "示波器参考线及测量说明",
+  "masks.range.low": "亮度下限",
+  "masks.range.high": "亮度上限",
+  "masks.range.smoothness": "范围羽化",
+  "masks.range.tolerance": "颜色容差",
+  "masks.range.color": "颜色范围蒙版",
+  "masks.range.luminance": "亮度范围蒙版",
+  "masks.range.pick": "点击图像以采样蒙版颜色",
+  "masks.combine.add": "添加蒙版范围",
+  "masks.combine.subtract": "减去蒙版范围",
+  "masks.combine.intersect": "与蒙版范围相交",
+  "masks.combine.hint": "选择蒙版以复制其当前范围。调整仍独立，透明度不会复制。可通过撤销还原。",
+  "masks.combine.limit": "此蒙版组合嵌套过深。请撤销或组合更简单的蒙版。"
 }

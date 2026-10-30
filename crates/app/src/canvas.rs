@@ -1102,6 +1102,15 @@ impl Canvas {
     // Events
 
     fn on_down(&mut self, e: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.photo.read(cx).color_mask_pick.is_some() {
+            if e.button == MouseButton::Left {
+                if let Some((at, radius)) = self.image_point(e.position, cx) {
+                    self.photo
+                        .update(cx, |p, cx| p.pick_mask_color(at, radius, cx));
+                }
+            }
+            return;
+        }
         if self.photo.read(cx).wb_pick {
             if let Some((at, radius)) = self.image_point(e.position, cx) {
                 self.photo.update(cx, |p, cx| p.pick_wb(at, radius, cx));
@@ -1148,7 +1157,7 @@ impl Canvas {
     fn on_move(&mut self, e: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
         let wants_hover = {
             let p = self.photo.read(cx);
-            p.wb_pick || p.tool != Tool::None
+            p.wb_pick || p.color_mask_pick.is_some() || p.tool != Tool::None
         };
         if wants_hover {
             self.hover = Some(e.position);
@@ -1246,7 +1255,7 @@ impl Canvas {
 
     fn cursor(&self, cx: &App) -> Option<CursorStyle> {
         let p = self.photo.read(cx);
-        if p.wb_pick {
+        if p.wb_pick || p.color_mask_pick.is_some() {
             return Some(CursorStyle::Crosshair);
         }
         if self.split_drag || self.near_divider {
@@ -1307,7 +1316,9 @@ impl Canvas {
             Compare::Before => Some(crate::i18n::t("canvas.before")),
             Compare::Split => Some(crate::i18n::t("canvas.split")),
         };
-        let hint = if photo.wb_pick {
+        let hint = if photo.color_mask_pick.is_some() {
+            Some(crate::i18n::t("masks.range.pick"))
+        } else if photo.wb_pick {
             Some(crate::keymap::hint("canvas.hint.wb_pick", cx))
         } else {
             match photo.tool {
