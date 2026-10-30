@@ -14,6 +14,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 
 const RATING: &str = "Xmp.xmp.Rating";
 const LABEL: &str = "Xmp.xmp.Label";
+const FLAG: &str = "Xmp.aigle.Flag";
 const SCHEMA: &str = "Xmp.aigle.SchemaVersion";
 const EDITS: &str = "Xmp.aigle.Edits";
 const SNAPSHOTS: &str = "Xmp.aigle.Snapshots";
@@ -171,11 +172,22 @@ pub struct Snapshot {
     pub params: EditParams,
 }
 
+/// Independent culling decision. Star ratings remain unchanged.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Flag {
+    #[default]
+    None,
+    Picked,
+    Rejected,
+}
+
 /// What aigle keeps per photo.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PhotoMeta {
     /// −1 (rejected) to 5; 0 is unrated.
     pub rating: i8,
+    pub flag: Flag,
     /// `xmp:Label`, e.g. `Red`.
     pub label: Option<String>,
     /// `None` for an unedited photo.
@@ -439,16 +451,31 @@ impl Store {
         let mut described = Described::default();
         if let Some(packet) = &packet {
             let at = source.as_deref().unwrap_or(photo);
-            let mut keys = vec![RATING, LABEL, SCHEMA, EDITS, SNAPSHOTS, KEYWORDS, HIERARCHY];
+            let mut keys = vec![
+                RATING, LABEL, SCHEMA, EDITS, SNAPSHOTS, KEYWORDS, HIERARCHY, FLAG,
+            ];
             keys.extend(Field::ALL.iter().map(|f| f.property().0));
             let mut v = aigle_exiv2_sys::get(packet, &keys).map_err(xmp_err(at))?;
             if v.len() != keys.len() {
                 return Err(xmp_err(at)(aigle_exiv2_sys::Error("short result".into())));
             }
-            let fields = v.split_off(7);
-            let [rating, label, schema, edits, snapshots, keywords, hierarchy] =
-                <[Option<String>; 7]>::try_from(v).expect("length checked");
+            let fields = v.split_off(8);
+            let [
+                rating,
+                label,
+                schema,
+                edits,
+                snapshots,
+                keywords,
+                hierarchy,
+                flag,
+            ] = <[Option<String>; 8]>::try_from(v).expect("length checked");
             loaded.meta.rating = rating.as_deref().and_then(parse_rating).unwrap_or(0);
+            loaded.meta.flag = match flag.as_deref() {
+                Some("picked") => Flag::Picked,
+                Some("rejected") => Flag::Rejected,
+                _ => Flag::None,
+            };
             loaded.meta.label = label.filter(|l| !l.trim().is_empty());
             loaded.meta.keywords = keywords
                 .map(|k| clean_keywords(k.split(ITEM_SEP)))
@@ -546,6 +573,15 @@ impl Store {
         let mut changes: Vec<(&str, Kind, Option<&str>)> = vec![
             (RATING, Kind::Text, rating.as_deref()),
             (LABEL, Kind::Text, label),
+            (
+                FLAG,
+                Kind::Text,
+                match meta.flag {
+                    Flag::None => None,
+                    Flag::Picked => Some("picked"),
+                    Flag::Rejected => Some("rejected"),
+                },
+            ),
         ];
         if !k.edits_locked {
             changes.push((EDITS, Kind::Text, edits.as_deref()));
@@ -718,6 +754,7 @@ pub(crate) mod tests {
         assert_eq!(loaded.sidecar, Some(dir.join("IMG_1.xmp")));
 
         let meta = PhotoMeta {
+            flag: Flag::Rejected,
             rating: 4,
             label: Some("Red".into()),
             edits: Some(edited()),

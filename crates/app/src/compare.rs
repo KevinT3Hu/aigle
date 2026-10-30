@@ -108,10 +108,10 @@ impl Render for Survey {
             for c in chunk {
                 let key = c.key.clone();
                 let library = self.library.clone();
-                let rating = library
+                let flag = library
                     .read(cx)
                     .item_by_key(&key)
-                    .map_or(0, |it| it.rating());
+                    .map_or(aigle_library::Flag::None, |it| it.flag());
                 let header = h_flex()
                     .gap_1()
                     .px_2()
@@ -119,19 +119,57 @@ impl Render for Survey {
                     .child(div().flex_1().truncate().text_xs().child(c.name.clone()))
                     .child(
                         crate::ui::icon_button(
+                            gpui::SharedString::from(format!("pick-{:?}", c.key)),
+                            crate::ui::Glyph::Check,
+                            crate::i18n::t(if flag == aigle_library::Flag::Picked {
+                                "action.ClearFlag"
+                            } else {
+                                "action.PickPhoto"
+                            }),
+                        )
+                        .xsmall()
+                        .selected(flag == aigle_library::Flag::Picked)
+                        .on_click({
+                            let key = key.clone();
+                            let library = library.clone();
+                            move |_, _, cx| {
+                                library.update(cx, |l, cx| {
+                                    l.set_flag_by_key(
+                                        &key,
+                                        if flag == aigle_library::Flag::Picked {
+                                            aigle_library::Flag::None
+                                        } else {
+                                            aigle_library::Flag::Picked
+                                        },
+                                        cx,
+                                    )
+                                });
+                            }
+                        }),
+                    )
+                    .child(
+                        crate::ui::icon_button(
                             gpui::SharedString::from(format!("reject-{:?}", c.key)),
                             crate::ui::Glyph::Disable,
-                            crate::i18n::t(if rating < 0 {
+                            crate::i18n::t(if flag == aigle_library::Flag::Rejected {
                                 "compare.unreject"
                             } else {
                                 "compare.reject"
                             }),
                         )
                         .xsmall()
-                        .selected(rating < 0)
+                        .selected(flag == aigle_library::Flag::Rejected)
                         .on_click(move |_, _, cx| {
                             library.update(cx, |l, cx| {
-                                l.set_rating_by_key(&key, if rating < 0 { 0 } else { -1 }, cx);
+                                l.set_flag_by_key(
+                                    &key,
+                                    if flag == aigle_library::Flag::Rejected {
+                                        aigle_library::Flag::None
+                                    } else {
+                                        aigle_library::Flag::Rejected
+                                    },
+                                    cx,
+                                );
                             });
                         }),
                     )

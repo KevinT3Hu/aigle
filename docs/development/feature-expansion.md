@@ -16,6 +16,10 @@ entire requested scope is finished**.
   term. Metadata results update as sidecars and EXIF arrive. Save/load/delete filters
   and sort order with the controls beside the search input. Saved searches apply to
   the current folder or album; they do not search every mounted disk.
+- Culling flags: View → Pick / Reject / Clear flags stores independent decisions in
+  `Xmp.aigle.Flag` and virtual-copy metadata without replacing star ratings. The rating
+  filter includes Picked and Rejected choices. Legacy negative XMP ratings still
+  appear rejected.
 - Comparison: View → Compare selected photos opens two to four selected photos in
   a survey. Zoom/pan can be linked; centers are normalized to each crop, with the
   same pixel magnification. Each candidate can be rejected or removed from the
@@ -60,7 +64,7 @@ entire requested scope is finished**.
 
 These remain part of the requested scope, not completed features:
 
-- Independent pick/reject flags and related-shot stacks.
+- Related-shot stacks.
 - Subject, sky and background inference masks; editable combined-mask components.
 - Bulk moved-folder relinking, persistent offline image previews, and a backup/
   restore workflow that includes originals and XMP sidecars.

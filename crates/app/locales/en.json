@@ -763,5 +763,9 @@
   "action.LocateOriginal": "Locate missing original…",
   "recovery.available": "The selected original is already available. Select a missing photo in an album.",
   "recovery.located": "Original relinked",
-  "crop.straighten_hint": "Drag along a horizon or vertical edge to straighten. Escape cancels."
+  "crop.straighten_hint": "Drag along a horizon or vertical edge to straighten. Escape cancels.",
+  "action.PickPhoto": "Pick selected photos",
+  "action.RejectPhoto": "Reject selected photos",
+  "action.ClearFlag": "Clear pick/reject flags",
+  "library.filter.picked": "Picked"
 }

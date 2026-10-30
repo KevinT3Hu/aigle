@@ -706,6 +706,19 @@ impl Workspace {
         }
     }
 
+    fn flag(&mut self, flag: aigle_library::Flag, cx: &mut Context<Self>) {
+        let keys: Vec<_> = self
+            .marked(cx)
+            .into_iter()
+            .filter_map(|i| self.library.read(cx).item(i).map(|it| it.key()))
+            .collect();
+        self.library.update(cx, |l, cx| {
+            for key in keys {
+                l.set_flag_by_key(&key, flag, cx);
+            }
+        });
+    }
+
     fn rate(&mut self, rating: i8, cx: &mut Context<Self>) {
         let targets = self.marked(cx);
         self.library.update(cx, |l, cx| {
@@ -1982,6 +1995,21 @@ impl Workspace {
                         )
                         .separator()
                         .menu_with_icon(
+                            crate::i18n::t("action.PickPhoto"),
+                            crate::ui::Glyph::Check.icon(),
+                            Box::new(PickPhoto),
+                        )
+                        .menu_with_icon(
+                            crate::i18n::t("action.RejectPhoto"),
+                            crate::ui::Glyph::Disable.icon(),
+                            Box::new(RejectPhoto),
+                        )
+                        .menu_with_icon(
+                            crate::i18n::t("action.ClearFlag"),
+                            crate::ui::Glyph::Clear.icon(),
+                            Box::new(ClearFlag),
+                        )
+                        .menu_with_icon(
                             crate::i18n::t("action.CompareSelected"),
                             crate::ui::Glyph::Grid.icon(),
                             Box::new(CompareSelected),
@@ -2316,6 +2344,13 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &Right, window, cx| w.step(1, 0, window, cx)))
             .on_action(cx.listener(|w, _: &Up, window, cx| w.step(0, -1, window, cx)))
             .on_action(cx.listener(|w, _: &Down, window, cx| w.step(0, 1, window, cx)))
+            .on_action(
+                cx.listener(|w, _: &PickPhoto, _, cx| w.flag(aigle_library::Flag::Picked, cx)),
+            )
+            .on_action(
+                cx.listener(|w, _: &RejectPhoto, _, cx| w.flag(aigle_library::Flag::Rejected, cx)),
+            )
+            .on_action(cx.listener(|w, _: &ClearFlag, _, cx| w.flag(aigle_library::Flag::None, cx)))
             .on_action(cx.listener(|w, _: &Rate0, _, cx| w.rate(0, cx)))
             .on_action(cx.listener(|w, _: &Rate1, _, cx| w.rate(1, cx)))
             .on_action(cx.listener(|w, _: &Rate2, _, cx| w.rate(2, cx)))

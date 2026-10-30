@@ -66,6 +66,7 @@ const SCHEMA: i64 = 3;
 #[serde(default)]
 struct StoredMeta {
     rating: i8,
+    flag: crate::sidecar::Flag,
     label: Option<String>,
     edits: Option<EditParams>,
     snapshots: Vec<Snapshot>,
@@ -78,6 +79,7 @@ impl From<&PhotoMeta> for StoredMeta {
     fn from(m: &PhotoMeta) -> StoredMeta {
         StoredMeta {
             rating: m.rating,
+            flag: m.flag,
             label: m.label.clone(),
             edits: m.edits.clone(),
             snapshots: m.snapshots.clone(),
@@ -92,6 +94,7 @@ impl From<StoredMeta> for PhotoMeta {
     fn from(m: StoredMeta) -> PhotoMeta {
         PhotoMeta {
             rating: m.rating,
+            flag: m.flag,
             label: m.label,
             edits: m.edits,
             snapshots: m.snapshots,

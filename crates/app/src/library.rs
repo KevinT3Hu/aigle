@@ -130,6 +130,16 @@ impl Item {
         }
     }
 
+    pub fn flag(&self) -> aigle_library::Flag {
+        self.meta.as_ref().map_or(aigle_library::Flag::None, |m| {
+            if m.flag == aigle_library::Flag::None && m.rating < 0 {
+                aigle_library::Flag::Rejected
+            } else {
+                m.flag
+            }
+        })
+    }
+
     pub fn rating(&self) -> i8 {
         self.meta.as_ref().map_or(0, |m| m.rating)
     }
@@ -1232,17 +1242,24 @@ impl Library {
         self.slots.get(key).map(|&s| &self.all[s])
     }
 
-    pub fn set_rating_by_key(&mut self, key: &PhotoKey, rating: i8, cx: &mut Context<Self>) {
+    pub fn set_flag_by_key(
+        &mut self,
+        key: &PhotoKey,
+        flag: aigle_library::Flag,
+        cx: &mut Context<Self>,
+    ) {
         let Some(&s) = self.slots.get(key) else {
             return;
         };
         self.meta_at(s);
-        if let Some(meta) = self.all[s].meta.as_mut()
-            && meta.rating != rating
-        {
-            meta.rating = rating;
+        if let Some(meta) = self.all[s].meta.as_mut() {
+            meta.flag = flag;
+            // Upgrade legacy XMP rejection without inventing a previous star rating.
+            if meta.rating < 0 {
+                meta.rating = 0;
+            }
             self.save(s, cx);
-            cx.notify();
+            self.rebuild_view(cx);
         }
     }
 

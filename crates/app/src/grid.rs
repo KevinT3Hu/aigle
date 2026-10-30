@@ -187,6 +187,24 @@ fn cell(
                     d.child(div().size(px(8.0)).rounded_full().bg(rgb(c)))
                 })
                 .child(div().text_color(rgb(0xe8c547)).child(stars(item.rating())))
+                .when(item.flag() != aigle_library::Flag::None, |d| {
+                    d.child(
+                        (if item.flag() == aigle_library::Flag::Picked {
+                            crate::ui::Glyph::Check
+                        } else {
+                            crate::ui::Glyph::Disable
+                        })
+                        .icon()
+                        .size(px(12.0))
+                        .text_color(
+                            if item.flag() == aigle_library::Flag::Picked {
+                                theme.primary
+                            } else {
+                                theme.danger
+                            },
+                        ),
+                    )
+                })
                 .when(item.edited(), |d| {
                     d.child(
                         div()

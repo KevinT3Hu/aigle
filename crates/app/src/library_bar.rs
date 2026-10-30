@@ -45,6 +45,7 @@ fn rating_text(r: &RatingFilter) -> String {
         RatingFilter::AtLeast(n) => format!("{}+", stars(*n)),
         RatingFilter::Unrated => t("library.filter.unrated"),
         RatingFilter::Rejected => t("library.filter.rejected"),
+        RatingFilter::Picked => t("library.filter.picked"),
     }
 }
 
@@ -130,7 +131,11 @@ pub fn filter_bar(lib: &Entity<Library>, cx: &App) -> impl IntoElement + use<> {
         .dropdown_menu(move |menu, _, _| {
             let mut options = vec![RatingFilter::Any];
             options.extend((1..=5).map(RatingFilter::AtLeast));
-            options.extend([RatingFilter::Unrated, RatingFilter::Rejected]);
+            options.extend([
+                RatingFilter::Unrated,
+                RatingFilter::Rejected,
+                RatingFilter::Picked,
+            ]);
             options.into_iter().fold(menu, |menu, r| {
                 let checked = r == current;
                 let text = rating_text(&r);

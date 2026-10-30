@@ -763,5 +763,9 @@
   "action.LocateOriginal": "定位丢失的原片…",
   "recovery.available": "所选原片存在。请在相册中选择丢失的照片。",
   "recovery.located": "原片已重新关联",
-  "crop.straighten_hint": "沿地平线或垂直边缘拖动以校正倾斜。按 Esc 取消。"
+  "crop.straighten_hint": "沿地平线或垂直边缘拖动以校正倾斜。按 Esc 取消。",
+  "action.PickPhoto": "选中所选照片",
+  "action.RejectPhoto": "拒绝所选照片",
+  "action.ClearFlag": "清除选中/拒绝标记",
+  "library.filter.picked": "已选中"
 }

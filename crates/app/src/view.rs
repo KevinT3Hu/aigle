@@ -14,6 +14,7 @@ pub enum RatingFilter {
     AtLeast(i8),
     Unrated,
     Rejected,
+    Picked,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,9 +73,10 @@ impl Filter {
         let rating = item.rating();
         let rating_ok = match self.rating {
             RatingFilter::Any => true,
-            RatingFilter::AtLeast(n) => rating >= n,
-            RatingFilter::Unrated => rating == 0,
-            RatingFilter::Rejected => rating < 0,
+            RatingFilter::AtLeast(n) => rating >= n && item.flag() != aigle_library::Flag::Rejected,
+            RatingFilter::Unrated => rating == 0 && item.flag() != aigle_library::Flag::Rejected,
+            RatingFilter::Rejected => item.flag() == aigle_library::Flag::Rejected,
+            RatingFilter::Picked => item.flag() == aigle_library::Flag::Picked,
         };
         let label_ok = match &self.label {
             LabelFilter::Any => true,
@@ -303,6 +305,36 @@ mod tests {
         let mut v: Vec<&Item> = items.iter().filter(|it| filter.matches(it)).collect();
         v.sort_by(|a, b| sort.cmp(a, b));
         v.into_iter().map(Item::name).collect()
+    }
+
+    #[test]
+    fn rejected_flag_does_not_replace_stars_and_pick_filter_is_independent() {
+        let mut photo = item("pick.nef", 4, None, None);
+        photo.meta.as_mut().unwrap().flag = aigle_library::Flag::Rejected;
+        assert_eq!(photo.rating(), 4);
+        assert!(
+            Filter {
+                rating: RatingFilter::Rejected,
+                ..Default::default()
+            }
+            .matches(&photo)
+        );
+        assert!(
+            !Filter {
+                rating: RatingFilter::AtLeast(3),
+                ..Default::default()
+            }
+            .matches(&photo)
+        );
+        photo.meta.as_mut().unwrap().flag = aigle_library::Flag::Picked;
+        assert!(
+            Filter {
+                rating: RatingFilter::Picked,
+                ..Default::default()
+            }
+            .matches(&photo)
+        );
+        assert_eq!(photo.rating(), 4);
     }
 
     #[test]
