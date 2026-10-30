@@ -15,6 +15,7 @@ pub enum RenameEvent {
 
 pub struct RenameDialog {
     title: String,
+    confirm_label: String,
     /// Shown after the input (`.CR3`), empty for a virtual copy.
     suffix: String,
     name: Entity<InputState>,
@@ -44,10 +45,15 @@ impl RenameDialog {
         });
         RenameDialog {
             title,
+            confirm_label: crate::i18n::t("rename.confirm"),
             suffix,
             name,
             _sub: sub,
         }
+    }
+
+    pub fn set_confirm_label(&mut self, label: String) {
+        self.confirm_label = label;
     }
 
     fn confirm(&mut self, cx: &mut Context<Self>) {
@@ -107,7 +113,7 @@ impl Render for RenameDialog {
                         crate::ui::labeled_button(
                             "rename-go",
                             crate::ui::Glyph::Edit,
-                            crate::i18n::t("rename.confirm"),
+                            self.confirm_label.clone(),
                         )
                         .small()
                         .primary()

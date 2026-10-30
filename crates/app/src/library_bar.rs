@@ -338,6 +338,73 @@ pub fn filter_bar(lib: &Entity<Library>, cx: &App) -> impl IntoElement + use<> {
         .on_click(move |_, _, cx| lib.update(cx, |l, cx| l.set_recursive(!on, cx)))
     };
 
+    let albums = {
+        let lib = lib.clone();
+        let choices = lib.read(cx).albums.clone();
+        let active = lib.read(cx).active_album;
+        let title = choices
+            .iter()
+            .find(|(id, _)| Some(*id) == active)
+            .map_or_else(|| t("album.title"), |(_, name)| name.clone());
+        crate::ui::labeled_button("albums", crate::ui::Glyph::Folder, title)
+            .xsmall()
+            .ghost()
+            .dropdown_menu(move |menu, window, cx| {
+                let create_lib = lib.clone();
+                let menu = menu
+                    .item(
+                        PopupMenuItem::new(t("album.create")).on_click(move |_, _, cx| {
+                            create_lib.update(cx, |_, cx| {
+                                cx.emit(crate::library::LibraryEvent::CreateAlbum)
+                            });
+                        }),
+                    )
+                    .separator();
+                choices.iter().fold(menu, |menu, (id, name)| {
+                    let id = *id;
+                    let open = lib.clone();
+                    let add = lib.clone();
+                    let remove = lib.clone();
+                    let delete = lib.clone();
+                    menu.submenu(name.clone(), window, cx, move |menu, _, _| {
+                        menu.item(PopupMenuItem::new(t("album.open")).on_click({
+                            let lib = open.clone();
+                            move |_, _, cx| lib.update(cx, |l, cx| l.open_album(id, cx))
+                        }))
+                        .item(PopupMenuItem::new(t("album.add")).on_click({
+                            let lib = add.clone();
+                            move |_, _, cx| lib.update(cx, |l, cx| l.change_album(id, true, cx))
+                        }))
+                        .item(PopupMenuItem::new(t("album.remove")).on_click({
+                            let lib = remove.clone();
+                            move |_, _, cx| lib.update(cx, |l, cx| l.change_album(id, false, cx))
+                        }))
+                        .separator()
+                        .item(
+                            PopupMenuItem::new(t("album.delete")).on_click({
+                                let lib = delete.clone();
+                                move |_, _, cx| lib.update(cx, |l, cx| l.delete_album(id, cx))
+                            }),
+                        )
+                    })
+                })
+            })
+    };
+
+    let duplicates = {
+        let lib = lib.clone();
+        let active = lib.read(cx).show_duplicates || lib.read(cx).scanning_duplicates;
+        crate::ui::icon_button(
+            "find-duplicates",
+            crate::ui::Glyph::Copy,
+            t("library.duplicates.hint"),
+        )
+        .xsmall()
+        .ghost()
+        .selected(active)
+        .on_click(move |_, _, cx| lib.update(cx, |l, cx| l.toggle_duplicates(cx)))
+    };
+
     let saved = lib.read(cx).saved_searches.clone();
     let save = {
         let lib = lib.clone();
@@ -415,6 +482,8 @@ pub fn filter_bar(lib: &Entity<Library>, cx: &App) -> impl IntoElement + use<> {
                 .w(px(200.0))
                 .child(Input::new(&lib.read(cx).search_input).small()),
         )
+        .child(albums)
+        .child(duplicates)
         .child(save)
         .child(load)
         .child(remove)

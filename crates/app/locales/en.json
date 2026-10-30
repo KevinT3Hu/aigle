@@ -742,5 +742,13 @@
   "queue.pause_hint": "Pause after the current file. Recovered queues start paused.",
   "queue.retry": "Retry failed files; resume the queue to start",
   "queue.clear": "Clear completed files when exports are stopped",
-  "queue.cancelled": "Removed from pending exports"
+  "queue.cancelled": "Removed from pending exports",
+  "album.title": "Albums",
+  "album.create": "New album from selection",
+  "album.open": "Open album",
+  "album.add": "Add selected originals",
+  "album.remove": "Remove selected originals",
+  "album.delete": "Delete album (keep photos)",
+  "library.duplicates": "Exact duplicate groups",
+  "library.duplicates.hint": "Show files with identical content in the current folder or album. Click again to show all or cancel scanning."
 }

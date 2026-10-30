@@ -147,6 +147,7 @@ impl Workspace {
         let subs = vec![
             cx.subscribe_in(&library, window, |w, _, e, window, cx| match e {
                 LibraryEvent::Open(i) => w.open_index(*i, window, cx),
+                LibraryEvent::CreateAlbum => w.create_album(window, cx),
                 LibraryEvent::Notice(m) => window.push_notification(m.clone(), cx),
             }),
             cx.subscribe_in(&presets, window, |w, _, e, window, cx| match e {
@@ -233,6 +234,44 @@ impl Workspace {
             l.read_meta(&path)
         });
         self.open_source(SourceRef::File(path), None, initial, window, cx);
+    }
+
+    fn create_album(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = self
+            .library
+            .read(cx)
+            .selection()
+            .into_iter()
+            .filter_map(|i| {
+                self.library
+                    .read(cx)
+                    .item(i)
+                    .map(|it| it.entry.path.clone())
+            })
+            .collect::<Vec<_>>();
+        let dialog = cx.new(|cx| {
+            let mut dialog = RenameDialog::new(
+                crate::i18n::t("album.create"),
+                String::new(),
+                String::new(),
+                window,
+                cx,
+            );
+            dialog.set_confirm_label(crate::i18n::t("common.save"));
+            dialog
+        });
+        let sub = cx.subscribe_in(&dialog, window, move |w, _, ev, window, cx| {
+            let RenameEvent::Done(name) = ev;
+            w.rename_dialog = None;
+            if let Some(name) = name {
+                w.library
+                    .update(cx, |l, cx| l.create_album(name, paths.clone(), cx));
+            }
+            window.focus(&w.focus, cx);
+            cx.notify();
+        });
+        self.rename_dialog = Some((dialog, sub));
+        cx.notify();
     }
 
     fn compare_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {

@@ -12,6 +12,7 @@
 //! * [`move_photo`] and [`trash_photo`] take a photo's sidecars along.
 
 mod catalog;
+pub mod duplicates;
 mod facts;
 mod files;
 pub mod import;

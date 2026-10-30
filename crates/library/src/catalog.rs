@@ -59,7 +59,7 @@ pub enum CatalogError {
     Newer(i64),
 }
 
-const SCHEMA: i64 = 2;
+const SCHEMA: i64 = 3;
 
 /// [`PhotoMeta`] as stored for a virtual copy.
 #[derive(Serialize, Deserialize, Default)]
@@ -165,6 +165,15 @@ impl Catalog {
                  updated INTEGER NOT NULL DEFAULT (unixepoch()),
                  PRIMARY KEY (dir, file, copy)
              );
+             CREATE TABLE IF NOT EXISTS albums (
+                 id INTEGER PRIMARY KEY,
+                 name TEXT NOT NULL UNIQUE COLLATE NOCASE
+             );
+             CREATE TABLE IF NOT EXISTS album_photos (
+                 album INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+                 path BLOB NOT NULL,
+                 PRIMARY KEY (album, path)
+             );
              CREATE TABLE IF NOT EXISTS facts (
                  dir BLOB NOT NULL,
                  file BLOB NOT NULL,
@@ -178,6 +187,74 @@ impl Catalog {
         )?;
         db.pragma_update(None, "user_version", SCHEMA)?;
         Ok(Catalog { db: Mutex::new(db) })
+    }
+
+    pub fn albums(&self) -> Result<Vec<(i64, String)>, CatalogError> {
+        let db = self.db.lock();
+        let mut stmt = db.prepare("SELECT id, name FROM albums ORDER BY name COLLATE NOCASE")?;
+        Ok(stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?)
+    }
+
+    pub fn create_album(&self, name: &str, paths: &[PathBuf]) -> Result<i64, CatalogError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Album name cannot be empty",
+            )
+            .into());
+        }
+        let mut db = self.db.lock();
+        let tx = db.transaction()?;
+        tx.execute("INSERT INTO albums (name) VALUES (?1)", [name])?;
+        let id = tx.last_insert_rowid();
+        for path in paths {
+            tx.execute(
+                "INSERT OR IGNORE INTO album_photos (album, path) VALUES (?1, ?2)",
+                params![id, bytes(path.as_os_str())],
+            )?;
+        }
+        tx.commit()?;
+        Ok(id)
+    }
+
+    pub fn update_album(&self, id: i64, paths: &[PathBuf], add: bool) -> Result<(), CatalogError> {
+        let mut db = self.db.lock();
+        let tx = db.transaction()?;
+        for path in paths {
+            tx.execute(
+                if add {
+                    "INSERT OR IGNORE INTO album_photos (album, path) VALUES (?1, ?2)"
+                } else {
+                    "DELETE FROM album_photos WHERE album = ?1 AND path = ?2"
+                },
+                params![id, bytes(path.as_os_str())],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn album_paths(&self, id: i64) -> Result<Vec<PathBuf>, CatalogError> {
+        use std::os::unix::ffi::OsStringExt;
+        let db = self.db.lock();
+        let mut stmt =
+            db.prepare("SELECT path FROM album_photos WHERE album = ?1 ORDER BY path")?;
+        Ok(stmt
+            .query_map([id], |r| {
+                let bytes: Vec<u8> = r.get(0)?;
+                Ok(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
+            })?
+            .collect::<Result<_, _>>()?)
+    }
+
+    pub fn delete_album(&self, id: i64) -> Result<(), CatalogError> {
+        self.db
+            .lock()
+            .execute("DELETE FROM albums WHERE id = ?1", [id])?;
+        Ok(())
     }
 
     /// The virtual copies of `photos`, grouped by photo in `photos` order, oldest first.
@@ -371,6 +448,12 @@ impl Catalog {
             "UPDATE facts SET dir = ?3, file = ?4 WHERE dir = ?1 AND file = ?2",
             params![fd, ff, td, tf],
         )?;
+        tx.execute("INSERT OR IGNORE INTO album_photos (album, path) SELECT album, ?2 FROM album_photos WHERE path = ?1",
+            params![bytes(from.as_os_str()), bytes(to.as_os_str())])?;
+        tx.execute(
+            "DELETE FROM album_photos WHERE path = ?1",
+            [bytes(from.as_os_str())],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -463,6 +546,31 @@ mod tests {
             edits: Some(p),
             ..PhotoMeta::default()
         }
+    }
+
+    #[test]
+    fn album_membership_survives_moves_and_catalog_reopen() {
+        let dir = crate::sidecar::tests::temp_dir("albums");
+        let db = dir.join("catalog.sqlite3");
+        let from = dir.join("a.nef");
+        let to = dir.join("b.nef");
+        let catalog = Catalog::open(&db).unwrap();
+        let album = catalog
+            .create_album("Favourites", &[from.clone(), from.clone()])
+            .unwrap();
+        assert!(catalog.create_album("favourites", &[]).is_err());
+        assert!(catalog.create_album("  ", &[]).is_err());
+        catalog.move_photo(&from, &to).unwrap();
+        drop(catalog);
+        let catalog = Catalog::open(&db).unwrap();
+        assert_eq!(catalog.album_paths(album).unwrap(), [to.clone()]);
+        assert_eq!(catalog.albums().unwrap(), [(album, "Favourites".into())]);
+        catalog.update_album(album, &[to], false).unwrap();
+        assert!(catalog.album_paths(album).unwrap().is_empty());
+        catalog.delete_album(album).unwrap();
+        assert!(catalog.albums().unwrap().is_empty());
+        drop(catalog);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

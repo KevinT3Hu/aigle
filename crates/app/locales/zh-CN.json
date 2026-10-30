@@ -742,5 +742,13 @@
   "queue.pause_hint": "当前文件完成后暂停。恢复的队列以暂停状态启动。",
   "queue.retry": "重试失败文件；继续队列以开始",
   "queue.clear": "停止导出后清除已完成文件",
-  "queue.cancelled": "已从等待导出中移除"
+  "queue.cancelled": "已从等待导出中移除",
+  "album.title": "相册",
+  "album.create": "将所选照片保存为新相册",
+  "album.open": "打开相册",
+  "album.add": "添加所选原片",
+  "album.remove": "移除所选原片",
+  "album.delete": "删除相册（保留照片）",
+  "library.duplicates": "完全重复组",
+  "library.duplicates.hint": "显示当前文件夹或相册中内容完全相同的文件。再次点击以显示全部或取消扫描。"
 }

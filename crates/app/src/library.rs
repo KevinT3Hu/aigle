@@ -45,6 +45,7 @@ pub enum Consumer {
 pub enum LibraryEvent {
     /// Open photo `index` in develop (double-click, filmstrip click).
     Open(usize),
+    CreateAlbum,
     Notice(String),
 }
 
@@ -195,6 +196,13 @@ pub struct Library {
     /// View position by key.
     positions: HashMap<PhotoKey, usize>,
     pub search_input: Entity<InputState>,
+    pub albums: Vec<(i64, String)>,
+    pub active_album: Option<i64>,
+    pub show_duplicates: bool,
+    pub scanning_duplicates: bool,
+    duplicate_paths: HashSet<PathBuf>,
+    duplicate_cancel: Arc<std::sync::atomic::AtomicBool>,
+    duplicate_task: Option<Task<()>>,
     pub saved_searches: Vec<crate::saved_searches::SavedSearch>,
     filter: Filter,
     sort: Sort,
@@ -304,6 +312,13 @@ impl Library {
             slots: HashMap::new(),
             positions: HashMap::new(),
             search_input,
+            albums: catalog.albums().unwrap_or_default(),
+            active_album: None,
+            show_duplicates: false,
+            scanning_duplicates: false,
+            duplicate_paths: HashSet::new(),
+            duplicate_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            duplicate_task: None,
             saved_searches,
             filter: Filter::default(),
             sort: Sort::default(),
@@ -490,7 +505,11 @@ impl Library {
         let had_selection = !selection.is_empty();
 
         let mut view: Vec<usize> = (0..self.all.len())
-            .filter(|&s| self.filter.matches(&self.all[s]))
+            .filter(|&s| {
+                self.filter.matches(&self.all[s])
+                    && (!self.show_duplicates
+                        || self.duplicate_paths.contains(&self.all[s].entry.path))
+            })
             .collect();
         view.sort_by(|&a, &b| self.sort.cmp(&self.all[a], &self.all[b]));
         self.positions = view
@@ -518,9 +537,111 @@ impl Library {
         cx.notify();
     }
 
+    pub fn toggle_duplicates(&mut self, cx: &mut Context<Self>) {
+        use std::sync::atomic::Ordering;
+        if self.show_duplicates || self.scanning_duplicates {
+            self.duplicate_cancel.store(true, Ordering::Relaxed);
+            self.duplicate_task = None;
+            self.show_duplicates = false;
+            self.scanning_duplicates = false;
+            self.rebuild_view(cx);
+            return;
+        }
+        self.duplicate_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = self.duplicate_cancel.clone();
+        let generation = self.generation;
+        let paths = self.all.iter().map(|it| it.entry.path.clone()).collect();
+        self.scanning_duplicates = true;
+        self.duplicate_task = Some(cx.spawn(async move |this, cx| {
+            let report = cx
+                .background_spawn(async move { aigle_library::duplicates::find(paths, &cancel) })
+                .await;
+            let _ = this.update(cx, |l, cx| {
+                if l.generation != generation {
+                    return;
+                }
+                l.scanning_duplicates = false;
+                l.show_duplicates = true;
+                l.duplicate_paths = report.groups.iter().flatten().cloned().collect();
+                let mut message = format!(
+                    "{}: {}",
+                    crate::i18n::t("library.duplicates"),
+                    report.groups.len()
+                );
+                if let Some((path, error)) = report.failed.first() {
+                    message.push_str(&format!(
+                        "; {}: {} ({})",
+                        path.display(),
+                        error,
+                        report.failed.len()
+                    ));
+                }
+                cx.emit(LibraryEvent::Notice(message));
+                l.rebuild_view(cx);
+            });
+        }));
+        cx.notify();
+    }
+
+    pub fn create_album(&mut self, name: &str, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        match self.catalog.create_album(name, &paths) {
+            Ok(_) => self.albums = self.catalog.albums().unwrap_or_default(),
+            Err(e) => cx.emit(LibraryEvent::Notice(e.to_string())),
+        }
+        cx.notify();
+    }
+
+    pub fn change_album(&mut self, id: i64, add: bool, cx: &mut Context<Self>) {
+        let paths: Vec<_> = self
+            .selection()
+            .into_iter()
+            .filter_map(|i| self.item(i).map(|it| it.entry.path.clone()))
+            .collect();
+        if let Err(e) = self.catalog.update_album(id, &paths, add) {
+            cx.emit(LibraryEvent::Notice(e.to_string()));
+        } else if self.active_album == Some(id) {
+            self.open_album(id, cx);
+        }
+    }
+
+    pub fn delete_album(&mut self, id: i64, cx: &mut Context<Self>) {
+        match self.catalog.delete_album(id) {
+            Ok(()) => self.albums = self.catalog.albums().unwrap_or_default(),
+            Err(e) => cx.emit(LibraryEvent::Notice(e.to_string())),
+        }
+        cx.notify();
+    }
+
+    pub fn open_album(&mut self, id: i64, cx: &mut Context<Self>) {
+        match self.catalog.album_paths(id) {
+            Ok(paths) => {
+                self.active_album = Some(id);
+                self.open_listing(None, Some(paths), None, cx);
+            }
+            Err(e) => cx.emit(LibraryEvent::Notice(e.to_string())),
+        }
+    }
+
     /// Scan `dir`, then read every sidecar and EXIF in the background. `select` is selected
     /// once listed (the first photo otherwise).
     pub fn open_folder(&mut self, dir: PathBuf, select: Option<PathBuf>, cx: &mut Context<Self>) {
+        self.active_album = None;
+        self.open_listing(Some(dir), None, select, cx);
+    }
+
+    fn open_listing(
+        &mut self,
+        dir: Option<PathBuf>,
+        paths: Option<Vec<PathBuf>>,
+        select: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        self.duplicate_cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.duplicate_task = None;
+        self.scanning_duplicates = false;
+        self.show_duplicates = false;
+        self.duplicate_paths.clear();
         self.flush(cx);
         self.generation += 1;
         self.jobs.clear();
@@ -532,10 +653,10 @@ impl Library {
         self.positions.clear();
         self.set_single(None);
         self.wanted = [0..0, 0..0];
-        if self.dir.as_ref() != Some(&dir) {
+        if self.dir != dir {
             self.filter = self.filter.for_new_folder();
         }
-        self.dir = Some(dir.clone());
+        self.dir = dir.clone();
         self.loading = true;
         let generation = self.generation;
         let recursive = self.recursive;
@@ -547,10 +668,27 @@ impl Library {
             let lister = catalog.clone();
             let listed = cx
                 .background_spawn(async move {
-                    let entries = if recursive {
-                        aigle_library::scan_recursive(&scan_dir)?
+                    let entries = if let Some(paths) = paths {
+                        paths
+                            .into_iter()
+                            .map(|path| {
+                                let meta = std::fs::metadata(&path).ok();
+                                PhotoEntry {
+                                    name: file_name(&path),
+                                    path,
+                                    bytes: meta.as_ref().map_or(0, |m| m.len()),
+                                    modified: meta.and_then(|m| m.modified().ok()),
+                                }
+                            })
+                            .collect()
+                    } else if let Some(scan_dir) = scan_dir {
+                        if recursive {
+                            aigle_library::scan_recursive(&scan_dir)?
+                        } else {
+                            aigle_library::scan(&scan_dir)?
+                        }
                     } else {
-                        aigle_library::scan(&scan_dir)?
+                        Vec::new()
                     };
                     let paths: Vec<PathBuf> = entries.iter().map(|e| e.path.clone()).collect();
                     let copies = lister.copies_of(&paths).unwrap_or_else(|e| {
