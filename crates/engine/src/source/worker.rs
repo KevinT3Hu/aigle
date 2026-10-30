@@ -69,7 +69,7 @@ pub(super) fn decode(
             Event::Done(h) => break h,
         }
     };
-    let rgb = call.blob().map_err(err)?;
+    let rgb = call.payload().map_err(err)?;
     let mask = if header.has_mask {
         Some(call.blob().map_err(err)?)
     } else {
@@ -107,7 +107,7 @@ fn serve_decode(body: &[u8], task: &mut Task) -> Result<Reply, Failure> {
     };
     let d = super::decode_file_here(&req.path, req.raw, &req.a, &mut admit, Some(&cancel))
         .map_err(failure)?;
-    let reply = Reply::new(&d.header)?.blob(d.rgb);
+    let reply = Reply::new(&d.header)?.payload(d.rgb);
     Ok(match d.mask {
         Some(m) => reply.blob(m),
         None => reply,

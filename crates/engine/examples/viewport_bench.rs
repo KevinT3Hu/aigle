@@ -33,7 +33,12 @@ fn main() {
     } else {
         Interaction::Final
     };
-    println!("interaction: {interaction:?}");
+    let display = if std::env::var_os("VIEWPORT_BENCH_HDR").is_some() {
+        aigle_engine_api::DisplayProfileId::HdrRec2020
+    } else {
+        Default::default()
+    };
+    println!("interaction: {interaction:?}; display: {display:?}");
     let backend = if args.get(1).is_some_and(|a| a == "auto") {
         BackendPreference::Auto
     } else {
@@ -81,7 +86,7 @@ fn main() {
         let full = Viewport {
             region: ImageRect::new(0.0, 0.0, iw, ih),
             output_size: (1024, 683),
-            display: Default::default(),
+            display: display.clone(),
         };
         backing.set_viewport(full.clone(), Interaction::Final);
         wait(&backing, &full);
@@ -105,7 +110,7 @@ fn main() {
                             1080.0 / zoom,
                         ),
                         output_size: (1920, 1080),
-                        display: Default::default(),
+                        display: display.clone(),
                     };
                     let t = Instant::now();
                     view.set_viewport(vp.clone(), interaction);

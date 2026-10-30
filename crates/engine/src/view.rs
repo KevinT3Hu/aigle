@@ -19,7 +19,7 @@ use aigle_core::geometry::Size;
 use aigle_core::{EditParams, Revision};
 use aigle_engine_api::{
     CancelToken, DisplayProfileId, Frame, Histogram, Interaction, Overlays, ParamsSource,
-    PixelBuffer, PixelFormat, Quality, ViewImpl, ViewSpec, Viewport, watch,
+    PixelBuffer, Quality, ViewImpl, ViewSpec, Viewport, watch,
 };
 use parking_lot::Mutex;
 
@@ -62,6 +62,7 @@ struct HistRequest {
     src: Arc<crate::source::SourceImage>,
     params: Arc<EditParams>,
     long_edge: u32,
+    display: DisplayProfileId,
 }
 
 /// Overview long edge for the histogram during a gesture.
@@ -212,7 +213,7 @@ impl ViewShared {
             } else {
                 self.session.engine.cfg.overview_long_edge
             };
-            self.request_histogram(&src, &params, hist_edge);
+            let hist_params = params.clone();
             let params = if uncropped {
                 Arc::new(params.uncropped())
             } else {
@@ -260,8 +261,8 @@ impl ViewShared {
                 pixels: PixelBuffer {
                     width: r.width,
                     height: r.height,
-                    stride: r.width * 4,
-                    format: PixelFormat::Bgra8,
+                    stride: r.width * r.format.bytes_per_pixel() as u32,
+                    format: r.format,
                     data: r.data.into(),
                 },
             };
@@ -279,6 +280,11 @@ impl ViewShared {
                 st.generation == generation
             };
 
+            // Publish pixels before starting auxiliary histogram rendering. On
+            // a fresh image both used to render the same uncached tiles at once.
+            if current {
+                self.request_histogram(&src, &hist_params, hist_edge);
+            }
             if quality != Quality::Draft && current && label == Quality::Full {
                 self.spawn_ring(&src, &params, &display, &target);
             }
@@ -331,8 +337,20 @@ impl ViewShared {
             if st.closed {
                 return;
             }
+            let display = if st
+                .viewport
+                .as_ref()
+                .is_some_and(|v| v.display == DisplayProfileId::HdrRec2020)
+            {
+                DisplayProfileId::HdrRec2020
+            } else {
+                DisplayProfileId::Srgb
+            };
             let have = st.hist_for.as_ref().is_some_and(|h| {
-                Arc::ptr_eq(&h.src, src) && *h.params == **params && h.long_edge >= long_edge
+                Arc::ptr_eq(&h.src, src)
+                    && *h.params == **params
+                    && h.long_edge >= long_edge
+                    && h.display == display
             });
             if have {
                 return;
@@ -341,6 +359,7 @@ impl ViewShared {
                 src: src.clone(),
                 params: params.clone(),
                 long_edge,
+                display,
             };
             st.hist_for = Some(req.clone());
             st.hist_want = Some(req);
@@ -371,10 +390,10 @@ impl ViewShared {
                         &req.src,
                         &req.params,
                         Some(req.long_edge),
-                        &DisplayProfileId::Srgb,
+                        &req.display,
                         Some(&v.histogram_cancel),
                     ) {
-                        let histogram = Arc::new(analysis::histogram(&o.data));
+                        let histogram = Arc::new(analysis::rendered_histogram(&o));
                         let st = v.state.lock();
                         if !st.closed {
                             v.hist_tx.send_replace(Some(histogram));

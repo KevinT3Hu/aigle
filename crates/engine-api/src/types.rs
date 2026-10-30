@@ -111,7 +111,7 @@ pub const RAW_EXTENSIONS: &[&str] = &[
 
 /// File extensions (lower case) of the rendered image formats the engine opens.
 pub const RASTER_EXTENSIONS: &[&str] = &[
-    "jpg", "jpeg", "tif", "tiff", "png", "webp", "heic", "heif", "avif",
+    "jpg", "jpeg", "tif", "tiff", "png", "webp", "heic", "heif", "avif", "jxl", "exr", "hdr",
 ];
 
 fn extension_in(path: &std::path::Path, list: &[&str]) -> bool {
@@ -280,6 +280,9 @@ pub enum DisplayProfileId {
     ProPhoto,
     /// ITU-R BT.2020 primaries with the BT.709 transfer curve. Output only.
     Rec2020,
+    /// Linear Rec.2020 HDR: 1.0 = 203 cd/m², mastering peak 1000 cd/m².
+    /// Views return RGBA16F; export requires an HDR format.
+    HdrRec2020,
     /// Content hash of a display ICC profile registered with the engine.
     Icc(String),
 }
@@ -347,6 +350,7 @@ pub enum Quality {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PixelFormat {
     Bgra8,
+    /// Little-endian linear Rec.2020 float16; for HdrRec2020, 1 = 203 cd/m².
     Rgba16F,
 }
 
@@ -379,13 +383,26 @@ pub struct Frame {
     pub pixels: PixelBuffer,
 }
 
-/// 256-bin display-referred histogram.
+/// 256-bin display-referred histogram. HDR uses PQ normalized to 1000 cd/m².
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Histogram {
     pub red: Vec<u32>,
     pub green: Vec<u32>,
     pub blue: Vec<u32>,
     pub luma: Vec<u32>,
+    /// Bounded spatial samples of the rendered crop, in linear Rec.2020 (1 = 203 nits
+    /// for HDR). Empty for histogram-only callers. Analysis is approximate at this resolution.
+    #[serde(default)]
+    pub scope: ScopeSamples,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ScopeSamples {
+    pub width: u32,
+    pub height: u32,
+    pub hdr: bool,
+    /// Row-major RGBA, alpha zero outside the rendered crop.
+    pub pixels: Vec<[f32; 4]>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -426,11 +443,21 @@ pub enum EncodedFormat {
     Jxl {
         quality: u8,
     },
+    /// Floating-point HDR TIFF, with a linear sRGB ICC profile.
+    HdrTiff,
+    /// 16-bit full-range BT.2100 PQ PNG with cICP/HDR metadata.
+    HdrPng,
+    /// Linear floating-point OpenEXR (linear sRGB primaries).
+    OpenExr,
     /// Export only: the raw sensor data as a DNG, with the edits left to the sidecar.
     Dng,
 }
 
 impl EncodedFormat {
+    pub fn is_hdr(self) -> bool {
+        matches!(self, Self::HdrTiff | Self::HdrPng | Self::OpenExr)
+    }
+
     /// File extension, without the dot.
     pub fn extension(self) -> &'static str {
         match self {
@@ -442,6 +469,9 @@ impl EncodedFormat {
             EncodedFormat::Heic { .. } => "heic",
             EncodedFormat::Jxl { .. } => "jxl",
             EncodedFormat::Dng => "dng",
+            EncodedFormat::HdrTiff => "tif",
+            EncodedFormat::HdrPng => "png",
+            EncodedFormat::OpenExr => "exr",
         }
     }
 }
@@ -507,6 +537,7 @@ pub struct ExportOptions {
     pub format: EncodedFormat,
     /// Resize after a full-resolution render (doc 02 §5.6); `None` = full size.
     pub long_edge: Option<u32>,
+    /// SDR output profile. HDR formats use their fixed HDR encoding/primaries.
     pub output: DisplayProfileId,
     #[serde(default)]
     pub sharpening: OutputSharpening,

@@ -33,6 +33,9 @@ pub fn suffix(fmt: EncodedFormat) -> String {
         }
         EncodedFormat::Jxl { quality } => format!(".jxl[Q={}]", quality.clamp(1, 100)),
         EncodedFormat::Dng => ".dng".into(),
+        EncodedFormat::HdrTiff => ".tif[compression=deflate,predictor=float]".into(),
+        EncodedFormat::OpenExr => ".exr".into(),
+        EncodedFormat::HdrPng => ".png".into(),
     }
 }
 
@@ -151,6 +154,9 @@ pub fn encode(
     display: &DisplayProfileId,
     exif: Option<&vips::Exif>,
 ) -> Result<Vec<u8>, String> {
+    if fmt.is_hdr() {
+        return Err("HDR encoding requires float pixels; use export".into());
+    }
     if fmt == EncodedFormat::Dng {
         return Err("encode: DNG holds raw data and is written by export only".into());
     }
@@ -172,6 +178,7 @@ pub fn encode(
         width,
         height,
         sixteen_bit: false,
+        floating_point: false,
         out_size: (width, height),
         icc: name,
         exif,

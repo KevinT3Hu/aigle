@@ -39,6 +39,7 @@ actions!(
         ToggleMetadata,
         SelectAll,
         ToggleZoom,
+        ToggleHdrCanvas,
         ToggleBefore,
         ToggleSplit,
         ToggleSoftProof,

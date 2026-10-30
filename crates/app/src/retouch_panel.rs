@@ -229,30 +229,36 @@ impl RetouchPanel {
             SpotMode::Heal => crate::i18n::t("retouch.heal"),
             SpotMode::Clone => crate::i18n::t("retouch.clone"),
         };
-        Button::new(SharedString::from(format!("spot-{mode:?}")))
-            .label(label)
-            .small()
-            .selected(mode == current)
-            .on_click(move |_, _, cx| {
-                photo.update(cx, |p, cx| {
-                    p.spot_brush.mode = mode;
-                    if let Some((i, s)) = p.spot()
-                        && s.mode != mode
-                    {
-                        p.command(
-                            crate::i18n::join(&["tool.spot", "retouch.mode"]),
-                            vec![ParamOp::set(
-                                &format!("spots.{i}.mode"),
-                                serde_json::to_value(mode).expect("serialisable"),
-                            )],
-                            None,
-                            Interaction::Final,
-                            cx,
-                        );
-                    }
-                    cx.notify();
-                })
+        crate::ui::labeled_button(
+            SharedString::from(format!("spot-{mode:?}")),
+            match mode {
+                SpotMode::Heal => crate::ui::Glyph::Heal,
+                SpotMode::Clone => crate::ui::Glyph::Clone,
+            },
+            label,
+        )
+        .small()
+        .selected(mode == current)
+        .on_click(move |_, _, cx| {
+            photo.update(cx, |p, cx| {
+                p.spot_brush.mode = mode;
+                if let Some((i, s)) = p.spot()
+                    && s.mode != mode
+                {
+                    p.command(
+                        crate::i18n::join(&["tool.spot", "retouch.mode"]),
+                        vec![ParamOp::set(
+                            &format!("spots.{i}.mode"),
+                            serde_json::to_value(mode).expect("serialisable"),
+                        )],
+                        None,
+                        Interaction::Final,
+                        cx,
+                    );
+                }
+                cx.notify();
             })
+        })
     }
 
     fn render_spots(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -290,31 +296,37 @@ impl RetouchPanel {
                     .when_some(selected, |d, i| {
                         let photo = photo.clone();
                         d.child(
-                            Button::new("spot-delete")
-                                .label(crate::i18n::t("common.delete"))
-                                .small()
-                                .on_click(move |_, _, cx| {
-                                    photo.update(cx, |p, cx| p.delete_spot(i, cx))
-                                }),
+                            crate::ui::icon_button(
+                                "spot-delete",
+                                crate::ui::Glyph::Delete,
+                                crate::i18n::t("common.delete"),
+                            )
+                            .small()
+                            .on_click(move |_, _, cx| {
+                                photo.update(cx, |p, cx| p.delete_spot(i, cx))
+                            }),
                         )
                     })
                     .when(count > 0, |d| {
                         d.child(
-                            Button::new("spot-clear")
-                                .label(crate::i18n::t("retouch.clear_all"))
-                                .small()
-                                .on_click(move |_, _, cx| {
-                                    photo.update(cx, |p, cx| {
-                                        p.command(
-                                            "retouch.clear_spots",
-                                            vec![tools::spots_op(&[])],
-                                            None,
-                                            Interaction::Final,
-                                            cx,
-                                        );
-                                        p.selected_spot = None;
-                                    })
-                                }),
+                            crate::ui::icon_button(
+                                "spot-clear",
+                                crate::ui::Glyph::Clear,
+                                crate::i18n::t("retouch.clear_all"),
+                            )
+                            .small()
+                            .on_click(move |_, _, cx| {
+                                photo.update(cx, |p, cx| {
+                                    p.command(
+                                        "retouch.clear_spots",
+                                        vec![tools::spots_op(&[])],
+                                        None,
+                                        Interaction::Final,
+                                        cx,
+                                    );
+                                    p.selected_spot = None;
+                                })
+                            }),
                         )
                     }),
             )
@@ -347,31 +359,35 @@ impl RetouchPanel {
                 .when_some(selected, |d, i| {
                     let photo = photo.clone();
                     d.child(
-                        Button::new("eye-delete")
-                            .label(crate::i18n::t("common.delete"))
-                            .small()
-                            .on_click(move |_, _, cx| {
-                                photo.update(cx, |p, cx| p.delete_eye(i, cx))
-                            }),
+                        crate::ui::icon_button(
+                            "eye-delete",
+                            crate::ui::Glyph::Delete,
+                            crate::i18n::t("common.delete"),
+                        )
+                        .small()
+                        .on_click(move |_, _, cx| photo.update(cx, |p, cx| p.delete_eye(i, cx))),
                     )
                 })
                 .when(count > 0, |d| {
                     d.child(
-                        Button::new("eye-clear")
-                            .label(crate::i18n::t("retouch.clear_all"))
-                            .small()
-                            .on_click(move |_, _, cx| {
-                                photo.update(cx, |p, cx| {
-                                    p.command(
-                                        "retouch.clear_eyes",
-                                        vec![tools::eyes_op(&[])],
-                                        None,
-                                        Interaction::Final,
-                                        cx,
-                                    );
-                                    p.selected_eye = None;
-                                })
-                            }),
+                        crate::ui::icon_button(
+                            "eye-clear",
+                            crate::ui::Glyph::Clear,
+                            crate::i18n::t("retouch.clear_all"),
+                        )
+                        .small()
+                        .on_click(move |_, _, cx| {
+                            photo.update(cx, |p, cx| {
+                                p.command(
+                                    "retouch.clear_eyes",
+                                    vec![tools::eyes_op(&[])],
+                                    None,
+                                    Interaction::Final,
+                                    cx,
+                                );
+                                p.selected_eye = None;
+                            })
+                        }),
                     )
                 }),
         )

@@ -28,6 +28,9 @@ pub enum Format {
     Png,
     Tiff8,
     Tiff16,
+    HdrTiff,
+    HdrPng,
+    OpenExr,
     WebP,
     Avif,
     Heic,
@@ -36,11 +39,14 @@ pub enum Format {
 }
 
 impl Format {
-    const ALL: [(Format, &'static str); 9] = [
+    const ALL: [(Format, &'static str); 12] = [
         (Format::Jpeg, "JPEG"),
         (Format::Png, "PNG"),
         (Format::Tiff8, "export.format.tiff8"),
         (Format::Tiff16, "export.format.tiff16"),
+        (Format::HdrTiff, "TIFF HDR (float32)"),
+        (Format::HdrPng, "PNG HDR (16-bit PQ)"),
+        (Format::OpenExr, "OpenEXR HDR (float32)"),
         (Format::WebP, "WebP"),
         (Format::Avif, "AVIF"),
         (Format::Heic, "HEIC"),
@@ -84,6 +90,9 @@ impl Format {
             Format::Heic => EncodedFormat::Heic { quality },
             Format::Jxl => EncodedFormat::Jxl { quality },
             Format::Dng => EncodedFormat::Dng,
+            Format::HdrTiff => EncodedFormat::HdrTiff,
+            Format::HdrPng => EncodedFormat::HdrPng,
+            Format::OpenExr => EncodedFormat::OpenExr,
         }
     }
 }
@@ -250,7 +259,7 @@ pub fn with_extension(path: PathBuf, format: Format) -> PathBuf {
         .map(|e| e.to_ascii_lowercase())
         .is_some_and(|e| match format {
             Format::Jpeg => e == "jpg" || e == "jpeg",
-            Format::Tiff8 | Format::Tiff16 => e == "tif" || e == "tiff",
+            Format::Tiff8 | Format::Tiff16 | Format::HdrTiff => e == "tif" || e == "tiff",
             Format::Heic => e == "heic" || e == "heif",
             f => e == f.extension(),
         });
@@ -708,10 +717,13 @@ impl ExportDialog {
                                 .child(image_name),
                         )
                         .child(
-                            Button::new("wm-image")
-                                .label(crate::i18n::t("export.change_dir"))
-                                .small()
-                                .on_click(cx.listener(|d, _, _, cx| d.choose_watermark_image(cx))),
+                            crate::ui::icon_button(
+                                "wm-image",
+                                crate::ui::Glyph::Folder,
+                                crate::i18n::t("export.change_dir"),
+                            )
+                            .small()
+                            .on_click(cx.listener(|d, _, _, cx| d.choose_watermark_image(cx))),
                         ),
                 )
             })
@@ -755,7 +767,8 @@ impl ExportDialog {
                 )
                 .child(
                     Button::new(SharedString::from(format!("export-preset-del-{i}")))
-                        .label("×")
+                        .icon(crate::ui::Glyph::Delete.icon())
+                        .accessibility_label(crate::i18n::t("common.delete"))
                         .xsmall()
                         .ghost()
                         .tooltip(crate::i18n::t("presets.delete"))
@@ -770,10 +783,13 @@ impl ExportDialog {
                     .gap_1()
                     .child(div().flex_1().child(Input::new(&self.preset_name).small()))
                     .child(
-                        Button::new("export-preset-save")
-                            .label(crate::i18n::t("export.save_preset"))
-                            .small()
-                            .on_click(cx.listener(|d, _, _, cx| d.save_preset(cx))),
+                        crate::ui::labeled_button(
+                            "export-preset-save",
+                            crate::ui::Glyph::Save,
+                            crate::i18n::t("export.save_preset"),
+                        )
+                        .small()
+                        .on_click(cx.listener(|d, _, _, cx| d.save_preset(cx))),
                     ),
             )
     }
@@ -810,7 +826,11 @@ pub fn run(
             path,
             format: settings.format.encoded(settings.quality),
             long_edge: settings.long_edge.filter(|_| !raw),
-            output: settings.output.clone(),
+            output: if settings.format.encoded(settings.quality).is_hdr() {
+                DisplayProfileId::HdrRec2020
+            } else {
+                settings.output.clone()
+            },
             sharpening: settings.sharpening,
             metadata: settings.metadata,
             artist: text(&settings.artist),
@@ -858,6 +878,7 @@ impl Render for ExportDialog {
         });
         let dir = self.dir();
         let raw = s.format.is_raw();
+        let hdr = s.format.encoded(s.quality).is_hdr();
         let rendering = (!raw).then(|| {
             v_flex()
                 .gap_3()
@@ -869,22 +890,31 @@ impl Render for ExportDialog {
                     |s, v| s.long_edge = v,
                     cx,
                 ))
-                .child(label(crate::i18n::t("export.color_space")))
-                .child(self.choice(
-                    "cs",
-                    vec![
-                        (DisplayProfileId::Srgb, "sRGB"),
-                        (DisplayProfileId::DisplayP3, "Display P3"),
-                        (DisplayProfileId::AdobeRgb, "Adobe RGB"),
-                        (DisplayProfileId::ProPhoto, "ProPhoto RGB"),
-                        (DisplayProfileId::Rec2020, "Rec. 2020"),
-                    ],
-                    s.output.clone(),
-                    |s, v| s.output = v,
-                    cx,
-                ))
+                .when(!hdr, |d| {
+                    d.child(label(crate::i18n::t("export.color_space")))
+                        .child(self.choice(
+                            "cs",
+                            vec![
+                                (DisplayProfileId::Srgb, "sRGB"),
+                                (DisplayProfileId::DisplayP3, "Display P3"),
+                                (DisplayProfileId::AdobeRgb, "Adobe RGB"),
+                                (DisplayProfileId::ProPhoto, "ProPhoto RGB"),
+                                (DisplayProfileId::Rec2020, "Rec. 2020"),
+                            ],
+                            s.output.clone(),
+                            |s, v| s.output = v,
+                            cx,
+                        ))
+                })
+                .when(hdr, |d| {
+                    d.child(label(crate::i18n::t(if s.format == Format::HdrPng {
+                        "export.hdr_pq_note"
+                    } else {
+                        "export.hdr_float_note"
+                    })))
+                })
                 .when(
-                    s.output == DisplayProfileId::ProPhoto && s.format != Format::Tiff16,
+                    !hdr && s.output == DisplayProfileId::ProPhoto && s.format != Format::Tiff16,
                     |d| {
                         d.child(
                             div()
@@ -1004,10 +1034,13 @@ impl Render for ExportDialog {
                                 .child(dir.display().to_string()),
                         )
                         .child(
-                            Button::new("export-dir")
-                                .label(crate::i18n::t("export.change_dir"))
-                                .small()
-                                .on_click(cx.listener(|d, _, _, cx| d.choose_dir(cx))),
+                            crate::ui::icon_button(
+                                "export-dir",
+                                crate::ui::Glyph::Folder,
+                                crate::i18n::t("export.change_dir"),
+                            )
+                            .small()
+                            .on_click(cx.listener(|d, _, _, cx| d.choose_dir(cx))),
                         ),
                 )
             })
@@ -1020,25 +1053,31 @@ impl Render for ExportDialog {
                     .gap_2()
                     .justify_end()
                     .child(
-                        Button::new("export-cancel")
-                            .label(crate::i18n::t("common.cancel"))
-                            .small()
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(ExportEvent::Done(None)))),
+                        crate::ui::labeled_button(
+                            "export-cancel",
+                            crate::ui::Glyph::Close,
+                            crate::i18n::t("common.cancel"),
+                        )
+                        .small()
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(ExportEvent::Done(None)))),
                     )
                     .child(
-                        Button::new("export-go")
-                            .label(match (busy, batch) {
+                        crate::ui::labeled_button(
+                            "export-go",
+                            crate::ui::Glyph::Export,
+                            match (busy, batch) {
                                 (true, _) => crate::i18n::t("export.choose_location"),
                                 (false, true) => crate::i18n::t("export.export"),
                                 (false, false) => crate::i18n::t("action.Export"),
-                            })
-                            .small()
-                            .primary()
-                            .on_click(cx.listener(|d, _, _, cx| {
-                                if d.prompt.is_none() {
-                                    d.confirm(cx)
-                                }
-                            })),
+                            },
+                        )
+                        .small()
+                        .primary()
+                        .on_click(cx.listener(|d, _, _, cx| {
+                            if d.prompt.is_none() {
+                                d.confirm(cx)
+                            }
+                        })),
                     ),
             );
         div()

@@ -38,7 +38,7 @@ pub fn rgb_to_xyz(d: &DisplayProfileId) -> Mat3 {
         DisplayProfileId::DisplayP3 => color::DISPLAY_P3_TO_XYZ,
         DisplayProfileId::AdobeRgb => adobe_rgb_to_xyz(),
         DisplayProfileId::ProPhoto => prophoto_to_xyz(),
-        DisplayProfileId::Rec2020 => color::REC2020_TO_XYZ,
+        DisplayProfileId::Rec2020 | DisplayProfileId::HdrRec2020 => color::REC2020_TO_XYZ,
     }
 }
 
@@ -56,6 +56,7 @@ pub fn transfer(d: &DisplayProfileId) -> u32 {
         DisplayProfileId::AdobeRgb => TRANSFER_ADOBE,
         DisplayProfileId::ProPhoto => TRANSFER_PROPHOTO,
         DisplayProfileId::Rec2020 => TRANSFER_REC709,
+        DisplayProfileId::HdrRec2020 => crate::hdr::TRANSFER_LINEAR_HDR,
     }
 }
 
@@ -130,6 +131,7 @@ pub fn icc(d: &DisplayProfileId) -> Icc {
         DisplayProfileId::AdobeRgb => data(&ADOBE, d),
         DisplayProfileId::ProPhoto => data(&PROPHOTO, d),
         DisplayProfileId::Rec2020 => data(&REC2020, d),
+        DisplayProfileId::HdrRec2020 => Icc::Data(icc_profile(d).into()),
     }
 }
 
@@ -139,6 +141,7 @@ fn description(d: &DisplayProfileId) -> &'static str {
         DisplayProfileId::AdobeRgb => "Adobe RGB (1998) compatible (aigle)",
         DisplayProfileId::ProPhoto => "ProPhoto RGB (ROMM) (aigle)",
         DisplayProfileId::Rec2020 => "Rec. ITU-R BT.2020 (aigle)",
+        DisplayProfileId::HdrRec2020 => "Linear Rec.2020 HDR (aigle; white 203 cd/m2)",
         DisplayProfileId::DisplayP3 => "Display P3 (aigle)",
         DisplayProfileId::Srgb | DisplayProfileId::Icc(_) => "sRGB IEC61966-2.1 (aigle)",
     }
@@ -148,6 +151,7 @@ fn description(d: &DisplayProfileId) -> &'static str {
 /// encoded → linear direction.
 fn para(transfer: u32) -> (u16, Vec<f64>) {
     match transfer {
+        crate::hdr::TRANSFER_LINEAR_HDR => (0, vec![1.0]),
         TRANSFER_ADOBE => (0, vec![563.0 / 256.0]),
         // Y = (aX + b)^g for X ≥ d, cX below.
         TRANSFER_PROPHOTO => (3, vec![1.8, 1.0, 0.0, 1.0 / 16.0, 16.0 / 512.0]),
@@ -187,12 +191,25 @@ fn mluc(text: &str) -> Vec<u8> {
 }
 
 /// Matrix/TRC display-class ICC v4.3 profile for `d`, D50 PCS, Bradford-adapted colorants.
+pub fn linear_srgb_icc() -> Vec<u8> {
+    icc_profile_impl(&DisplayProfileId::HdrRec2020, true)
+}
+
 pub fn icc_profile(d: &DisplayProfileId) -> Vec<u8> {
+    icc_profile_impl(d, false)
+}
+
+fn icc_profile_impl(d: &DisplayProfileId, linear_srgb: bool) -> Vec<u8> {
     let d65 = xy_to_xyz(D65_XY.0, D65_XY.1);
     let d50 = xy_to_xyz(D50_XY.0, D50_XY.1);
     let (native, chad) = match d {
         DisplayProfileId::ProPhoto => (prophoto_to_xyz_d50(), color::IDENTITY),
         _ => (rgb_to_xyz(d), bradford(d65, d50)),
+    };
+    let native = if linear_srgb {
+        color::SRGB_TO_XYZ
+    } else {
+        native
     };
     let pcs = color::mul(&chad, &native);
     let col = |j: usize| [pcs[0][j], pcs[1][j], pcs[2][j]];
@@ -212,7 +229,14 @@ pub fn icc_profile(d: &DisplayProfileId) -> Vec<u8> {
     // ICC PCS illuminant, exactly as the spec writes it.
     let pcs_white = [0.9642, 1.0, 0.8249];
     let tags: Vec<(&[u8; 4], Vec<u8>)> = vec![
-        (b"desc", mluc(description(d))),
+        (
+            b"desc",
+            mluc(if linear_srgb {
+                "Linear sRGB HDR (aigle; white 203 cd/m2)"
+            } else {
+                description(d)
+            }),
+        ),
         (b"cprt", mluc("No copyright, use freely")),
         (b"wtpt", xyz_tag(pcs_white)),
         (b"chad", sf32),
@@ -321,6 +345,7 @@ mod tests {
                 width: 4,
                 height: 1,
                 sixteen_bit: true,
+                floating_point: false,
                 out_size: (4, 1),
                 icc: None,
                 exif: None,

@@ -6,6 +6,7 @@
 //!
 //! TODO(A3 alt): AI-denoise asset replacing the demosaic output (doc 06 §4).
 
+mod hdr_file;
 pub mod highlights;
 mod pyramid;
 mod raster;
@@ -32,7 +33,7 @@ use crate::noise::{self, NoiseLevel, NoiseModel, NoiseSource};
 use crate::profile::CameraCalibration;
 
 /// Bumped whenever decoder output changes (part of the A-tier key).
-const DECODER_VERSION: u32 = 3;
+const DECODER_VERSION: u32 = 5;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoadError {
@@ -338,7 +339,7 @@ struct Decoded {
     size: Size,
     exif: u16,
     /// Stored data in f32 (reference WB premultiplied).
-    rgb: Vec<aigle_kernels::Rgb>,
+    rgb: aigle_isolate::Payload<aigle_kernels::Rgb>,
     color: SourceColor,
     camera: Option<aigle_engine_api::CameraInfo>,
     sensor_clipped: Option<f32>,
@@ -371,7 +372,7 @@ fn decode_rgb(
                 kind: SourceKind::Synthetic,
                 size: Size::new(*width, *height),
                 exif: 1,
-                rgb: synthetic::render(*pattern, *width, *height),
+                rgb: synthetic::render(*pattern, *width, *height).into(),
                 color: SourceColor::working_space(),
                 camera: None,
                 sensor_clipped: None,
@@ -393,6 +394,7 @@ fn decode_rgb(
                 tracing::debug!(
                     path = %path.display(),
                     demosaic = ?h.demosaic,
+                    mapped = rgb.is_mapped(),
                     white = ?h.white_levels,
                     "raw decoded"
                 );
@@ -442,7 +444,7 @@ pub(crate) struct FileHeader {
 
 pub(crate) struct FileDecoded {
     pub header: FileHeader,
-    pub rgb: Vec<aigle_kernels::Rgb>,
+    pub rgb: aigle_isolate::Payload<aigle_kernels::Rgb>,
     pub mask: Option<Vec<u8>>,
 }
 
@@ -499,7 +501,7 @@ fn decode_file_here(
                 demosaic: None,
                 has_mask: false,
             },
-            rgb: d.rgb,
+            rgb: d.rgb.into(),
             mask: None,
         })
     }
@@ -547,7 +549,7 @@ pub fn full_precision(
             "the source changed since it was opened".into(),
         ));
     }
-    let mut rgb = d.rgb;
+    let mut rgb = d.rgb.into_vec();
     if let Some(mask) = base.clip_mask(0) {
         use rayon::prelude::*;
         rgb.par_iter_mut()
@@ -577,6 +579,7 @@ pub fn load(
     ledger: &Arc<MemLedger>,
     cancel: Option<&CancelToken>,
 ) -> Result<SourceImage, LoadError> {
+    let started = std::time::Instant::now();
     let raw_input = is_raw_source(src);
     let a = ATier::of(params).normalized_for(raw_input);
     let mut key = a_key(src, &a)?;
@@ -599,6 +602,8 @@ pub fn load(
         mask,
         noise_model,
     } = decode_rgb(src, &a, &mut key, &mut admit, cancel)?;
+    tracing::debug!(elapsed = ?started.elapsed(), "source decode complete");
+    let stage = std::time::Instant::now();
     let decode_key = key.finish();
     if cancel.is_some_and(|c| c.is_cancelled()) {
         return Err(LoadError::Cancelled);
@@ -633,7 +638,10 @@ pub fn load(
         }
         None => None,
     };
+    tracing::debug!(elapsed = ?stage.elapsed(), "source conversion/highlights");
+    let stage = std::time::Instant::now();
     let mut pyramid = Pyramid::build(level0);
+    tracing::debug!(elapsed = ?stage.elapsed(), total = ?started.elapsed(), "source pyramid complete");
     let alloc = account_pyramid(&mut pyramid, hl.as_ref().map_or(0, |h| h.0.bytes()), ledger);
     drop(reservation);
     Ok(SourceImage {

@@ -191,7 +191,8 @@ impl Render for PresetsPanel {
                     )
                     .child(
                         Button::new(SharedString::from(format!("preset-del-{i}")))
-                            .label("×")
+                            .icon(crate::ui::Glyph::Delete.icon())
+                            .accessibility_label(crate::i18n::t("common.delete"))
                             .xsmall()
                             .ghost()
                             .tooltip(crate::i18n::t("presets.delete"))
@@ -215,12 +216,15 @@ impl Render for PresetsPanel {
                             .child(crate::i18n::t("presets.title")),
                     )
                     .child(
-                        Button::new("preset-add")
-                            .label("+")
-                            .xsmall()
-                            .ghost()
-                            .tooltip(crate::i18n::t("presets.new_tooltip"))
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(PresetsEvent::Create))),
+                        crate::ui::icon_button(
+                            "preset-add",
+                            crate::ui::Glyph::Add,
+                            crate::i18n::t("presets.new_tooltip"),
+                        )
+                        .xsmall()
+                        .ghost()
+                        .tooltip(crate::i18n::t("presets.new_tooltip"))
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(PresetsEvent::Create))),
                     ),
             )
             .child(

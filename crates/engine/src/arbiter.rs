@@ -71,11 +71,11 @@ pub fn cpu_gate() -> &'static Arc<CpuGate> {
     G.get_or_init(Default::default)
 }
 
-/// Concurrent native decodes (LibRaw + librtprocess, single-threaded each): half the
-/// hardware threads; memory admission (doc 03 §6) bounds them further.
+/// Concurrent native decodes: each RCD stage uses up to eight tile workers.
+/// Limit decode slots to a eighth of hardware threads; memory admission bounds them further.
 pub fn decoders() -> &'static Arbiter {
     static A: std::sync::OnceLock<Arbiter> = std::sync::OnceLock::new();
-    A.get_or_init(|| Arbiter::new("decode", (hw_threads() / 2).max(1)))
+    A.get_or_init(|| Arbiter::new("decode", (hw_threads() / 8).max(1)))
 }
 
 /// File writes (doc 05 §5: IO pool of 2).

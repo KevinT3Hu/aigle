@@ -200,6 +200,10 @@ impl Prepared {
             .finish();
     }
 
+    pub fn is_hdr(&self) -> bool {
+        self.e1.transfer == crate::hdr::TRANSFER_LINEAR_HDR
+    }
+
     /// Stable key describing the full render state (for `Analysis::rev_key`).
     pub fn state_key(&self) -> CacheKey {
         KeyBuilder::new("state")
@@ -363,6 +367,7 @@ pub struct Rendered {
     pub height: u32,
     /// BGRA8, premultiplied-free; alpha 0 outside the crop.
     pub data: Vec<u8>,
+    pub format: aigle_engine_api::PixelFormat,
     /// Render scale actually used (grid px per level-0 source px).
     pub render_scale: f64,
     pub elapsed: std::time::Duration,
@@ -785,7 +790,10 @@ pub fn export_rows(
         .flat_map(|ty| (0..gw.div_ceil(TILE)).map(move |tx| (tx, ty)))
         .collect();
     let map = tiles_chunked(ctx, src, prep, 1.0, level, true, &tiles, gw, gh, cancel)?;
-    let bpp_in = map.values().next().map_or(4, |t| t.bytes_per_px());
+    let bpp_in = map
+        .values()
+        .next()
+        .map_or(if prep.is_hdr() { 16 } else { 4 }, |t| t.bytes_per_px());
     let bpp_out = bpp_in / 4 * 3;
     let mut out = vec![0u8; w as usize * h as usize * bpp_out];
     out.par_chunks_mut(w as usize * bpp_out)
@@ -806,7 +814,7 @@ pub fn export_rows(
                         d.copy_from_slice(&[s[2], s[1], s[0]]);
                     } else {
                         // RGBA16 little-endian, alpha carries the clip flags.
-                        d.copy_from_slice(&s[..6]);
+                        d.copy_from_slice(&s[..bpp_out]);
                     }
                 }
             }
@@ -907,8 +915,9 @@ pub fn render(
     let t_tiles = t0.elapsed();
     // Assemble the needed grid rect contiguously.
     let (aw, ah) = (gx1 - gx0, gy1 - gy0);
-    let mut grid = vec![0u8; aw as usize * ah as usize * 4];
-    grid.par_chunks_mut(aw as usize * 4)
+    let bpp = if prep.is_hdr() { 16 } else { 4 };
+    let mut grid = vec![0u8; aw as usize * ah as usize * bpp];
+    grid.par_chunks_mut(aw as usize * bpp)
         .enumerate()
         .for_each(|(row, dst)| {
             let gy = gy0 + row as u32;
@@ -920,12 +929,96 @@ pub fn render(
                 let lx = gx - tx * TILE;
                 let ly = gy - ty * TILE;
                 let n = (tile.w - lx).min(gx1 - gx);
-                let s0 = ((ly * tile.w + lx) * 4) as usize;
-                let d0 = ((gx - gx0) * 4) as usize;
-                dst[d0..d0 + n as usize * 4].copy_from_slice(&tile.data[s0..s0 + n as usize * 4]);
+                let s0 = (ly * tile.w + lx) as usize * bpp;
+                let d0 = (gx - gx0) as usize * bpp;
+                dst[d0..d0 + n as usize * bpp]
+                    .copy_from_slice(&tile.data[s0..s0 + n as usize * bpp]);
                 gx += n;
             }
         });
+
+    if prep.is_hdr() {
+        // Borrow packed float tiles when aligned; retain a portable unaligned/BE path.
+        let converted;
+        let grid: &[[f32; 4]] = match bytemuck::try_cast_slice(&grid) {
+            Ok(grid) if cfg!(target_endian = "little") => grid,
+            _ => {
+                converted = grid
+                    .as_chunks::<16>()
+                    .0
+                    .iter()
+                    .map(|p| {
+                        std::array::from_fn(|c| {
+                            f32::from_le_bytes(p[c * 4..c * 4 + 4].try_into().unwrap())
+                        })
+                    })
+                    .collect::<Vec<[f32; 4]>>();
+                &converted
+            }
+        };
+        let overlay = target
+            .overlays
+            .mask_overlay
+            .and_then(|id| masks::overlay(&prep.edit, id, &prep.level_map(level)));
+        let ov_lvl = &src.pyramid.levels[level];
+        let ov_inv = 0.5f64.powi(level as i32);
+        let mut data = vec![0u8; out.w as usize * out.h as usize * 8];
+        data.par_chunks_mut(out.w as usize * 8)
+            .enumerate()
+            .for_each(|(oy, row)| {
+                let qy = region.y + (oy as f64 + 0.5) * region.h / out.h as f64;
+                for (ox, dst) in row.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+                    let qx = region.x + (ox as f64 + 0.5) * region.w / out.w as f64;
+                    if qx < 0.0 || qy < 0.0 || qx >= cw || qy >= ch {
+                        continue;
+                    }
+                    let u = (qx * s - 0.5 - gx0 as f64).clamp(0.0, (aw - 1) as f64);
+                    let v = (qy * s - 0.5 - gy0 as f64).clamp(0.0, (ah - 1) as f64);
+                    let (x, y) = (u as u32, v as u32);
+                    let (fx, fy) = ((u - x as f64) as f32, (v - y as f64) as f32);
+                    let at = |x: u32, y: u32| grid[(y.min(ah - 1) * aw + x.min(aw - 1)) as usize];
+                    let (a, b, c, d) = (at(x, y), at(x + 1, y), at(x, y + 1), at(x + 1, y + 1));
+                    let mut rgb: Rgb = std::array::from_fn(|ch| {
+                        (a[ch] * (1.0 - fx) + b[ch] * fx) * (1.0 - fy)
+                            + (c[ch] * (1.0 - fx) + d[ch] * fx) * fy
+                    });
+                    let flags = at((u + 0.5) as u32, (v + 0.5) as u32)[3] as u32 - 1;
+                    if target.overlays.clipping {
+                        if flags & CLIP_HIGH != 0 {
+                            rgb = [1.0, 0.0, 0.0];
+                        } else if flags & CLIP_LOW != 0 {
+                            rgb = [0.0, 0.0, 1.0];
+                        }
+                    }
+                    if target.overlays.gamut_warning && flags & CLIP_GAMUT != 0 {
+                        rgb = [1.0, 0.0, 1.0];
+                    }
+                    if let Some(prog) = &overlay {
+                        let p = prep.crop_to_stored(Point::new(qx, qy));
+                        let (u, v) = ((p.x * ov_inv - 0.5) as f32, (p.y * ov_inv - 0.5) as f32);
+                        let color = prep.c1.apply(bilinear(ov_lvl, u, v));
+                        let a = 0.5 * aigle_kernels::masks::alpha_of(prog, 0, 0, u, v, color);
+                        rgb = [
+                            rgb[0] * (1.0 - a) + a,
+                            rgb[1] * (1.0 - a),
+                            rgb[2] * (1.0 - a),
+                        ];
+                    }
+                    for (c, v) in rgb.into_iter().chain([1.0]).enumerate() {
+                        dst[c * 2..c * 2 + 2]
+                            .copy_from_slice(&half::f16::from_f32(v).to_bits().to_le_bytes());
+                    }
+                }
+            });
+        return Ok(Rendered {
+            width: out.w,
+            height: out.h,
+            data,
+            format: aigle_engine_api::PixelFormat::Rgba16F,
+            render_scale: s,
+            elapsed: t0.elapsed(),
+        });
+    }
 
     let t_assemble = t0.elapsed();
     // E2: exact viewport resample.
@@ -991,6 +1084,7 @@ pub fn render(
         width: out.w,
         height: out.h,
         data,
+        format: aigle_engine_api::PixelFormat::Bgra8,
         render_scale: s,
         elapsed: t0.elapsed(),
     })
@@ -1164,7 +1258,11 @@ fn compute_tiles(
     let t0 = Instant::now();
     let mut c1s: Vec<Option<Arc<C1Tile>>> = missing
         .iter()
-        .map(|&i| ctx.cache.get::<C1Tile>(&keys[i].0))
+        .map(|&i| {
+            ctx.cache
+                .get::<C1Tile>(&keys[i].0)
+                .filter(|t| !prep.is_hdr() || matches!(t.data, C1Data::Host(_)))
+        })
         .collect();
     let need: Vec<usize> = (0..missing.len()).filter(|&j| c1s[j].is_none()).collect();
     if !need.is_empty() {
@@ -1286,7 +1384,9 @@ fn compute_tiles(
             w: f.w,
             h: f.h,
         });
-        let made = ctx.backend.c1_tiles(&jobs, fref);
+        let made = ctx
+            .backend
+            .c1_tiles_with_readback(&jobs, fref, prep.is_hdr());
         let cost = t0.elapsed() / need.len() as u32;
         for (&j, (job, data)) in need.iter().zip(jobs.iter().zip(made)) {
             let t = Arc::new(C1Tile {
@@ -1351,7 +1451,11 @@ fn compute_tiles(
         let t = Arc::new(OutTile {
             w: c1.w,
             data,
-            bpp: crate::backend::out_bpp(ctx.full_at(level)),
+            bpp: if prep.is_hdr() {
+                16
+            } else {
+                crate::backend::out_bpp(ctx.full_at(level))
+            },
         });
         ctx.cache.insert(
             keys[i].1,

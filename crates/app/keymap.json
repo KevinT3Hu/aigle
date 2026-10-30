@@ -33,6 +33,7 @@
   "ctrl-u": "aigle::AutoTone",
   "v": "aigle::ToggleMonochrome",
   "ctrl-a": "aigle::SelectAll",
+  "ctrl-shift-h": "aigle::ToggleHdrCanvas",
   "z": "aigle::ToggleZoom",
   "\\": "aigle::ToggleBefore",
   "y": "aigle::ToggleSplit",

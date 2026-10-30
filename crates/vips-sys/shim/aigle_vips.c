@@ -11,6 +11,7 @@
 // resident.
 
 #include <math.h>
+#include <lcms2.h>
 #include <string.h>
 
 #include <libexif/exif-data.h>
@@ -91,12 +92,21 @@ int aigle_vips_get_string(void *im, const char *name, char *buf, int len) {
 
 // Decode into `out` (width × height × 3 float XYZ, D65, Y of white = 100). `cancel(user)`
 // is polled between scanline blocks; returns 1 when cancelled.
-int aigle_vips_decode_xyz(void *img, float *out, int (*cancel)(void *), void *user) {
+int aigle_vips_decode_xyz(void *img, float *out, int (*cancel)(void *), void *user, int raw_rgb) {
   VipsImage *base = img;
   VipsObject *ctx = VIPS_OBJECT(vips_image_new());
-  VipsImage **t = (VipsImage **)vips_object_local_array(ctx, 6);
+  VipsImage **t = (VipsImage **)vips_object_local_array(ctx, 10);
+#if VIPS_MAJOR_VERSION > 8 || (VIPS_MAJOR_VERSION == 8 && VIPS_MINOR_VERSION >= 18)
+  // Gain maps must be reconstructed before orientation or ICC conversion.
+  if (!raw_rgb && vips_image_get_gainmap(base)) {
+    if (vips_uhdr2scRGB(base, &t[6], NULL)) { g_object_unref(ctx); return fail(); }
+    vips_image_remove(t[6], VIPS_META_ICC_NAME);
+    base = t[6];
+  }
+#endif
   VipsImage *in = base;
   int rc = 0;
+  cmsHTRANSFORM float_icc = NULL;
   if (vips_autorot(in, &t[0], NULL)) {
     rc = fail();
     goto done;
@@ -109,7 +119,32 @@ int aigle_vips_decode_xyz(void *img, float *out, int (*cancel)(void *), void *us
     }
     in = t[1];
   }
-  if (in->Type == VIPS_INTERPRETATION_scRGB) {
+  if (raw_rgb) {
+    if (in->Bands != 3) { g_strlcpy(last_error, "HDR RGB input needs three color bands", sizeof(last_error)); rc = -1; goto done; }
+    double scale = in->BandFmt == VIPS_FORMAT_UCHAR ? 1.0 / 255.0 :
+                   in->BandFmt == VIPS_FORMAT_USHORT ? 1.0 / 65535.0 : 1.0;
+    // libvips' HEIF loader left-justifies 10/12-bit samples without extending
+    // the low bits. Normalize against the original code range, not 65535.
+    int bits = 0;
+    if (in->BandFmt == VIPS_FORMAT_USHORT && vips_image_get_typeof(in, "heif-bitdepth") &&
+        !vips_image_get_int(in, "heif-bitdepth", &bits) && bits > 8 && bits < 16)
+      scale = 1.0 / (((1u << bits) - 1u) << (16 - bits));
+    if (vips_cast(in, &t[7], VIPS_FORMAT_FLOAT, NULL) ||
+        vips_linear1(t[7], &t[8], scale, 0.0, NULL)) { rc = fail(); goto done; }
+    in = t[8];
+  } else if (in->Type == VIPS_INTERPRETATION_scRGB && vips_image_get_typeof(in, VIPS_META_ICC_NAME)) {
+    // vips_icc_import quantizes RGB inputs to 8/16 bits. Matrix/TRC float ICC
+    // transforms must instead run directly on float samples to preserve HDR and
+    // negative wide-gamut components.
+    const void *data = NULL; size_t length = 0;
+    if (vips_image_get_blob(in, VIPS_META_ICC_NAME, &data, &length)) { rc = fail(); goto done; }
+    cmsHPROFILE input = cmsOpenProfileFromMem(data, (cmsUInt32Number)length);
+    cmsHPROFILE xyz = cmsCreateXYZProfile();
+    if (input && xyz) float_icc = cmsCreateTransform(input, TYPE_RGB_FLT, xyz, TYPE_XYZ_FLT,
+        INTENT_RELATIVE_COLORIMETRIC, cmsFLAGS_NOCACHE | cmsFLAGS_NOOPTIMIZE);
+    if (input) cmsCloseProfile(input); if (xyz) cmsCloseProfile(xyz);
+    if (!float_icc) { g_strlcpy(last_error, "invalid float RGB ICC profile", sizeof(last_error)); rc = -1; goto done; }
+  } else if (in->Type == VIPS_INTERPRETATION_scRGB || in->Coding == VIPS_CODING_RAD) {
     // Linear sRGB float (e.g. float TIFF): to XYZ (D65) through libvips' own matrix.
     if (vips_colourspace(in, &t[2], VIPS_INTERPRETATION_XYZ, NULL)) {
       rc = fail();
@@ -150,13 +185,24 @@ int aigle_vips_decode_xyz(void *img, float *out, int (*cancel)(void *), void *us
         rc = fail();
         break;
       }
-      for (int j = 0; j < r.height; j++)
-        memcpy(out + (size_t)(y + j) * w * 3, VIPS_REGION_ADDR(reg, 0, y + j),
-               (size_t)w * 3 * sizeof(float));
+      for (int j = 0; j < r.height; j++) {
+        float *row = out + (size_t)(y + j) * w * 3;
+        if (float_icc) {
+          cmsDoTransform(float_icc, VIPS_REGION_ADDR(reg, 0, y+j), row, w);
+          // ICC PCS D50 -> D65, Bradford. XYZ float from lcms has white Y = 1.
+          for (int x = 0; x < w; x++) {
+            double X=row[x*3], Y=row[x*3+1], Z=row[x*3+2];
+            row[x*3]   = 100.0*(0.9555766*X - 0.0230393*Y + 0.0631636*Z);
+            row[x*3+1] = 100.0*(-0.0282895*X + 1.0099416*Y + 0.0210077*Z);
+            row[x*3+2] = 100.0*(0.0122982*X - 0.0204830*Y + 1.3299098*Z);
+          }
+        } else memcpy(row, VIPS_REGION_ADDR(reg, 0, y+j), (size_t)w*3*sizeof(float));
+      }
     }
     g_object_unref(reg);
   }
 done:
+  if (float_icc) cmsDeleteTransform(float_icc);
   g_object_unref(ctx);
   return rc;
 }
@@ -292,6 +338,7 @@ static int attach_exif(VipsImage *im, const aigle_vips_exif *x) {
 typedef struct {
   int width, height;
   int sixteen_bit;      // ushort samples, else uchar
+  int floating_point;   // linear float32 scRGB, overrides sixteen_bit
   int out_width, out_height; // resize target (linear-light Lanczos-3), or the source size
   const char *icc;      // libvips built-in profile name ("srgb", "p3") or NULL
   const aigle_vips_exif *exif; // NULL = none
@@ -340,8 +387,8 @@ static int build(const aigle_vips_save_opts *o, aigle_vips_fill_fn fill, void *u
   c->fill = fill;
   c->user = user;
   t[0] = vips_image_new();
-  VipsBandFormat fmt = o->sixteen_bit ? VIPS_FORMAT_USHORT : VIPS_FORMAT_UCHAR;
-  VipsInterpretation interp = o->sixteen_bit ? VIPS_INTERPRETATION_RGB16 : VIPS_INTERPRETATION_sRGB;
+  VipsBandFormat fmt = o->floating_point ? VIPS_FORMAT_FLOAT : o->sixteen_bit ? VIPS_FORMAT_USHORT : VIPS_FORMAT_UCHAR;
+  VipsInterpretation interp = o->floating_point ? VIPS_INTERPRETATION_scRGB : o->sixteen_bit ? VIPS_INTERPRETATION_RGB16 : VIPS_INTERPRETATION_sRGB;
   vips_image_init_fields(t[0], o->width, o->height, 3, fmt, VIPS_CODING_NONE, interp, 1.0, 1.0);
   if (vips_image_pipelinev(t[0], VIPS_DEMAND_STYLE_THINSTRIP, NULL) ||
       vips_image_generate(t[0], NULL, gen, NULL, c, NULL))
@@ -349,7 +396,11 @@ static int build(const aigle_vips_save_opts *o, aigle_vips_fill_fn fill, void *u
   VipsImage *im = t[0];
   if (o->out_width != o->width || o->out_height != o->height) {
     double hs = (double)o->out_width / o->width, vs = (double)o->out_height / o->height;
-    if (o->resize_gamma > 0) {
+    if (o->floating_point) {
+      if (vips_resize(im, &t[3], hs, "vscale", vs, "kernel", VIPS_KERNEL_LANCZOS3, NULL))
+        return fail();
+      im = t[3];
+    } else if (o->resize_gamma > 0) {
       if (resize_power(im, &t[3], hs, vs, o->resize_gamma, o->sixteen_bit, ctx))
         return fail();
       if (vips_copy(t[3], &t[7], "interpretation", interp, NULL))
@@ -366,15 +417,22 @@ static int build(const aigle_vips_save_opts *o, aigle_vips_fill_fn fill, void *u
   }
   if (o->sharpen_sigma > 0) {
     // Flat areas (m1 = 0) stay untouched; sharpening works on L and returns to `interp`.
-    if (vips_sharpen(im, &t[5], "sigma", o->sharpen_sigma, "m1", 0.0, "m2", o->sharpen_amount,
-                     NULL) ||
-        vips_colourspace(t[5], &t[6], interp, NULL))
-      return fail();
-    im = t[6];
+    if (o->floating_point) {
+      VipsImage **s = (VipsImage **)vips_object_local_array(ctx, 4);
+      if (vips_gaussblur(im, &s[0], o->sharpen_sigma, NULL) ||
+          vips_subtract(im, s[0], &s[1], NULL) ||
+          vips_linear1(s[1], &s[2], o->sharpen_amount, 0.0, NULL) ||
+          vips_add(im, s[2], &s[3], NULL)) return fail();
+      im = s[3];
+    } else {
+      if (vips_sharpen(im, &t[5], "sigma", o->sharpen_sigma, "m1", 0.0, "m2", o->sharpen_amount,
+                       NULL) || vips_colourspace(t[5], &t[6], interp, NULL)) return fail();
+      im = t[6];
+    }
   }
   if (o->ov_rgb && o->ov_alpha && o->ov_w > 0 && o->ov_h > 0) {
     VipsImage **w = (VipsImage **)vips_object_local_array(ctx, 6);
-    size_t bps = o->sixteen_bit ? 2 : 1;
+    size_t bps = o->floating_point ? 4 : o->sixteen_bit ? 2 : 1;
     w[0] = vips_image_new_from_memory(o->ov_rgb, (size_t)o->ov_w * o->ov_h * 3 * bps, o->ov_w,
                                       o->ov_h, 3, fmt);
     w[1] = vips_image_new_from_memory(o->ov_alpha, (size_t)o->ov_w * o->ov_h, o->ov_w, o->ov_h,
@@ -534,4 +592,40 @@ int aigle_vips_load_rgba8(const char *path, int height, int *w, int *h, unsigned
 done:
   g_object_unref(ctx);
   return rc;
+}
+
+// Expose a generated linear-float pipeline synchronously to a Rust codec. The image and
+// fill callback remain alive until consume returns; no pixels or handles escape this call.
+int aigle_vips_with_float_image(const aigle_vips_save_opts *o, aigle_vips_fill_fn fill,
+    void *user, int (*consume)(void *, void *), void *consumer) {
+  VipsObject *ctx = VIPS_OBJECT(vips_image_new());
+  VipsImage *im = NULL;
+  int rc = build(o, fill, user, ctx, &im);
+  if (!rc) rc = consume(im, consumer);
+  g_object_unref(ctx);
+  return rc;
+}
+
+int aigle_vips_float_row(void *image, int y, float *out) {
+  VipsImage *im = image;
+  if (y < 0 || y >= im->Ysize || im->Bands != 3 || im->BandFmt != VIPS_FORMAT_FLOAT)
+    return -1;
+  VipsRegion *region = vips_region_new(im);
+  VipsRect r = { 0, y, im->Xsize, 1 };
+  int rc = vips_region_prepare(region, &r);
+  if (!rc) memcpy(out, VIPS_REGION_ADDR(region, 0, y), (size_t)im->Xsize * 3 * sizeof(float));
+  g_object_unref(region);
+  return rc ? fail() : 0;
+}
+
+int aigle_vips_icc_cicp(void *image, unsigned char *out) {
+  VipsImage *im = image; const void *data = NULL; size_t len = 0;
+  if (!vips_image_get_typeof(im, VIPS_META_ICC_NAME) || vips_image_get_blob(im, VIPS_META_ICC_NAME, &data, &len)) return -1;
+  cmsHPROFILE profile = cmsOpenProfileFromMem(data, (cmsUInt32Number)len);
+  if (!profile) return -1;
+  unsigned char tag[12];
+  cmsUInt32Number n = cmsReadRawTag(profile, (cmsTagSignature)0x63696370, tag, sizeof(tag));
+  int ok = n == 12 && memcmp(tag, "cicp", 4) == 0;
+  if (ok) memcpy(out, tag + 8, 4);
+  cmsCloseProfile(profile); return ok ? 0 : -1;
 }

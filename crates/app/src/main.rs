@@ -16,6 +16,7 @@ mod display;
 mod export;
 mod filmstrip;
 mod grid;
+mod hdr_surface;
 mod history;
 mod i18n;
 mod import;
@@ -26,13 +27,16 @@ mod library_bar;
 mod mask_panel;
 mod meta;
 mod metadata_panel;
+mod native_canvas;
 mod panel;
 mod photo;
 mod presets;
 mod rename;
 mod resources;
 mod retouch_panel;
+mod scopes;
 mod tools;
+mod ui;
 mod view;
 mod viewport;
 mod workspace;
@@ -68,6 +72,14 @@ pub fn data_dir() -> Option<PathBuf> {
 
 fn source_from_args() -> Option<SourceRef> {
     let arg = std::env::args_os().nth(1)?;
+    if arg == "--hdr-probe" {
+        return Some(SourceRef::File(
+            std::env::args_os()
+                .nth(2)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| std::env::temp_dir().join("aigle-hdr/studio-scene.exr")),
+        ));
+    }
     if arg == "--synthetic" {
         return Some(SourceRef::Synthetic {
             pattern: SyntheticPattern::Gradient,
@@ -89,6 +101,9 @@ fn main() {
     let _session = crash::Session::start(log.clone());
     aigle_isolate::enable("/proc/self/exe".into(), crash::worker_env(log.as_deref()));
     let source = source_from_args();
+    let probe = std::env::args_os()
+        .nth(1)
+        .is_some_and(|a| a == "--hdr-probe");
 
     gpui_platform::application()
         .with_assets(gpui_kit_assets::Assets)
@@ -114,6 +129,7 @@ fn main() {
                     cx,
                 ))),
                 window_decorations: Some(WindowDecorations::Client),
+                window_background: gpui::WindowBackgroundAppearance::Transparent,
                 window_min_size: Some(size(px(900.0), px(560.0))),
                 ..TitleBar::window_options()
             };
@@ -147,6 +163,20 @@ fn main() {
                 }
             })
             .detach();
+            if probe {
+                let seconds = std::env::var("AIGLE_HDR_PROBE_SECONDS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(30)
+                    .clamp(5, 300);
+                cx.spawn(async move |cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(seconds))
+                        .await;
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+            }
             cx.activate(true);
         });
 }

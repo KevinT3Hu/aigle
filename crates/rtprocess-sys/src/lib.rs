@@ -20,6 +20,17 @@ unsafe extern "C" {
         cancel: Option<CancelFn>,
         user: *mut c_void,
     ) -> c_int;
+    fn aigle_rp_rcd_parallel(
+        w: c_int,
+        h: c_int,
+        cfa: *mut f32,
+        r: *mut f32,
+        g: *mut f32,
+        b: *mut f32,
+        p: *const [i32; 2],
+        cancel: Option<CancelFn>,
+        user: *mut c_void,
+    ) -> c_int;
     fn aigle_rp_amaze(
         w: c_int,
         h: c_int,
@@ -45,6 +56,14 @@ unsafe extern "C" {
         user: *mut c_void,
     ) -> c_int;
     fn aigle_rp_ca_correct(
+        w: c_int,
+        h: c_int,
+        cfa: *mut f32,
+        p: *const [i32; 2],
+        cancel: Option<CancelFn>,
+        user: *mut c_void,
+    ) -> c_int;
+    fn aigle_rp_ca_correct_parallel(
         w: c_int,
         h: c_int,
         cfa: *mut f32,
@@ -173,6 +192,40 @@ pub fn demosaic_bayer(
     Ok(out)
 }
 
+/// RCD with up to eight native tile workers (serial fallback on non-GCC toolchains).
+/// The callback can run on any tile worker and must be safe to share across threads.
+pub fn demosaic_rcd_parallel(
+    w: u32,
+    h: u32,
+    cfa: &mut [f32],
+    pattern: [[i32; 2]; 2],
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<Planes, Error> {
+    unsafe extern "C" fn poll(user: *mut c_void) -> c_int {
+        // SAFETY: pointer and shared closure live through the joined native call.
+        let f = unsafe { &*(user as *const &(dyn Fn() -> bool + Sync)) };
+        f() as c_int
+    }
+    let mut out = Planes::new(dims(w, h, cfa.len()));
+    let user: *const &(dyn Fn() -> bool + Sync) = &cancelled;
+    // SAFETY: all buffers have w*h elements; native tile writes are disjoint and
+    // all threads join before returning. The callback is Sync and outlives them.
+    check(unsafe {
+        aigle_rp_rcd_parallel(
+            w as c_int,
+            h as c_int,
+            cfa.as_mut_ptr(),
+            out.r.as_mut_ptr(),
+            out.g.as_mut_ptr(),
+            out.b.as_mut_ptr(),
+            pattern.as_ptr(),
+            Some(poll),
+            user as *mut c_void,
+        )
+    })?;
+    Ok(out)
+}
+
 /// X-Trans demosaic (Markesteijn, `passes` = 1 or 3). `rgb_cam` is camera → sRGB.
 pub fn demosaic_xtrans(
     w: u32,
@@ -226,6 +279,36 @@ pub fn ca_correct(
     })
 }
 
+/// Automatic CA using up to eight tile workers and a deterministic raster-order
+/// reduction. The callback may run on native workers and must be Sync.
+pub fn ca_correct_parallel(
+    w: u32,
+    h: u32,
+    cfa: &mut [f32],
+    pattern: [[i32; 2]; 2],
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<(), Error> {
+    unsafe extern "C" fn poll(user: *mut c_void) -> c_int {
+        // SAFETY: the shared closure lives through the joined native call.
+        let f = unsafe { &*(user as *const &(dyn Fn() -> bool + Sync)) };
+        f() as c_int
+    }
+    dims(w, h, cfa.len());
+    let user: *const &(dyn Fn() -> bool + Sync) = &cancelled;
+    // SAFETY: the CFA has w*h elements, writes are partitioned by tile/row,
+    // and native workers join before the CFA or callback can be dropped.
+    check(unsafe {
+        aigle_rp_ca_correct_parallel(
+            w as c_int,
+            h as c_int,
+            cfa.as_mut_ptr(),
+            pattern.as_ptr(),
+            Some(poll),
+            user as *mut c_void,
+        )
+    })
+}
+
 /// Highlight reconstruction by colour propagation/inpainting, in place.
 /// `clmax` = per-channel clip level, `chmax` = per-channel maximum of the data.
 pub fn highlight_inpaint(
@@ -258,8 +341,105 @@ mod tests {
 
     fn cfa(w: u32, h: u32) -> Vec<f32> {
         (0..w * h)
-            .map(|i| ((i * 2654435761) % 60000) as f32)
+            .map(|i| (i.wrapping_mul(2654435761) % 60000) as f32)
             .collect()
+    }
+
+    #[test]
+    fn parallel_rcd_is_bit_identical_and_cancels() {
+        // Odd edges, several native tiles per worker, and every Bayer arrangement.
+        for pattern in [
+            [[0, 1], [1, 2]],
+            [[2, 1], [1, 0]],
+            [[1, 0], [2, 1]],
+            [[1, 2], [0, 1]],
+        ] {
+            for (w, h) in [(815, 617), (832, 624), (194, 194), (16, 16)] {
+                let mut raw = cfa(w, h);
+                let serial =
+                    demosaic_bayer(BayerAlgo::Rcd, w, h, &mut raw, pattern, &|| false).unwrap();
+                let parallel = demosaic_rcd_parallel(w, h, &mut raw, pattern, &|| false).unwrap();
+                for (a, b) in [
+                    (&serial.r, &parallel.r),
+                    (&serial.g, &parallel.g),
+                    (&serial.b, &parallel.b),
+                ] {
+                    let diffs: Vec<_> = a
+                        .iter()
+                        .zip(b)
+                        .enumerate()
+                        .filter(|(_, (a, b))| a.to_bits() != b.to_bits())
+                        .take(5)
+                        .collect();
+                    assert!(diffs.is_empty(), "{pattern:?}: {diffs:?}");
+                }
+            }
+        }
+        let (w, h) = (1800, 1200);
+        let polls = AtomicU32::new(0);
+        let err = demosaic_rcd_parallel(w, h, &mut cfa(w, h), [[0, 1], [1, 2]], &|| {
+            polls.fetch_add(1, Ordering::Relaxed) >= 1
+        })
+        .err()
+        .expect("cancelled");
+        assert!(err.is_cancelled());
+    }
+
+    fn ca_fixture(w: u32, h: u32, pattern: [[i32; 2]; 2]) -> Vec<f32> {
+        (0..w * h)
+            .map(|i| {
+                let (x, y) = ((i % w) as f32, (i / w) as f32);
+                let channel = pattern[(i / w % 2) as usize][(i % w % 2) as usize];
+                let scale = [1.002f32, 1.0, 0.998][channel as usize];
+                let sx = (x - w as f32 * 0.5) * scale;
+                let sy = (y - h as f32 * 0.5) * scale;
+                (0.5 + 0.15 * (sx * 0.1).sin()
+                    + 0.15 * (sy * 0.13).cos()
+                    + 0.1 * ((sx + sy) * 0.07).sin())
+                    * 40000.0
+            })
+            .collect()
+    }
+
+    #[test]
+    fn parallel_ca_matches_serial_and_is_repeatable() {
+        for pattern in [
+            [[0, 1], [1, 2]],
+            [[2, 1], [1, 0]],
+            [[1, 0], [2, 1]],
+            [[1, 2], [0, 1]],
+        ] {
+            for (w, h) in [(832, 624), (815, 617)] {
+                let input = ca_fixture(w, h, pattern);
+                let mut serial = input.clone();
+                ca_correct(w, h, &mut serial, pattern, &|| false).unwrap();
+                assert_ne!(input, serial, "fixture must exercise the correction");
+                for _ in 0..2 {
+                    let mut parallel = input.clone();
+                    ca_correct_parallel(w, h, &mut parallel, pattern, &|| false).unwrap();
+                    assert!(
+                        serial
+                            .iter()
+                            .zip(&parallel)
+                            .all(|(a, b)| a.to_bits() == b.to_bits()),
+                        "{w}x{h} {pattern:?}: serial/parallel differ"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parallel_ca_cancels_during_tiles() {
+        let (w, h) = (1800, 1200);
+        let pattern = [[0, 1], [1, 2]];
+        let polls = AtomicU32::new(0);
+        let result = ca_correct_parallel(w, h, &mut ca_fixture(w, h, pattern), pattern, &|| {
+            polls.fetch_add(1, Ordering::Relaxed) >= 2
+        });
+        assert!(result.unwrap_err().is_cancelled());
+        let result = ca_correct_parallel(16, 16, &mut vec![10000.0; 256], pattern, &|| true);
+        assert!(result.unwrap_err().is_cancelled());
     }
 
     #[test]

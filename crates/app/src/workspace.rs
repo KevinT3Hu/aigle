@@ -14,7 +14,7 @@ use gpui::{
     App, Context, Entity, FocusHandle, IntoElement, ParentElement, PathPromptOptions, Render,
     SharedString, Styled, Subscription, Task, Window, div, prelude::*, px,
 };
-use gpui_component::button::{Button, ButtonGroup};
+use gpui_component::button::ButtonGroup;
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::{ActiveTheme, Selectable, Sizable, TitleBar, WindowExt, h_flex, v_flex};
 
@@ -1456,6 +1456,10 @@ impl Workspace {
             }
             _ => (false, false, false, Compare::Off, Tool::None, false),
         };
+        let hdr_open = self
+            .open
+            .as_ref()
+            .is_some_and(|o| o.canvas.read(cx).hdr_open());
         let show_history = self.show_history;
         let show_metadata = self.show_metadata;
         let subfolders = self.library.read(cx).recursive();
@@ -1514,336 +1518,396 @@ impl Workspace {
             .gap_2()
             .pr_2()
             .child(
-                Button::new("file-menu")
-                    .label(crate::i18n::t("menu.file"))
-                    .small()
-                    .dropdown_menu(move |menu, _, _| {
-                        menu.action_context(file_focus.clone())
-                            .menu(crate::i18n::t("action.Open"), Box::new(Open))
-                            .menu(crate::i18n::t("action.OpenFolder"), Box::new(OpenFolder))
-                            .menu(crate::i18n::t("action.Import"), Box::new(Import))
-                            .separator()
-                            .menu(crate::i18n::t("action.RenamePhoto"), Box::new(RenamePhoto))
-                            .menu(crate::i18n::t("action.MovePhotos"), Box::new(MovePhotos))
-                            .menu(crate::i18n::t("action.TrashPhotos"), Box::new(TrashPhotos))
-                            .separator()
-                            .menu(crate::i18n::t("action.Export"), Box::new(Export))
-                            .separator()
-                            .menu(crate::i18n::t("action.Quit"), Box::new(Quit))
-                    }),
+                crate::ui::labeled_button(
+                    "file-menu",
+                    crate::ui::Glyph::File,
+                    crate::i18n::t("menu.file"),
+                )
+                .small()
+                .dropdown_menu(move |menu, _, _| {
+                    menu.action_context(file_focus.clone())
+                        .menu_with_icon(
+                            crate::i18n::t("action.Open"),
+                            crate::ui::Glyph::File.icon(),
+                            Box::new(Open),
+                        )
+                        .menu_with_icon(
+                            crate::i18n::t("action.OpenFolder"),
+                            crate::ui::Glyph::Folder.icon(),
+                            Box::new(OpenFolder),
+                        )
+                        .menu_with_icon(
+                            crate::i18n::t("action.Import"),
+                            crate::ui::Glyph::Import.icon(),
+                            Box::new(Import),
+                        )
+                        .separator()
+                        .menu_with_icon(
+                            crate::i18n::t("action.RenamePhoto"),
+                            crate::ui::Glyph::Edit.icon(),
+                            Box::new(RenamePhoto),
+                        )
+                        .menu_with_icon(
+                            crate::i18n::t("action.MovePhotos"),
+                            crate::ui::Glyph::Folder.icon(),
+                            Box::new(MovePhotos),
+                        )
+                        .menu_with_icon(
+                            crate::i18n::t("action.TrashPhotos"),
+                            crate::ui::Glyph::Delete.icon(),
+                            Box::new(TrashPhotos),
+                        )
+                        .separator()
+                        .menu_with_icon(
+                            crate::i18n::t("action.Export"),
+                            crate::ui::Glyph::Export.icon(),
+                            Box::new(Export),
+                        )
+                        .separator()
+                        .menu_with_icon(
+                            crate::i18n::t("action.Quit"),
+                            crate::ui::Glyph::Close.icon(),
+                            Box::new(Quit),
+                        )
+                }),
             )
             .child(
-                Button::new("edit-menu")
-                    .label(crate::i18n::t("menu.edit"))
-                    .small()
-                    .dropdown_menu(move |menu, window, cx| {
-                        menu.action_context(edit_focus.clone())
-                            .menu_with_disabled(
-                                crate::i18n::t("action.Undo"),
-                                Box::new(Undo),
-                                !can_undo,
-                            )
-                            .menu_with_disabled(
-                                crate::i18n::t("action.Redo"),
-                                Box::new(Redo),
-                                !can_redo,
-                            )
-                            .separator()
-                            .menu(
-                                crate::i18n::t("action.CopySettings"),
-                                Box::new(CopySettings),
-                            )
-                            .menu_with_disabled(
-                                crate::i18n::t("action.PasteSettings"),
-                                Box::new(PasteSettings),
-                                !can_paste,
-                            )
-                            .menu(
-                                crate::i18n::t("action.SyncSettings"),
-                                Box::new(SyncSettings),
-                            )
-                            .separator()
-                            .menu(
-                                crate::i18n::t("action.CreateVirtualCopy"),
-                                Box::new(CreateVirtualCopy),
-                            )
-                            .menu(
-                                crate::i18n::t("action.RemoveVirtualCopy"),
-                                Box::new(RemoveVirtualCopy),
-                            )
-                            .separator()
-                            .menu(crate::i18n::t("action.NewPreset"), Box::new(NewPreset))
-                            .submenu(crate::i18n::t("menu.apply_preset"), window, cx, {
-                                let names = preset_names.clone();
-                                let ws = ws.clone();
-                                move |menu, _, _| {
-                                    if names.is_empty() {
-                                        return menu.label(crate::i18n::t("presets.empty"));
-                                    }
-                                    names.iter().enumerate().fold(menu, |menu, (i, n)| {
-                                        let ws = ws.clone();
-                                        menu.item(PopupMenuItem::new(n.clone()).on_click(
-                                            move |_, window, cx| {
-                                                let _ = ws.update(cx, |w, cx| {
-                                                    w.apply_preset(i, window, cx)
-                                                });
-                                            },
-                                        ))
-                                    })
+                crate::ui::labeled_button(
+                    "edit-menu",
+                    crate::ui::Glyph::Edit,
+                    crate::i18n::t("menu.edit"),
+                )
+                .small()
+                .dropdown_menu(move |menu, window, cx| {
+                    menu.action_context(edit_focus.clone())
+                        .menu_with_icon_and_disabled(
+                            crate::i18n::t("action.Undo"),
+                            crate::ui::Glyph::RotateLeft.icon(),
+                            Box::new(Undo),
+                            !can_undo,
+                        )
+                        .menu_with_icon_and_disabled(
+                            crate::i18n::t("action.Redo"),
+                            crate::ui::Glyph::RotateRight.icon(),
+                            Box::new(Redo),
+                            !can_redo,
+                        )
+                        .separator()
+                        .menu_with_icon(
+                            crate::i18n::t("action.CopySettings"),
+                            crate::ui::Glyph::Copy.icon(),
+                            Box::new(CopySettings),
+                        )
+                        .menu_with_icon_and_disabled(
+                            crate::i18n::t("action.PasteSettings"),
+                            crate::ui::Glyph::Check.icon(),
+                            Box::new(PasteSettings),
+                            !can_paste,
+                        )
+                        .menu_with_icon(
+                            crate::i18n::t("action.SyncSettings"),
+                            crate::ui::Glyph::Develop.icon(),
+                            Box::new(SyncSettings),
+                        )
+                        .separator()
+                        .menu_with_icon(
+                            crate::i18n::t("action.CreateVirtualCopy"),
+                            crate::ui::Glyph::Copy.icon(),
+                            Box::new(CreateVirtualCopy),
+                        )
+                        .menu_with_icon(
+                            crate::i18n::t("action.RemoveVirtualCopy"),
+                            crate::ui::Glyph::Delete.icon(),
+                            Box::new(RemoveVirtualCopy),
+                        )
+                        .separator()
+                        .menu_with_icon(
+                            crate::i18n::t("action.NewPreset"),
+                            crate::ui::Glyph::Add.icon(),
+                            Box::new(NewPreset),
+                        )
+                        .submenu(crate::i18n::t("menu.apply_preset"), window, cx, {
+                            let names = preset_names.clone();
+                            let ws = ws.clone();
+                            move |menu, _, _| {
+                                if names.is_empty() {
+                                    return menu.label(crate::i18n::t("presets.empty"));
                                 }
-                            })
-                            .separator()
-                            .menu_with_disabled(
-                                crate::i18n::t("action.AutoTone"),
-                                Box::new(AutoTone),
-                                !develop,
-                            )
-                            .menu_with_check_and_disabled(
-                                crate::i18n::t("action.ToggleMonochrome"),
-                                monochrome,
-                                Box::new(ToggleMonochrome),
-                                !develop,
-                            )
-                            .separator()
-                            .submenu(
-                                crate::i18n::t("menu.tools"),
-                                window,
-                                cx,
-                                move |menu, _, _| {
-                                    menu.menu_with_check_and_disabled(
-                                        crate::i18n::t("action.ToggleCrop"),
-                                        tool == Tool::Crop,
-                                        Box::new(ToggleCrop),
-                                        !develop,
-                                    )
-                                    .menu_with_check_and_disabled(
-                                        crate::i18n::t("action.ToggleMask"),
-                                        tool == Tool::Mask,
-                                        Box::new(ToggleMask),
-                                        !develop,
-                                    )
-                                    .menu_with_check_and_disabled(
-                                        crate::i18n::t("action.ToggleSpot"),
-                                        tool == Tool::Spot,
-                                        Box::new(ToggleSpot),
-                                        !develop,
-                                    )
-                                    .menu_with_check_and_disabled(
-                                        crate::i18n::t("action.ToggleRedEye"),
-                                        tool == Tool::RedEye,
-                                        Box::new(ToggleRedEye),
-                                        !develop,
-                                    )
-                                    .menu_with_disabled(
-                                        crate::i18n::t("action.ToggleWbPicker"),
-                                        Box::new(ToggleWbPicker),
-                                        !develop,
-                                    )
-                                },
-                            )
-                    }),
-            )
-            .child(
-                Button::new("view-menu")
-                    .label(crate::i18n::t("menu.view"))
-                    .small()
-                    .dropdown_menu(move |menu, window, cx| {
-                        menu.action_context(view_focus.clone())
-                            .menu_with_check(
-                                crate::i18n::t("action.ShowGrid"),
-                                !develop,
-                                Box::new(ShowGrid),
-                            )
-                            .menu_with_check(
-                                crate::i18n::t("action.ShowDevelop"),
-                                develop,
-                                Box::new(ShowDevelop),
-                            )
-                            .separator()
-                            .submenu(
-                                crate::i18n::t("menu.compare"),
-                                window,
-                                cx,
-                                move |menu, _, _| {
-                                    menu.menu_with_check_and_disabled(
-                                        crate::i18n::t("action.ToggleBefore"),
-                                        compare == Compare::Before,
-                                        Box::new(ToggleBefore),
-                                        !develop,
-                                    )
-                                    .menu_with_check_and_disabled(
-                                        crate::i18n::t("action.ToggleSplit"),
-                                        compare == Compare::Split,
-                                        Box::new(ToggleSplit),
-                                        !develop,
-                                    )
-                                },
-                            )
-                            .submenu(crate::i18n::t("menu.soft_proof"), window, cx, {
-                                let (proof, target) = (proof.clone(), proof_target.clone());
-                                move |menu, _, _| {
-                                    let menu = menu.menu_with_check_and_disabled(
-                                        crate::i18n::t("action.ToggleSoftProof"),
-                                        proof.is_some(),
-                                        Box::new(ToggleSoftProof),
-                                        !develop,
-                                    );
-                                    let menu = [
-                                        (DisplayProfileId::Srgb, "sRGB"),
-                                        (DisplayProfileId::DisplayP3, "Display P3"),
-                                        (DisplayProfileId::AdobeRgb, "Adobe RGB"),
-                                    ]
-                                    .into_iter()
-                                    .fold(
-                                        menu.separator(),
-                                        |menu, (d, label)| {
-                                            let action: Box<dyn gpui::Action> = match d {
-                                                DisplayProfileId::DisplayP3 => {
-                                                    Box::new(ProofDisplayP3)
-                                                }
-                                                DisplayProfileId::AdobeRgb => {
-                                                    Box::new(ProofAdobeRgb)
-                                                }
-                                                _ => Box::new(ProofSrgb),
-                                            };
-                                            menu.menu_with_check_and_disabled(
-                                                label,
-                                                target == d,
-                                                action,
-                                                !develop,
-                                            )
+                                names.iter().enumerate().fold(menu, |menu, (i, n)| {
+                                    let ws = ws.clone();
+                                    menu.item(PopupMenuItem::new(n.clone()).on_click(
+                                        move |_, window, cx| {
+                                            let _ = ws
+                                                .update(cx, |w, cx| w.apply_preset(i, window, cx));
                                         },
-                                    );
-                                    menu.separator().menu_with_check_and_disabled(
-                                        crate::i18n::t("action.ToggleGamutWarning"),
-                                        gamut_warning,
-                                        Box::new(ToggleGamutWarning),
-                                        !develop,
-                                    )
-                                }
-                            })
-                            .menu_with_disabled(
-                                crate::i18n::t("action.ToggleZoom"),
-                                Box::new(ToggleZoom),
-                                !develop,
-                            )
-                            .separator()
-                            .menu_with_check_and_disabled(
-                                crate::i18n::t("action.ToggleMetadata"),
-                                show_metadata,
-                                Box::new(ToggleMetadata),
-                                develop,
-                            )
-                            .menu_with_check(
-                                crate::i18n::t("action.ToggleSubfolders"),
-                                subfolders,
-                                Box::new(ToggleSubfolders),
-                            )
-                            .menu_with_check_and_disabled(
-                                crate::i18n::t("action.ToggleHistory"),
-                                show_history,
-                                Box::new(ToggleHistory),
-                                !develop,
-                            )
-                            .menu_with_check_and_disabled(
-                                crate::i18n::t("action.ToggleInfo"),
-                                show_info,
-                                Box::new(ToggleInfo),
-                                !develop,
-                            )
-                            .menu_with_check_and_disabled(
-                                crate::i18n::t("action.ToggleOverlay"),
-                                mask_overlay,
-                                Box::new(ToggleOverlay),
-                                tool != Tool::Mask,
-                            )
-                            .separator()
-                            .submenu(crate::i18n::t("menu.display_profile"), window, cx, {
+                                    ))
+                                })
+                            }
+                        })
+                        .separator()
+                        .menu_with_icon_and_disabled(
+                            crate::i18n::t("action.AutoTone"),
+                            crate::ui::Glyph::Auto.icon(),
+                            Box::new(AutoTone),
+                            !develop,
+                        )
+                        .menu_with_check_and_disabled(
+                            crate::i18n::t("action.ToggleMonochrome"),
+                            monochrome,
+                            Box::new(ToggleMonochrome),
+                            !develop,
+                        )
+                        .separator()
+                        .submenu(
+                            crate::i18n::t("menu.tools"),
+                            window,
+                            cx,
+                            move |menu, _, _| {
+                                menu.menu_with_check_and_disabled(
+                                    crate::i18n::t("action.ToggleCrop"),
+                                    tool == Tool::Crop,
+                                    Box::new(ToggleCrop),
+                                    !develop,
+                                )
+                                .menu_with_check_and_disabled(
+                                    crate::i18n::t("action.ToggleMask"),
+                                    tool == Tool::Mask,
+                                    Box::new(ToggleMask),
+                                    !develop,
+                                )
+                                .menu_with_check_and_disabled(
+                                    crate::i18n::t("action.ToggleSpot"),
+                                    tool == Tool::Spot,
+                                    Box::new(ToggleSpot),
+                                    !develop,
+                                )
+                                .menu_with_check_and_disabled(
+                                    crate::i18n::t("action.ToggleRedEye"),
+                                    tool == Tool::RedEye,
+                                    Box::new(ToggleRedEye),
+                                    !develop,
+                                )
+                                .menu_with_icon_and_disabled(
+                                    crate::i18n::t("action.ToggleWbPicker"),
+                                    crate::ui::Glyph::Picker.icon(),
+                                    Box::new(ToggleWbPicker),
+                                    !develop,
+                                )
+                            },
+                        )
+                }),
+            )
+            .child(
+                crate::ui::labeled_button(
+                    "view-menu",
+                    crate::ui::Glyph::View,
+                    crate::i18n::t("menu.view"),
+                )
+                .small()
+                .dropdown_menu(move |menu, window, cx| {
+                    menu.action_context(view_focus.clone())
+                        .menu_with_check(
+                            crate::i18n::t("action.ShowGrid"),
+                            !develop,
+                            Box::new(ShowGrid),
+                        )
+                        .menu_with_check(
+                            crate::i18n::t("action.ShowDevelop"),
+                            develop,
+                            Box::new(ShowDevelop),
+                        )
+                        .separator()
+                        .submenu(
+                            crate::i18n::t("menu.compare"),
+                            window,
+                            cx,
+                            move |menu, _, _| {
+                                menu.menu_with_check_and_disabled(
+                                    crate::i18n::t("action.ToggleBefore"),
+                                    compare == Compare::Before,
+                                    Box::new(ToggleBefore),
+                                    !develop,
+                                )
+                                .menu_with_check_and_disabled(
+                                    crate::i18n::t("action.ToggleSplit"),
+                                    compare == Compare::Split,
+                                    Box::new(ToggleSplit),
+                                    !develop,
+                                )
+                            },
+                        )
+                        .submenu(crate::i18n::t("menu.soft_proof"), window, cx, {
+                            let (proof, target) = (proof.clone(), proof_target.clone());
+                            move |menu, _, _| {
+                                let menu = menu.menu_with_check_and_disabled(
+                                    crate::i18n::t("action.ToggleSoftProof"),
+                                    proof.is_some(),
+                                    Box::new(ToggleSoftProof),
+                                    !develop,
+                                );
+                                let menu = [
+                                    (DisplayProfileId::Srgb, "sRGB"),
+                                    (DisplayProfileId::DisplayP3, "Display P3"),
+                                    (DisplayProfileId::AdobeRgb, "Adobe RGB"),
+                                ]
+                                .into_iter()
+                                .fold(
+                                    menu.separator(),
+                                    |menu, (d, label)| {
+                                        let action: Box<dyn gpui::Action> = match d {
+                                            DisplayProfileId::DisplayP3 => Box::new(ProofDisplayP3),
+                                            DisplayProfileId::AdobeRgb => Box::new(ProofAdobeRgb),
+                                            _ => Box::new(ProofSrgb),
+                                        };
+                                        menu.menu_with_check_and_disabled(
+                                            label,
+                                            target == d,
+                                            action,
+                                            !develop,
+                                        )
+                                    },
+                                );
+                                menu.separator().menu_with_check_and_disabled(
+                                    crate::i18n::t("action.ToggleGamutWarning"),
+                                    gamut_warning,
+                                    Box::new(ToggleGamutWarning),
+                                    !develop,
+                                )
+                            }
+                        })
+                        .menu_with_icon_and_disabled(
+                            crate::i18n::t("action.ToggleZoom"),
+                            crate::ui::Glyph::Lens.icon(),
+                            Box::new(ToggleZoom),
+                            !develop,
+                        )
+                        .separator()
+                        .menu_with_check_and_disabled(
+                            crate::i18n::t("action.ToggleMetadata"),
+                            show_metadata,
+                            Box::new(ToggleMetadata),
+                            develop,
+                        )
+                        .menu_with_check(
+                            crate::i18n::t("action.ToggleSubfolders"),
+                            subfolders,
+                            Box::new(ToggleSubfolders),
+                        )
+                        .menu_with_check_and_disabled(
+                            crate::i18n::t("action.ToggleHistory"),
+                            show_history,
+                            Box::new(ToggleHistory),
+                            !develop,
+                        )
+                        .menu_with_check_and_disabled(
+                            crate::i18n::t("action.ToggleInfo"),
+                            show_info,
+                            Box::new(ToggleInfo),
+                            !develop,
+                        )
+                        .menu_with_check_and_disabled(
+                            crate::i18n::t("action.ToggleOverlay"),
+                            mask_overlay,
+                            Box::new(ToggleOverlay),
+                            tool != Tool::Mask,
+                        )
+                        .separator()
+                        .menu_with_check_and_disabled(
+                            crate::i18n::t("action.ToggleHdrCanvas"),
+                            hdr_open,
+                            Box::new(ToggleHdrCanvas),
+                            !develop,
+                        )
+                        .submenu(crate::i18n::t("menu.display_profile"), window, cx, {
+                            let display = display.clone();
+                            move |menu, _, _| {
                                 let display = display.clone();
-                                move |menu, _, _| {
-                                    let display = display.clone();
-                                    let menu = menu
-                                        .menu_with_check(
-                                            crate::i18n::t("display.auto"),
-                                            display.mode == crate::display::Mode::Auto,
-                                            Box::new(DisplayAuto),
-                                        )
-                                        .menu_with_check(
-                                            "sRGB",
-                                            display.mode == crate::display::Mode::Srgb,
-                                            Box::new(DisplaySrgb),
-                                        )
-                                        .separator();
-                                    match (&display.detected, &display.problem) {
-                                        (Some(d), _) => menu.label(
-                                            rust_i18n::t!("display.detected", name = d.name)
-                                                .into_owned(),
-                                        ),
-                                        (None, Some(_)) => {
-                                            menu.label(crate::i18n::t("display.none"))
-                                        }
-                                        (None, None) => {
-                                            menu.label(crate::i18n::t("display.detecting"))
-                                        }
-                                    }
-                                }
-                            })
-                            .separator()
-                            .submenu(
-                                crate::i18n::t("menu.keybindings"),
-                                window,
-                                cx,
-                                |menu, _, _| {
-                                    menu.menu(
-                                        crate::i18n::t("action.EditKeybindings"),
-                                        Box::new(EditKeybindings),
-                                    )
-                                    .menu(
-                                        crate::i18n::t("action.ReloadKeybindings"),
-                                        Box::new(ReloadKeybindings),
-                                    )
-                                },
-                            )
-                            .separator()
-                            .submenu(
-                                crate::i18n::t("menu.language"),
-                                window,
-                                cx,
-                                move |menu, _, _| {
-                                    menu.menu_with_check(
-                                        crate::i18n::t("language.name.en"),
-                                        language == crate::i18n::Language::English,
-                                        Box::new(LanguageEnglish),
+                                let menu = menu
+                                    .menu_with_check(
+                                        crate::i18n::t("display.auto"),
+                                        display.mode == crate::display::Mode::Auto,
+                                        Box::new(DisplayAuto),
                                     )
                                     .menu_with_check(
-                                        crate::i18n::t("language.name.zh_cn"),
-                                        language == crate::i18n::Language::Chinese,
-                                        Box::new(LanguageChinese),
+                                        "sRGB",
+                                        display.mode == crate::display::Mode::Srgb,
+                                        Box::new(DisplaySrgb),
                                     )
-                                },
-                            )
-                    }),
+                                    .separator();
+                                match (&display.detected, &display.problem) {
+                                    (Some(d), _) => menu.label(
+                                        rust_i18n::t!("display.detected", name = d.name)
+                                            .into_owned(),
+                                    ),
+                                    (None, Some(_)) => menu.label(crate::i18n::t("display.none")),
+                                    (None, None) => menu.label(crate::i18n::t("display.detecting")),
+                                }
+                            }
+                        })
+                        .separator()
+                        .submenu(
+                            crate::i18n::t("menu.keybindings"),
+                            window,
+                            cx,
+                            |menu, _, _| {
+                                menu.menu_with_icon(
+                                    crate::i18n::t("action.EditKeybindings"),
+                                    crate::ui::Glyph::Keyboard.icon(),
+                                    Box::new(EditKeybindings),
+                                )
+                                .menu_with_icon(
+                                    crate::i18n::t("action.ReloadKeybindings"),
+                                    crate::ui::Glyph::Reset.icon(),
+                                    Box::new(ReloadKeybindings),
+                                )
+                            },
+                        )
+                        .separator()
+                        .submenu(
+                            crate::i18n::t("menu.language"),
+                            window,
+                            cx,
+                            move |menu, _, _| {
+                                menu.menu_with_check(
+                                    crate::i18n::t("language.name.en"),
+                                    language == crate::i18n::Language::English,
+                                    Box::new(LanguageEnglish),
+                                )
+                                .menu_with_check(
+                                    crate::i18n::t("language.name.zh_cn"),
+                                    language == crate::i18n::Language::Chinese,
+                                    Box::new(LanguageChinese),
+                                )
+                            },
+                        )
+                }),
             )
             .child(
                 ButtonGroup::new("mode")
                     .small()
                     .child(
-                        Button::new("grid")
-                            .label(crate::i18n::t("action.ShowGrid"))
-                            .selected(!develop)
-                            .tooltip(crate::keymap::hint("toolbar.grid_tooltip", cx))
-                            .on_click(cx.listener(|w, _, window, cx| {
-                                w.set_mode(Mode::Library, window, cx)
-                            })),
+                        crate::ui::icon_button(
+                            "grid",
+                            crate::ui::Glyph::Grid,
+                            crate::i18n::t("action.ShowGrid"),
+                        )
+                        .selected(!develop)
+                        .tooltip(crate::keymap::hint("toolbar.grid_tooltip", cx))
+                        .on_click(
+                            cx.listener(|w, _, window, cx| w.set_mode(Mode::Library, window, cx)),
+                        ),
                     )
                     .child(
-                        Button::new("develop")
-                            .label(crate::i18n::t("action.ShowDevelop"))
-                            .selected(develop)
-                            .tooltip(crate::keymap::hint("toolbar.develop_tooltip", cx))
-                            .on_click(cx.listener(|w, _, window, cx| {
-                                w.set_mode(Mode::Develop, window, cx)
-                            })),
+                        crate::ui::icon_button(
+                            "develop",
+                            crate::ui::Glyph::Develop,
+                            crate::i18n::t("action.ShowDevelop"),
+                        )
+                        .selected(develop)
+                        .tooltip(crate::keymap::hint("toolbar.develop_tooltip", cx))
+                        .on_click(
+                            cx.listener(|w, _, window, cx| w.set_mode(Mode::Develop, window, cx)),
+                        ),
                     ),
             )
             .when_some(self.import.as_ref().map(|j| j.progress), |row, p| {
@@ -1868,16 +1932,19 @@ impl Workspace {
                                 .child(text),
                         )
                         .child(
-                            Button::new("import-stop")
-                                .label("×")
-                                .xsmall()
-                                .tooltip(crate::i18n::t("import.stop"))
-                                .on_click(cx.listener(|w, _, _, cx| {
-                                    if let Some(j) = &w.import {
-                                        j.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                                    }
-                                    cx.notify();
-                                })),
+                            crate::ui::icon_button(
+                                "import-stop",
+                                crate::ui::Glyph::Close,
+                                crate::i18n::t("import.stop"),
+                            )
+                            .xsmall()
+                            .tooltip(crate::i18n::t("import.stop"))
+                            .on_click(cx.listener(|w, _, _, cx| {
+                                if let Some(j) = &w.import {
+                                    j.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                                }
+                                cx.notify();
+                            })),
                         ),
                 )
             })
@@ -2063,6 +2130,9 @@ impl Render for Workspace {
                 cx.listener(|w, _: &SelectAll, _, cx| {
                     w.library.update(cx, |l, cx| l.select_all(cx))
                 }),
+            )
+            .on_action(
+                cx.listener(|w, _: &ToggleHdrCanvas, _, cx| w.with_canvas(cx, Canvas::toggle_hdr)),
             )
             .on_action(
                 cx.listener(|w, _: &ToggleZoom, _, cx| w.with_canvas(cx, Canvas::toggle_zoom)),

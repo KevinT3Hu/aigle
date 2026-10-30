@@ -36,7 +36,7 @@ pub struct RawDecoded {
     pub size: Size,
     pub exif_orientation: u16,
     /// Oriented camera RGB, reference WB premultiplied (before A4).
-    pub rgb: Vec<Rgb>,
+    pub rgb: aigle_isolate::Payload<Rgb>,
     /// Oriented per-pixel clip bits (bit c: a channel-c site clipped here), undilated;
     /// `None` if nothing clipped.
     pub clip_mask: Option<Vec<u8>>,
@@ -86,6 +86,8 @@ pub fn decode(
     cancel: Option<&CancelToken>,
     admit: &mut dyn FnMut(u64) -> Result<(), LoadError>,
 ) -> Result<RawDecoded, LoadError> {
+    let started = std::time::Instant::now();
+    let mut stage = started;
     // A1
     let mut raw = Raw::open(path).map_err(fail)?;
     let (w, h, rw, rh) = raw.size();
@@ -98,6 +100,8 @@ pub fn decode(
                 fail(e)
             }
         })?;
+    tracing::debug!(elapsed = ?stage.elapsed(), "raw open/unpack");
+    stage = std::time::Instant::now();
     check(cancel)?;
     let meta = raw.meta().map_err(fail)?;
     let kind = meta
@@ -116,12 +120,16 @@ pub fn decode(
     let (planes, sensor_clipped, demosaic, mask) = match kind {
         Kind::Bayer | Kind::XTrans => {
             let (mut cfa, clip, clipped) = raw.copy_cfa(w, h, white_levels).map_err(fail)?;
+            tracing::debug!(elapsed = ?stage.elapsed(), "raw CFA copy");
+            stage = std::time::Instant::now();
             drop(raw);
             let pattern = meta.cfa;
             // A2: hot/dead pixels on the normalised CFA.
             if a.hot_pixels {
                 fix_hot_pixels(&mut cfa, w, h, &pattern);
             }
+            tracing::debug!(elapsed = ?stage.elapsed(), "raw hot pixels");
+            stage = std::time::Instant::now();
             // Per-channel site bits for A4.
             let mask = (clipped > 0).then(|| {
                 let mut m = clip;
@@ -159,8 +167,10 @@ pub fn decode(
                     fail(e)
                 }
             };
+            tracing::debug!(elapsed = ?stage.elapsed(), "raw premultiply/mask");
+            stage = std::time::Instant::now();
             if a.ca_correction && kind == Kind::Bayer {
-                if let Err(e) = rp::ca_correct(w, h, &mut cfa, bayer2, &cancelled) {
+                if let Err(e) = rp::ca_correct_parallel(w, h, &mut cfa, bayer2, &cancelled) {
                     if e.is_cancelled() {
                         return Err(LoadError::Cancelled);
                     }
@@ -168,6 +178,8 @@ pub fn decode(
                 }
                 check(cancel)?;
             }
+            tracing::debug!(elapsed = ?stage.elapsed(), "raw CA correction");
+            stage = std::time::Instant::now();
             // A3
             let (planes, used) = match (kind, a.demosaic) {
                 (Kind::Bayer, Demosaic::Amaze) => (
@@ -176,7 +188,7 @@ pub fn decode(
                     Demosaic::Amaze,
                 ),
                 (Kind::Bayer, _) => (
-                    rp::demosaic_bayer(BayerAlgo::Rcd, w, h, &mut cfa, bayer2, &cancelled)
+                    rp::demosaic_rcd_parallel(w, h, &mut cfa, bayer2, &cancelled)
                         .map_err(rp_err)?,
                     Demosaic::Rcd,
                 ),
@@ -189,6 +201,8 @@ pub fn decode(
                     )
                 }
             };
+            tracing::debug!(elapsed = ?stage.elapsed(), "raw demosaic");
+            stage = std::time::Instant::now();
             (planes, clipped as f32 / (w as f32 * h as f32), used, mask)
         }
         Kind::Rgb => {
@@ -229,20 +243,25 @@ pub fn decode(
     let sensor = Size::new(w, h);
     let size = o.apply_size(sensor);
     let inv = o.inverse();
-    let mut rgb = vec![[0f32; 3]; size.area() as usize];
-    rgb.par_chunks_mut(size.w as usize)
-        .enumerate()
-        .for_each(|(y, row)| {
-            for (x, px) in row.iter_mut().enumerate() {
-                let (sx, sy) = inv.apply_pixel(x as u32, y as u32, size);
-                let i = sy as usize * w as usize + sx as usize;
-                *px = [
-                    planes.r[i] * to_stored,
-                    planes.g[i] * to_stored,
-                    planes.b[i] * to_stored,
-                ];
-            }
-        });
+    let rgb = aigle_isolate::Payload::filled(size.area() as usize, |rgb: &mut [[f32; 3]]| {
+        rgb.par_chunks_mut(size.w as usize)
+            .enumerate()
+            .for_each(|(y, row)| {
+                let (sx, sy) = inv.apply_pixel(0, y as u32, size);
+                let (nx, ny) = inv.apply_pixel(1, y as u32, size);
+                let start = sy as isize * w as isize + sx as isize;
+                let step = (ny as isize - sy as isize) * w as isize + nx as isize - sx as isize;
+                for (x, px) in row.iter_mut().enumerate() {
+                    let i = (start + x as isize * step) as usize;
+                    *px = [
+                        planes.r[i] * to_stored,
+                        planes.g[i] * to_stored,
+                        planes.b[i] * to_stored,
+                    ];
+                }
+            });
+    })
+    .map_err(fail)?;
     drop(planes);
     let clip_mask = mask.map(|m| {
         let mut out = vec![0u8; size.area() as usize];
@@ -257,7 +276,9 @@ pub fn decode(
         out
     });
 
+    tracing::debug!(elapsed = ?stage.elapsed(), "raw orientation/packing");
     let (color, noise_profile) = source_color(&meta, wb, path);
+    tracing::debug!(elapsed = ?started.elapsed(), "raw decode complete");
     Ok(RawDecoded {
         size,
         exif_orientation: exif,
@@ -518,30 +539,62 @@ fn fix_hot_pixels(cfa: &mut [f32], w: u32, h: u32, pattern: &[[u8; 6]; 6]) {
     if w <= 2 * B || h <= 2 * B {
         return;
     }
-    let offsets = same_colour_offsets(pattern);
-    let src = cfa.to_vec();
-    cfa.par_chunks_mut(w)
-        .enumerate()
-        .skip(B)
-        .take(h - 2 * B)
-        .for_each(|(y, row)| {
-            for (x, v) in row.iter_mut().enumerate().skip(B).take(w - 2 * B) {
-                let offs = &offsets[(y % 6) * 6 + x % 6];
-                let mut mx = f32::MIN;
-                let mut mn = f32::MAX;
+    let offsets: Vec<Vec<isize>> = same_colour_offsets(pattern)
+        .into_iter()
+        .map(|v| {
+            v.into_iter()
+                .map(|(dx, dy)| dy as isize * w as isize + dx as isize)
+                .collect()
+        })
+        .collect();
+    // Detect from the unmodified CFA, then apply sparse repairs. This avoids a
+    // full 180 MB snapshot copy while keeping neighbours independent of repair order.
+    // Per-row vectors also bound worst-case scratch below the declared RAW peak.
+    let repairs: Vec<Vec<(u32, f32)>> = (B..h - B)
+        .into_par_iter()
+        .map(|y| {
+            let patterns = &offsets[(y % 6) * 6..(y % 6) * 6 + 6];
+            let mut repairs = Vec::new();
+            for x in B..w - B {
+                let offs = &patterns[x % 6];
+                let Some((&first, rest)) = offs.split_first() else {
+                    continue;
+                };
+                let i = (y * w + x) as isize;
+                let c = cfa[i as usize];
+                let n = cfa[(i + first) as usize];
+                let hot = c > 2.0 * n && c - n > 0.02;
+                let dead = c < 0.25 * n && n - c > 0.02;
+                if !hot && !dead {
+                    continue;
+                }
                 let mut sum = 0.0;
-                for &(dx, dy) in offs {
-                    let n = src[(y as i32 + dy) as usize * w + (x as i32 + dx) as usize];
-                    mx = mx.max(n);
-                    mn = mn.min(n);
+                sum += n;
+                let mut defect = true;
+                for &offset in rest {
+                    let n = cfa[(i + offset) as usize];
+                    if if hot {
+                        !(c > 2.0 * n && c - n > 0.02)
+                    } else {
+                        !(c < 0.25 * n && n - c > 0.02)
+                    } {
+                        defect = false;
+                        break;
+                    }
                     sum += n;
                 }
-                let c = src[y * w + x];
-                if (c > 2.0 * mx && c - mx > 0.02) || (c < 0.25 * mn && mn - c > 0.02) {
-                    *v = sum / offs.len() as f32;
+                if defect {
+                    repairs.push((x as u32, sum / offs.len() as f32));
                 }
             }
-        });
+            repairs
+        })
+        .collect();
+    for (y, repairs) in repairs.into_iter().enumerate() {
+        for (x, value) in repairs {
+            cfa[(y + B) * w + x as usize] = value;
+        }
+    }
 }
 
 /// Embedded preview of a raw file, oriented, as 8-bit RGB.
@@ -613,6 +666,68 @@ mod tests {
         [1, 1, 0, 1, 1, 2],
         [0, 2, 1, 2, 0, 1],
     ];
+
+    #[test]
+    fn hot_pixel_short_circuit_matches_full_neighbour_scan() {
+        let (w, h) = (127usize, 93usize);
+        for pattern in [BAYER, XTRANS] {
+            let original: Vec<f32> = (0..w * h)
+                .map(|i| {
+                    let v = (i as u32).wrapping_mul(2654435761);
+                    if i % 17 == 0 {
+                        0.0
+                    } else {
+                        (v % 10000) as f32 / 10000.0
+                    }
+                })
+                .collect();
+            let mut expected = original.clone();
+            let offsets = same_colour_offsets(&pattern);
+            for y in 3..h - 3 {
+                for x in 3..w - 3 {
+                    let offs = &offsets[(y % 6) * 6 + x % 6];
+                    let (mut mn, mut mx, mut sum) = (f32::MAX, f32::MIN, 0.0f32);
+                    for &(dx, dy) in offs {
+                        let n = original[(y as i32 + dy) as usize * w + (x as i32 + dx) as usize];
+                        mn = mn.min(n);
+                        mx = mx.max(n);
+                        sum += n;
+                    }
+                    let c = original[y * w + x];
+                    if (c > 2.0 * mx && c - mx > 0.02) || (c < 0.25 * mn && mn - c > 0.02) {
+                        expected[y * w + x] = sum / offs.len() as f32;
+                    }
+                }
+            }
+            let mut actual = original;
+            fix_hot_pixels(&mut actual, w as u32, h as u32, &pattern);
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn oriented_row_steps_match_pixel_mapping() {
+        let sensor = Size::new(37, 23);
+        for exif in 1..=8 {
+            let orientation = Orientation::from_exif(exif);
+            let size = orientation.apply_size(sensor);
+            let inv = orientation.inverse();
+            for y in 0..size.h {
+                let (sx, sy) = inv.apply_pixel(0, y, size);
+                let (nx, ny) = inv.apply_pixel(1, y, size);
+                let start = sy as isize * sensor.w as isize + sx as isize;
+                let step =
+                    (ny as isize - sy as isize) * sensor.w as isize + nx as isize - sx as isize;
+                for x in 0..size.w {
+                    let (px, py) = inv.apply_pixel(x, y, size);
+                    assert_eq!(
+                        (start + x as isize * step) as usize,
+                        py as usize * sensor.w as usize + px as usize
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn hot_pixel_is_repaired() {

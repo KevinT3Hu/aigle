@@ -111,6 +111,19 @@ pub fn prepare(
     }))
 }
 
+/// An SDR watermark at diffuse white, represented as linear sRGB float samples.
+pub fn prepare_hdr(wm: &Watermark, size: (u32, u32)) -> Result<Option<Prepared>, String> {
+    let Some(mut p) = prepare(wm, size, &DisplayProfileId::Srgb, false)? else {
+        return Ok(None);
+    };
+    p.rgb = p
+        .rgb
+        .iter()
+        .flat_map(|v| srgb_eotf(*v as f32 / 255.0).to_ne_bytes())
+        .collect();
+    Ok(Some(p))
+}
+
 /// sRGB8 samples of RGBA pixels → RGB in the output space, 8-bit or native-endian 16-bit.
 fn to_output(rgba: &[u8], output: &DisplayProfileId, sixteen_bit: bool) -> Vec<u8> {
     let transfer = crate::output_space::transfer(output);

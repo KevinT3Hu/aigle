@@ -1,10 +1,11 @@
 //! Builds the vendored librtprocess (CarVac/librtprocess master, commit 9a858270,
 //! 2023-06-27) and the aigle shim. GPLv3-or-later, compatible with AGPL-3.0 (doc 01 §11).
 //!
-//! The vendored sources carry one local patch, marked "aigle patch": demosaic and CA
-//! correction stop and return `RP_CANCELLED` when their progress callback returns true.
+//! Local patches are marked "aigle patch": cancellation, bounded tile teams,
+//! deterministic CA reduction and disjoint scratch writes.
 //!
-//! Always optimised; no OpenMP (doc 05 §5). Only SSE2 is assumed (x86-64 baseline), so the
+//! Always optimised. RCD and CA use bounded OpenMP with GCC; other stages stay serial.
+//! Only SSE2 is assumed (x86-64 baseline), so the
 //! output does not depend on the build machine (doc 02 §14).
 
 use std::path::Path;
@@ -16,15 +17,13 @@ fn main() {
         "demosaic/amaze.cc",
         "demosaic/border.cc",
         "demosaic/markesteijn.cc",
-        "demosaic/rcd.cc",
-        "preprocess/CA_correct.cc",
         "postprocess/hilite_recon.cc",
     ];
 
     cc::Build::new()
         .cpp(true)
         .std("c++11")
-        .opt_level(2)
+        .opt_level(3)
         .debug(false)
         .warnings(false)
         .define("LIBRTPROCESS_STATIC", None)
@@ -35,6 +34,27 @@ fn main() {
         .files(files.iter().map(|f| src.join(f)))
         .file(root.join("shim/aigle_rtprocess.cpp"))
         .compile("aigle_rtprocess");
+
+    // RCD and CA use bounded tile teams. CA reduces stored shifts in raster order
+    // so dynamic worker scheduling cannot change floating-point results.
+    let mut tiles = cc::Build::new();
+    tiles
+        .cpp(true)
+        .std("c++11")
+        .opt_level(3)
+        .debug(false)
+        .warnings(false)
+        .define("LIBRTPROCESS_STATIC", None)
+        .include(src.join("include"))
+        .flag_if_supported("-fno-fast-math")
+        .flag_if_supported("-ffp-contract=off")
+        .file(src.join("demosaic/rcd.cc"))
+        .file(src.join("preprocess/CA_correct.cc"));
+    if tiles.get_compiler().is_like_gnu() {
+        tiles.flag("-fopenmp");
+        println!("cargo:rustc-link-lib=gomp");
+    }
+    tiles.compile("aigle_rcd");
 
     println!("cargo:rerun-if-changed=shim");
     println!("cargo:rerun-if-changed=vendor");

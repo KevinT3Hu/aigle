@@ -7,9 +7,10 @@ use std::sync::{Arc, Weak};
 use aigle_core::EditParams;
 use aigle_core::geometry::{Size, fit_long_edge};
 use aigle_engine_api::{
-    BackendKind, CancelToken, DisplayProfileId, EngineConfig, EngineEvent, EngineImpl,
-    EventReceiver, ExportOptions, ExportResult, ImportKind, Imported, Job, JobError, JobResult,
-    Overlays, PixelBuffer, PixelFormat, Priority, SessionImpl, SourceRef, Thumbnail, broadcast,
+    BackendKind, CancelToken, DisplayProfileId, EncodedFormat, EngineConfig, EngineEvent,
+    EngineImpl, EventReceiver, ExportOptions, ExportResult, ImportKind, Imported, Job, JobError,
+    JobResult, Overlays, PixelBuffer, PixelFormat, Priority, SessionImpl, SourceRef, Thumbnail,
+    broadcast,
 };
 
 use crate::backend::Backend;
@@ -169,7 +170,18 @@ impl EngineInner {
         opts: &ExportOptions,
         cancel: &CancelToken,
     ) -> JobResult<(u32, u32)> {
-        let prep = Prepared::new(src, params, &opts.output);
+        let hdr = opts.format.is_hdr();
+        if opts.output == DisplayProfileId::HdrRec2020 && !hdr {
+            return Err(JobError::Failed(
+                "HDR output requires HDR PNG, floating-point TIFF or OpenEXR".into(),
+            ));
+        }
+        let output = if hdr {
+            DisplayProfileId::HdrRec2020
+        } else {
+            opts.output.clone()
+        };
+        let prep = Prepared::new(src, params, &output);
         let (cw, ch) = prep.crop_extent();
         let (w, h) = (
             (cw.round() as u32).clamp(1, cw.ceil().max(1.0) as u32),
@@ -180,7 +192,7 @@ impl EngineInner {
             _ => Size::new(w, h),
         };
         let sixteen = encode::sixteen_bit(opts.format);
-        let full = if sixteen {
+        let full = if sixteen || hdr {
             Some(
                 source::full_precision(src_ref, src, &self.ledger, Some(cancel))
                     .map_err(load_err)?,
@@ -198,7 +210,13 @@ impl EngineInner {
         type Band = Arc<std::sync::OnceLock<Option<Arc<Vec<u8>>>>>;
         let bands: parking_lot::Mutex<HashMap<u32, Band>> = Default::default();
         let task = crate::arbiter::current();
-        let bpp = if sixteen { 6 } else { 3 };
+        let bpp = if hdr {
+            12
+        } else if sixteen {
+            6
+        } else {
+            3
+        };
         let band_rows = |k: u32| -> Option<Arc<Vec<u8>>> {
             let cell = {
                 let mut m = bands.lock();
@@ -217,6 +235,10 @@ impl EngineInner {
             })
             .clone()
         };
+        let to_srgb = aigle_core::color::to_f32(&aigle_core::color::mul(
+            &aigle_core::color::invert(&aigle_core::color::SRGB_TO_XYZ).unwrap(),
+            &aigle_core::color::REC2020_TO_XYZ,
+        ));
         let fill = |x: u32, y: u32, rw: u32, rh: u32, buf: &mut [u8], stride: usize| {
             let mut j = 0;
             while j < rh {
@@ -230,15 +252,33 @@ impl EngineInner {
                     let s = ((gy + r - k * band) as usize * w as usize + x as usize) * bpp;
                     let d = (j + r) as usize * stride;
                     buf[d..d + rw as usize * bpp].copy_from_slice(&rows[s..s + rw as usize * bpp]);
+                    if hdr {
+                        for pixel in buf[d..d + rw as usize * bpp].as_chunks_mut::<12>().0 {
+                            let rgb = std::array::from_fn(|c| {
+                                f32::from_le_bytes(pixel[c * 4..c * 4 + 4].try_into().unwrap())
+                            });
+                            let rgb = aigle_kernels::math::mat3_mul(&to_srgb, rgb);
+                            for (c, v) in rgb.into_iter().enumerate() {
+                                pixel[c * 4..c * 4 + 4].copy_from_slice(&v.to_ne_bytes());
+                            }
+                        }
+                    }
                 }
                 j += n;
             }
             true
         };
         let exif = encode::export_exif(src.info.camera.as_ref(), opts);
-        let icc = crate::output_space::icc(&opts.output);
+        let icc = if hdr {
+            crate::output_space::Icc::Data(crate::output_space::linear_srgb_icc().into())
+        } else {
+            crate::output_space::icc(&opts.output)
+        };
         let (icc_name, icc_data) = encode::icc_args(&icc);
         let watermark = match &opts.watermark {
+            Some(wm) if hdr => {
+                crate::watermark::prepare_hdr(wm, (out.w, out.h)).map_err(JobError::Failed)?
+            }
             Some(wm) => crate::watermark::prepare(wm, (out.w, out.h), &opts.output, sixteen)
                 .map_err(JobError::Failed)?,
             None => None,
@@ -247,6 +287,7 @@ impl EngineInner {
             width: w,
             height: h,
             sixteen_bit: sixteen,
+            floating_point: hdr,
             out_size: (out.w, out.h),
             icc: icc_name,
             exif: exif.as_ref(),
@@ -256,6 +297,16 @@ impl EngineInner {
             resize_gamma: crate::output_space::resize_gamma(&opts.output),
             overlay: watermark.as_ref().map(crate::watermark::Prepared::overlay),
         };
+        if opts.format == EncodedFormat::OpenExr || opts.format == EncodedFormat::HdrPng {
+            crate::hdr::save_encoded(&opts.path, &vopts, &fill, opts, cancel).map_err(|e| {
+                if cancel.is_cancelled() {
+                    JobError::Cancelled
+                } else {
+                    JobError::Failed(e)
+                }
+            })?;
+            return Ok((out.w, out.h));
+        }
         encode::save_streamed(&opts.path, &vopts, &fill).map_err(|e| {
             if cancel.is_cancelled() {
                 JobError::Cancelled
@@ -598,5 +649,295 @@ mod source_registry_tests {
         let used = e.ledger.used();
         drop((a, b));
         assert!(e.ledger.used() < used, "released with its last user");
+    }
+}
+
+#[cfg(test)]
+mod hdr_pipeline_tests {
+    use super::*;
+    #[test]
+    fn hdr_png_matches_native_preview_luminance_and_colour() {
+        use aigle_engine_api::BackendPreference;
+        let dir = std::env::temp_dir().join(format!("aigle-hdr-match-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("patches.exr");
+        let colours = [
+            [0.02f32; 3],
+            [0.18; 3],
+            [1.0; 3],
+            [2.0; 3],
+            [4.0; 3],
+            [16.0; 3],
+            [4.0, 0.3, 0.1],
+            [0.1, 4.0, 0.3],
+            [0.3, 0.1, 4.0],
+        ];
+        exr::prelude::write_rgb_file(&input, 144, 16, |x, _| {
+            let v = colours[x / 16];
+            (v[0], v[1], v[2])
+        })
+        .unwrap();
+        let e = EngineInner::new(EngineConfig {
+            backend: BackendPreference::Cpu,
+            ..Default::default()
+        });
+        let source = SourceRef::File(input);
+        let mut p = EditParams::default();
+        p.detail.sharpen.amount = 0.0;
+        p.detail.noise.chroma = 0.0;
+        let src = e.source_for(&source, &p, None).unwrap();
+        let preview = e
+            .render_full(
+                e.next_id(),
+                &src,
+                &p,
+                Some(144),
+                &DisplayProfileId::HdrRec2020,
+                None,
+            )
+            .unwrap();
+        let output = dir.join("hdr.png");
+        let opts = ExportOptions {
+            path: output.clone(),
+            format: EncodedFormat::HdrPng,
+            output: DisplayProfileId::HdrRec2020,
+            ..Default::default()
+        };
+        e.export_streamed(e.next_id(), &source, &src, &p, &opts, &CancelToken::new())
+            .unwrap();
+        let mut png = png::Decoder::new(std::io::BufReader::new(
+            std::fs::File::open(output).unwrap(),
+        ))
+        .read_info()
+        .unwrap();
+        assert_eq!(
+            png.info().coding_independent_code_points,
+            Some(png::CodingIndependentCodePoints {
+                color_primaries: 9,
+                transfer_function: 16,
+                matrix_coefficients: 0,
+                is_video_full_range_image: true,
+            })
+        );
+        let mut bytes = vec![0; png.output_buffer_size().unwrap()];
+        let info = png.next_frame(&mut bytes).unwrap();
+        assert_eq!(info.bit_depth, png::BitDepth::Sixteen);
+        for patch in 0..colours.len() {
+            let i = 8 * 144 + patch * 16 + 8;
+            for c in 0..3 {
+                let at = i * 8 + c * 2;
+                let linear = half::f16::from_bits(u16::from_le_bytes([
+                    preview.data[at],
+                    preview.data[at + 1],
+                ]))
+                .to_f32();
+                let at = i * 6 + c * 2;
+                let nits = crate::hdr::pq_decode(
+                    u16::from_be_bytes([bytes[at], bytes[at + 1]]) as f32 / 65535.0,
+                );
+                let expected = linear * crate::hdr::REFERENCE_WHITE;
+                assert!(
+                    (nits - expected).abs() < expected.max(1.0) * 0.003,
+                    "patch {patch} channel {c}: export {nits} nits, preview {expected} nits"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn hdr_preview_and_all_exports_keep_highlights_through_resize_and_watermark() {
+        use aigle_engine_api::{
+            Anchor, BackendPreference, MetadataPolicy, OutputSharpening, Watermark,
+            WatermarkContent,
+        };
+        let dir = std::env::temp_dir().join(format!("aigle-hdr-pipeline-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("input.exr");
+        exr::prelude::write_rgb_file(&input, 32, 16, |x, _| {
+            let v = if x < 16 { 0.18f32 } else { 4.0 };
+            (v, v, v)
+        })
+        .unwrap();
+        let e = EngineInner::new(EngineConfig {
+            backend: BackendPreference::Cpu,
+            ..Default::default()
+        });
+        let source = SourceRef::File(input);
+        let mut p = EditParams::default();
+        p.detail.sharpen.amount = 0.0;
+        p.detail.noise.chroma = 0.0;
+        let src = e.source_for(&source, &p, None).unwrap();
+        let hdr = e
+            .render_full(
+                e.next_id(),
+                &src,
+                &p,
+                Some(32),
+                &DisplayProfileId::HdrRec2020,
+                None,
+            )
+            .unwrap();
+        assert_eq!(hdr.format, PixelFormat::Rgba16F);
+        assert_eq!(hdr.data.len(), 32 * 16 * 8);
+        let at = (8 * 32 + 24) * 8;
+        let v = half::f16::from_bits(u16::from_le_bytes([hdr.data[at], hdr.data[at + 1]])).to_f32();
+        assert!(
+            v > 2.0 && v < crate::hdr::HEADROOM,
+            "preview must retain HDR: {v}"
+        );
+        let hist = crate::analysis::rendered_histogram(&hdr);
+        assert_eq!(hist.red.iter().sum::<u32>(), 32 * 16);
+        assert_eq!(hist.red[255], 0, "diffuse white is not HDR clipping");
+        let sdr = e
+            .render_full(
+                e.next_id(),
+                &src,
+                &p,
+                Some(32),
+                &DisplayProfileId::Srgb,
+                None,
+            )
+            .unwrap();
+        assert_eq!(sdr.format, PixelFormat::Bgra8);
+        for format in [
+            EncodedFormat::HdrTiff,
+            EncodedFormat::HdrPng,
+            EncodedFormat::OpenExr,
+        ] {
+            let path = dir.join(format!("{format:?}.{}", format.extension()));
+            let opts = ExportOptions {
+                path: path.clone(),
+                format,
+                long_edge: Some(16),
+                output: DisplayProfileId::HdrRec2020,
+                sharpening: OutputSharpening::Standard,
+                metadata: MetadataPolicy::CopyrightOnly,
+                artist: Some("HDR test".into()),
+                watermark: Some(Watermark {
+                    content: WatermarkContent::Text("HDR".into()),
+                    size: 0.2,
+                    anchor: Anchor::BottomLeft,
+                    margin: 0.0,
+                    opacity: 1.0,
+                    color: [255; 3],
+                }),
+                ..Default::default()
+            };
+            let size = e
+                .export_streamed(e.next_id(), &source, &src, &p, &opts, &CancelToken::new())
+                .unwrap();
+            assert_eq!(size, (16, 8));
+            let reloaded = e.source_for(&SourceRef::File(path), &p, None).unwrap();
+            assert_eq!(
+                (reloaded.info.source_size.w, reloaded.info.source_size.h),
+                (16, 8)
+            );
+            let max = reloaded.pyramid.levels[0].data[4 * 16 + 12][0].to_f32();
+            assert!(max > 1.5, "{format:?} clipped highlights: {max}");
+        }
+        let invalid = ExportOptions {
+            path: dir.join("wrong.png"),
+            format: EncodedFormat::Png,
+            output: DisplayProfileId::HdrRec2020,
+            ..Default::default()
+        };
+        assert!(
+            e.export_streamed(
+                e.next_id(),
+                &source,
+                &src,
+                &p,
+                &invalid,
+                &CancelToken::new()
+            )
+            .is_err()
+        );
+        assert!(!invalid.path.exists());
+        std::fs::remove_dir_all(dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod hdr_live_tests {
+    use super::*;
+    use aigle_core::Revision;
+    use aigle_engine_api::{
+        BackendPreference, Frame, Interaction, LoadState, ParamsSource, Quality, SyntheticPattern,
+        View, ViewSpec, Viewport,
+    };
+    use std::time::{Duration, Instant};
+    fn wait(view: &View, revision: Option<Revision>) -> Arc<Frame> {
+        let mut rx = view.frames();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(frame) = rx.borrow_and_update().clone()
+                && frame.quality != Quality::Draft
+                && revision.is_none_or(|r| frame.rev == r)
+            {
+                return frame;
+            }
+            assert!(Instant::now() < deadline, "HDR live frame timed out");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    #[test]
+    fn live_hdr_and_sdr_views_follow_exposure_edits_without_format_or_cache_mixups() {
+        let engine = crate::create(EngineConfig {
+            backend: BackendPreference::Cpu,
+            ..Default::default()
+        });
+        let session = engine.open(SourceRef::Synthetic {
+            pattern: SyntheticPattern::Gradient,
+            width: 64,
+            height: 48,
+        });
+        let mut info = session.info();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !matches!(*info.borrow_and_update(), LoadState::Ready(_)) {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let spec = |display| ViewSpec {
+            viewport: Some(Viewport {
+                region: aigle_core::geometry::Rect::new(0.0, 0.0, 64.0, 48.0),
+                output_size: (64, 48),
+                display,
+            }),
+            fit_size: (64, 48),
+            params: ParamsSource::Current,
+            overlays: Default::default(),
+        };
+        let hdr = session.create_view(spec(DisplayProfileId::HdrRec2020));
+        let sdr = session.create_view(spec(DisplayProfileId::Srgb));
+        let before = wait(&hdr, None);
+        assert_eq!(before.pixels.format, PixelFormat::Rgba16F);
+        let mut params = EditParams::default();
+        params.light.exposure = 2.0;
+        params.presence.saturation = 15.0;
+        session.set_edits(Revision(2), Arc::new(params), Interaction::Final);
+        let after = wait(&hdr, Some(Revision(2)));
+        let sdr = wait(&sdr, Some(Revision(2)));
+        assert_eq!(after.pixels.format, PixelFormat::Rgba16F);
+        assert_eq!(after.pixels.stride, 64 * 8);
+        assert_eq!(sdr.pixels.format, PixelFormat::Bgra8);
+        assert_eq!(sdr.pixels.stride, 64 * 4);
+        assert_ne!(before.pixels.data, after.pixels.data);
+        let max = after
+            .pixels
+            .data
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .flat_map(|p| {
+                (0..3).map(move |c| {
+                    half::f16::from_bits(u16::from_le_bytes([p[c * 2], p[c * 2 + 1]])).to_f32()
+                })
+            })
+            .fold(0.0f32, f32::max);
+        assert!(
+            max > 1.0 && max <= crate::hdr::HEADROOM + 0.005,
+            "HDR lost after creative color: {max}"
+        );
     }
 }

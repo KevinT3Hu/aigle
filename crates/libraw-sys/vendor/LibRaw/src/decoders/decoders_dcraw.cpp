@@ -913,6 +913,57 @@ void LibRaw::nikon_load_raw()
   huff = make_decoder(nikon_tree[tree]);
   fseek(ifp, data_offset, SEEK_SET);
   getbits(-1);
+  // aigle patch: Nikon entropy decoding consumes bytes sequentially. Refill in
+  // blocks instead of making a virtual get_char call for every compressed byte.
+  struct BufferedInput {
+    LibRaw_abstract_datastream *stream;
+    unsigned char bytes[65536];
+    size_t pos = 0, end = 0;
+    explicit BufferedInput(LibRaw_abstract_datastream *s) : stream(s) {}
+    ~BufferedInput() {
+      // Preserve the exact consumed position, including when decode is cancelled.
+      if (end > pos) { try { stream->seek(-INT64(end - pos), SEEK_CUR); } catch (...) {} }
+    }
+    int next() {
+      if (pos == end) {
+        const int n = stream->read(bytes, 1, sizeof(bytes));
+        pos = 0;
+        end = n > 0 ? size_t(n) : 0;
+        if (!end) return EOF;
+      }
+      return bytes[pos++];
+    }
+  } input(ifp);
+  // Keep entropy state in registers across pixel writes and stream refills.
+  // Commit it on normal return and exception unwinding just like getbithuff.
+  auto &shared_bits = tls->getbits;
+  using SharedBits = decltype(tls->getbits);
+  struct LocalBits {
+    SharedBits &dst;
+    unsigned buf;
+    int valid, reset;
+    explicit LocalBits(SharedBits &d) : dst(d), buf(d.bitbuf), valid(d.vbits), reset(d.reset) {}
+    ~LocalBits() { dst.bitbuf = buf; dst.vbits = valid; dst.reset = reset; }
+  } state(shared_bits);
+  auto bits = [&](int nbits, ushort *table) -> unsigned {
+    auto &buf = state.buf;
+    auto &valid = state.valid;
+    auto &reset = state.reset;
+    unsigned c;
+    if (nbits > 25) return 0;
+    if (nbits < 0) { buf = valid = reset = 0; return 0; }
+    if (nbits == 0 || valid < 0) return 0;
+    while (!reset && valid < nbits && (c = input.next()) != (unsigned)EOF &&
+           !(reset = zero_after_ff && c == 0xff && input.next())) {
+      buf = (buf << 8) + (uchar)c;
+      valid += 8;
+    }
+    c = valid == 0 ? 0 : buf << (32 - valid) >> (32 - nbits);
+    if (table) { valid -= table[c] >> 8; c = (uchar)table[c]; }
+    else valid -= nbits;
+    if (valid < 0) derror();
+    return c;
+  };
   try
   {
     for (min = row = 0; row < height; row++)
@@ -924,20 +975,31 @@ void LibRaw::nikon_load_raw()
         huff = make_decoder(nikon_tree[tree + 1]);
         max += (min = 16) << 1;
       }
-      for (col = 0; col < raw_width; col++)
-      {
-        i = gethuff(huff);
-        len = i & 15;
-        shl = i >> 4;
-        diff = ((getbits(len - shl) << 1) + 1) << shl >> 1;
-        if (len > 0 && (diff & (1 << (len - 1))) == 0)
-          diff -= (1 << len) - !shl;
-        if (col < 2)
-          hpred[col] = vpred[row & 1][col] += diff;
-        else
-          hpred[col & 1] += diff;
-        if ((ushort)(hpred[col & 1] + min) >= max)
-          derror();
+      auto delta = [&]() -> int {
+        const int code = bits(*huff, huff + 1);
+        const int n = code & 15, shift = code >> 4;
+        int d = ((bits(n - shift, nullptr) << 1) + 1) << shift >> 1;
+        if (n > 0 && (d & (1 << (n - 1))) == 0) d -= (1 << n) - !shift;
+        return d;
+      };
+      // aigle patch: the two horizontal predictors are independent. Fixed
+      // predictor indices let the compiler keep them in registers across pairs.
+      for (col = 0; col < 2 && col < raw_width; ++col) {
+        hpred[col] = vpred[row & 1][col] += delta();
+        if ((ushort)(hpred[col] + min) >= max) derror();
+        RAW(row, col) = curve[LIM((short)hpred[col], 0, 0x3fff)];
+      }
+      for (; col + 1 < raw_width; col += 2) {
+        hpred[0] += delta();
+        if ((ushort)(hpred[0] + min) >= max) derror();
+        RAW(row, col) = curve[LIM((short)hpred[0], 0, 0x3fff)];
+        hpred[1] += delta();
+        if ((ushort)(hpred[1] + min) >= max) derror();
+        RAW(row, col + 1) = curve[LIM((short)hpred[1], 0, 0x3fff)];
+      }
+      if (col < raw_width) {
+        hpred[col & 1] += delta();
+        if ((ushort)(hpred[col & 1] + min) >= max) derror();
         RAW(row, col) = curve[LIM((short)hpred[col & 1], 0, 0x3fff)];
       }
     }

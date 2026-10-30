@@ -462,10 +462,13 @@ impl Render for CurveEditor {
             }))
             .child(div().flex_1())
             .child(
-                Button::new("curve-reset")
-                    .label(crate::i18n::t("common.reset"))
-                    .xsmall()
-                    .on_click(cx.listener(|c, _, _, cx| c.reset(cx))),
+                crate::ui::icon_button(
+                    "curve-reset",
+                    crate::ui::Glyph::Reset,
+                    crate::i18n::t("common.reset"),
+                )
+                .xsmall()
+                .on_click(cx.listener(|c, _, _, cx| c.reset(cx))),
             );
 
         let graph = div()

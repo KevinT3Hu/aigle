@@ -47,9 +47,24 @@ int aigle_rp_rcd(int w, int h, float *cfa, float *r, float *g, float *b, const i
     unsigned p[2][2];
     bayer(pattern, p);
     Rows in(cfa, w, h), R(r, w, h), G(g, w, h), B(b, w, h);
-    // Single-threaded: OpenMP is not enabled (the engine owns the CPU, doc 05 §5).
+    // Serial entry point retained for reference comparisons and non-Sync callbacks.
     return rcd_demosaic(w, h, in.cget(), R.get(), G.get(), B.get(), p, progress(cancel, user), 2, false,
                         false);
+  } catch (...) {
+    return -1;
+  }
+}
+
+// Independent RCD tiles produce the same
+// pixels as serial RCD; cap the team at eight in the vendored parallel region.
+int aigle_rp_rcd_parallel(int w, int h, float *cfa, float *r, float *g, float *b,
+                         const int32_t pattern[2][2], aigle_rp_cancel_fn cancel, void *user) {
+  try {
+    unsigned p[2][2];
+    bayer(pattern, p);
+    Rows in(cfa, w, h), R(r, w, h), G(g, w, h), B(b, w, h);
+    return rcd_demosaic(w, h, in.cget(), R.get(), G.get(), B.get(), p, progress(cancel, user), 2, false,
+                       true);
   } catch (...) {
     return -1;
   }
@@ -94,6 +109,20 @@ int aigle_rp_ca_correct(int w, int h, float *cfa, const int32_t pattern[2][2], a
     double fit[2][2][16] = {};
     return CA_correct(0, 0, w, h, true, 2, 0.0, 0.0, true, io.cget(), io.get(), p, progress(cancel, user), fit,
                       false, 65535.f, 65535.f);
+  } catch (...) {
+    return -1;
+  }
+}
+
+int aigle_rp_ca_correct_parallel(int w, int h, float *cfa, const int32_t pattern[2][2], aigle_rp_cancel_fn cancel,
+                        void *user) {
+  try {
+    unsigned p[2][2];
+    bayer(pattern, p);
+    Rows io(cfa, w, h);
+    double fit[2][2][16] = {};
+    return CA_correct(0, 0, w, h, true, 2, 0.0, 0.0, true, io.cget(), io.get(), p, progress(cancel, user), fit,
+                      false, 65535.f, 65535.f, 2, false, true);
   } catch (...) {
     return -1;
   }

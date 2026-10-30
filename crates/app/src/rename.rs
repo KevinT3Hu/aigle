@@ -4,7 +4,7 @@ use gpui::{
     Context, Entity, EventEmitter, IntoElement, ParentElement, Render, Styled, Subscription,
     Window, div, prelude::*, px,
 };
-use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::button::ButtonVariants;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{ActiveTheme, Sizable, h_flex, v_flex};
 
@@ -95,17 +95,23 @@ impl Render for RenameDialog {
                     .gap_2()
                     .justify_end()
                     .child(
-                        Button::new("rename-cancel")
-                            .label(crate::i18n::t("common.cancel"))
-                            .small()
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(RenameEvent::Done(None)))),
+                        crate::ui::labeled_button(
+                            "rename-cancel",
+                            crate::ui::Glyph::Close,
+                            crate::i18n::t("common.cancel"),
+                        )
+                        .small()
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(RenameEvent::Done(None)))),
                     )
                     .child(
-                        Button::new("rename-go")
-                            .label(crate::i18n::t("rename.confirm"))
-                            .small()
-                            .primary()
-                            .on_click(cx.listener(|d, _, _, cx| d.confirm(cx))),
+                        crate::ui::labeled_button(
+                            "rename-go",
+                            crate::ui::Glyph::Edit,
+                            crate::i18n::t("rename.confirm"),
+                        )
+                        .small()
+                        .primary()
+                        .on_click(cx.listener(|d, _, _, cx| d.confirm(cx))),
                     ),
             );
         div()

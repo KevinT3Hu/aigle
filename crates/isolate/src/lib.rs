@@ -14,17 +14,23 @@
 //! * parent → worker: `REQUEST seq op body`, `ADMITTED seq` / `REFUSED seq` (the answer to
 //!   `ADMIT`), `CANCEL seq`;
 //! * worker → parent: `ADMIT peak` (the request needs `peak` bytes; wait for the answer),
-//!   then `DONE header blob-lengths` followed by the blob bytes, `FAILED message` or
-//!   `CANCELLED`.
+//!   then `DONE header blob-lengths`, `FAILED message` or `CANCELLED`. Ordinary
+//!   blobs follow as bytes. A high length bit marks an immutable shared payload:
+//!   one marker byte carries a sealed memfd using SCM_RIGHTS on the output socket.
+//!   The stdin control channel remains a pipe.
 
 use std::any::Any;
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::ExitStatusExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
+
+mod blob;
+pub use blob::Payload;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, mpsc};
 use std::time::{Duration, Instant};
@@ -174,7 +180,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 struct Worker {
     child: Child,
     stdin: ChildStdin,
-    stdout: ChildStdout,
+    stdout: UnixStream,
 }
 
 struct Pool {
@@ -200,17 +206,15 @@ fn spawn() -> io::Result<Worker> {
     let spawn = EXE
         .get()
         .ok_or_else(|| io::Error::other("worker processes are not enabled"))?;
+    let (stdout, child_output) = UnixStream::pair()?;
     let mut child = Command::new(&spawn.exe)
         .arg(WORKER_ARG)
         .envs(spawn.env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
+        .stdout(Stdio::from(std::os::fd::OwnedFd::from(child_output)))
         .stderr(Stdio::inherit())
         .spawn()?;
     let stdin = child.stdin.take().expect("piped");
-    let stdout = child.stdout.take().expect("piped");
-    // Decoded images are hundreds of MB; a larger pipe means fewer context switches.
-    let _ = rustix::pipe::fcntl_setpipe_size(&stdout, 1 << 20);
     tracing::debug!(pid = child.id(), "worker process started");
     Ok(Worker {
         child,
@@ -483,28 +487,41 @@ impl Call {
         self.blobs.len()
     }
 
-    /// The next blob of the result as `T`s.
+    /// The next blob as writable heap data (copies shared replies when necessary).
     pub fn blob<T: Pod>(&mut self) -> Result<Vec<T>, Error> {
-        let Some(len) = self.blobs.pop_front() else {
+        self.payload().map(Payload::into_vec)
+    }
+
+    /// The next blob, mapping large immutable replies without a parent-side copy.
+    pub fn payload<T: Pod>(&mut self) -> Result<Payload<T>, Error> {
+        let Some(encoded) = self.blobs.pop_front() else {
             return Err(Error::Failed(format!("{}: missing result data", self.op)));
         };
+        let shared = encoded & blob::SHARED != 0;
+        let len = encoded & !blob::SHARED;
         let size = size_of::<T>() as u64;
-        if len % size != 0 || len > MAX_BLOB {
+        if size == 0
+            || !len.is_multiple_of(size)
+            || len > MAX_BLOB
+            || usize::try_from(len).is_err()
+            || (shared && len == 0)
+        {
             return Err(self.crashed(Some(&format!("{}: bad result data", self.op))));
         }
-        let mut v = vec![T::zeroed(); (len / size) as usize];
-        if self
-            .worker()
-            .stdout
-            .read_exact(bytemuck::cast_slice_mut(&mut v))
-            .is_err()
-        {
-            return Err(self.crashed(None));
-        }
+        let result = if shared {
+            blob::receive(&self.worker().stdout, len as usize)
+        } else {
+            let mut v = vec![T::zeroed(); (len / size) as usize];
+            self.worker()
+                .stdout
+                .read_exact(bytemuck::cast_slice_mut(&mut v))
+                .map(|()| Payload::from(v))
+        };
+        let result = result.map_err(|e| self.crashed(Some(&format!("{}: {e}", self.op))))?;
         if self.blobs.is_empty() {
             self.done();
         }
-        Ok(v)
+        Ok(result)
     }
 }
 
@@ -551,6 +568,17 @@ impl From<String> for Failure {
 
 trait Blob {
     fn bytes(&self) -> &[u8];
+    fn shared_file(&self) -> Option<&std::fs::File> {
+        None
+    }
+}
+impl<T: Pod> Blob for Payload<T> {
+    fn bytes(&self) -> &[u8] {
+        bytemuck::cast_slice(self)
+    }
+    fn shared_file(&self) -> Option<&std::fs::File> {
+        self.shared_file()
+    }
 }
 
 impl<T: Pod> Blob for Vec<T> {
@@ -572,6 +600,12 @@ impl Reply {
                 .map_err(|e| Failure::Failed(format!("cannot encode the reply: {e}")))?,
             blobs: Vec::new(),
         })
+    }
+
+    /// Publish an already-sealed decoder output without copying its pixels.
+    pub fn payload<T: Pod>(mut self, data: Payload<T>) -> Reply {
+        self.blobs.push(Box::new(data));
+        self
     }
 
     pub fn blob<T: Pod>(mut self, data: Vec<T>) -> Reply {
@@ -624,11 +658,21 @@ fn reply(out: &mut std::fs::File, r: Result<Reply, Failure>) -> io::Result<()> {
             p.extend_from_slice(&r.header);
             p.extend_from_slice(&(r.blobs.len() as u32).to_le_bytes());
             for b in &r.blobs {
-                p.extend_from_slice(&(b.bytes().len() as u64).to_le_bytes());
+                let encoded = b.bytes().len() as u64
+                    | if b.shared_file().is_some() {
+                        blob::SHARED
+                    } else {
+                        0
+                    };
+                p.extend_from_slice(&encoded.to_le_bytes());
             }
             write_frame(out, DONE, &p)?;
             for b in &r.blobs {
-                out.write_all(b.bytes())?;
+                if let Some(file) = b.shared_file() {
+                    blob::send(out, file)?;
+                } else {
+                    out.write_all(b.bytes())?;
+                }
             }
             out.flush()
         }

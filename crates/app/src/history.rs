@@ -101,7 +101,8 @@ impl Render for HistoryPanel {
                     )
                     .child(
                         Button::new(SharedString::from(format!("snapshot-del-{i}")))
-                            .label("×")
+                            .icon(crate::ui::Glyph::Delete.icon())
+                            .accessibility_label(crate::i18n::t("common.delete"))
                             .xsmall()
                             .ghost()
                             .tooltip(crate::i18n::t("history_panel.delete_snapshot"))
@@ -129,12 +130,15 @@ impl Render for HistoryPanel {
                     .justify_between()
                     .child(heading(crate::i18n::t("history_panel.snapshots")))
                     .child(
-                        Button::new("snapshot-add")
-                            .label("+")
-                            .xsmall()
-                            .ghost()
-                            .tooltip(crate::i18n::t("history_panel.save_snapshot"))
-                            .on_click(move |_, _, cx| add.update(cx, |p, cx| p.add_snapshot(cx))),
+                        crate::ui::icon_button(
+                            "snapshot-add",
+                            crate::ui::Glyph::Camera,
+                            crate::i18n::t("history_panel.save_snapshot"),
+                        )
+                        .xsmall()
+                        .ghost()
+                        .tooltip(crate::i18n::t("history_panel.save_snapshot"))
+                        .on_click(move |_, _, cx| add.update(cx, |p, cx| p.add_snapshot(cx))),
                     ),
             )
             .child(

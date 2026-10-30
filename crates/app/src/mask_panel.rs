@@ -278,21 +278,32 @@ impl MaskPanel {
 
     fn add_button(&self, kind: NewMask, pending: Option<NewMask>) -> Button {
         let photo = self.photo.clone();
-        Button::new(SharedString::from(format!("add-{kind:?}")))
-            .label(format!("+ {}", kind.label()))
-            .small()
-            .selected(pending == Some(kind))
-            .tooltip(crate::i18n::t("masks.place_tooltip"))
-            .on_click(move |_, _, cx| {
-                photo.update(cx, |p, cx| {
-                    p.pending_mask = if p.pending_mask == Some(kind) {
-                        None
-                    } else {
-                        Some(kind)
-                    };
-                    cx.notify();
-                })
+        crate::ui::icon_button(
+            SharedString::from(format!("add-{kind:?}")),
+            match kind {
+                NewMask::Linear => crate::ui::Glyph::Gradient,
+                NewMask::Radial => crate::ui::Glyph::Lens,
+                NewMask::Brush => crate::ui::Glyph::Brush,
+            },
+            kind.label(),
+        )
+        .small()
+        .selected(pending == Some(kind))
+        .tooltip(format!(
+            "{} — {}",
+            kind.label(),
+            crate::i18n::t("masks.place_tooltip")
+        ))
+        .on_click(move |_, _, cx| {
+            photo.update(cx, |p, cx| {
+                p.pending_mask = if p.pending_mask == Some(kind) {
+                    None
+                } else {
+                    Some(kind)
+                };
+                cx.notify();
             })
+        })
     }
 
     fn list(&self, masks: &[LocalAdjustment], cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -385,65 +396,77 @@ impl Render for MaskPanel {
             .gap_1()
             .flex_wrap()
             .child(
-                Button::new("mask-invert")
-                    .label(crate::i18n::t("masks.invert"))
-                    .small()
-                    .selected(invert)
-                    .on_click({
-                        let photo = photo.clone();
-                        move |_, _, cx| {
-                            photo.update(cx, |p, cx| {
-                                if let Some((i, _)) = p.selected() {
-                                    p.command(
-                                        crate::i18n::join(&["masks.title", "masks.invert"]),
-                                        vec![ParamOp::set(&format!("masks.{i}.invert"), !invert)],
-                                        None,
-                                        Interaction::Final,
-                                        cx,
-                                    );
-                                }
-                            })
-                        }
-                    }),
+                crate::ui::icon_button(
+                    "mask-invert",
+                    crate::ui::Glyph::Invert,
+                    crate::i18n::t("masks.invert"),
+                )
+                .small()
+                .selected(invert)
+                .on_click({
+                    let photo = photo.clone();
+                    move |_, _, cx| {
+                        photo.update(cx, |p, cx| {
+                            if let Some((i, _)) = p.selected() {
+                                p.command(
+                                    crate::i18n::join(&["masks.title", "masks.invert"]),
+                                    vec![ParamOp::set(&format!("masks.{i}.invert"), !invert)],
+                                    None,
+                                    Interaction::Final,
+                                    cx,
+                                );
+                            }
+                        })
+                    }
+                }),
             )
             .child(
-                Button::new("mask-overlay")
-                    .label(crate::i18n::t("masks.show_overlay"))
-                    .small()
-                    .selected(overlay)
-                    .tooltip(crate::keymap::hint("masks.overlay_tooltip", cx))
-                    .on_click({
-                        let photo = photo.clone();
-                        move |_, _, cx| {
-                            photo.update(cx, |p, cx| {
-                                p.mask_overlay = !p.mask_overlay;
-                                cx.notify();
-                            })
-                        }
-                    }),
+                crate::ui::icon_button(
+                    "mask-overlay",
+                    crate::ui::Glyph::View,
+                    crate::i18n::t("masks.show_overlay"),
+                )
+                .small()
+                .selected(overlay)
+                .tooltip(crate::keymap::hint("masks.overlay_tooltip", cx))
+                .on_click({
+                    let photo = photo.clone();
+                    move |_, _, cx| {
+                        photo.update(cx, |p, cx| {
+                            p.mask_overlay = !p.mask_overlay;
+                            cx.notify();
+                        })
+                    }
+                }),
             )
             .child(
-                Button::new("mask-delete")
-                    .label(crate::i18n::t("common.delete"))
-                    .small()
-                    .on_click({
-                        let photo = photo.clone();
-                        move |_, _, cx| photo.update(cx, |p, cx| p.delete_mask(id, cx))
-                    }),
+                crate::ui::icon_button(
+                    "mask-delete",
+                    crate::ui::Glyph::Delete,
+                    crate::i18n::t("common.delete"),
+                )
+                .small()
+                .on_click({
+                    let photo = photo.clone();
+                    move |_, _, cx| photo.update(cx, |p, cx| p.delete_mask(id, cx))
+                }),
             );
         let is_brush = matches!(sel.shape, MaskShape::Brush { .. });
         if is_brush {
             tools_row = tools_row.child(
-                Button::new("brush-erase")
-                    .label(crate::i18n::t("masks.erase"))
-                    .small()
-                    .selected(erase)
-                    .on_click(move |_, _, cx| {
-                        photo.update(cx, |p, cx| {
-                            p.brush.erase = !p.brush.erase;
-                            cx.notify();
-                        })
-                    }),
+                crate::ui::icon_button(
+                    "brush-erase",
+                    crate::ui::Glyph::Erase,
+                    crate::i18n::t("masks.erase"),
+                )
+                .small()
+                .selected(erase)
+                .on_click(move |_, _, cx| {
+                    photo.update(cx, |p, cx| {
+                        p.brush.erase = !p.brush.erase;
+                        cx.notify();
+                    })
+                }),
             );
         }
         let mut shape = v_flex()

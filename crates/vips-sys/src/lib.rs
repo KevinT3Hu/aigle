@@ -42,6 +42,7 @@ struct SaveOptsC {
     width: c_int,
     height: c_int,
     sixteen_bit: c_int,
+    floating_point: c_int,
     out_width: c_int,
     out_height: c_int,
     icc: *const c_char,
@@ -66,6 +67,7 @@ type CancelFn = unsafe extern "C" fn(*mut c_void) -> c_int;
 
 unsafe extern "C" {
     fn aigle_vips_init() -> c_int;
+    fn aigle_vips_icc_cicp(im: *mut c_void, out: *mut u8) -> c_int;
     fn aigle_vips_last_error() -> *const c_char;
     fn aigle_vips_open(path: *const c_char, h: *mut Header) -> *mut c_void;
     fn aigle_vips_unref(im: *mut c_void);
@@ -80,6 +82,7 @@ unsafe extern "C" {
         out: *mut f32,
         cancel: Option<CancelFn>,
         user: *mut c_void,
+        raw_rgb: c_int,
     ) -> c_int;
     fn aigle_vips_save_file(
         o: *const SaveOptsC,
@@ -200,6 +203,13 @@ impl Image {
         Ok((Image(im), h))
     }
 
+    /// ICC v4 cICP tag, when supplied by a codec such as JPEG XL.
+    pub fn icc_cicp(&self) -> Option<[u8; 4]> {
+        let mut out = [0; 4];
+        // SAFETY: owned VipsImage, writable four-byte output buffer.
+        (unsafe { aigle_vips_icc_cicp(self.0, out.as_mut_ptr()) } == 0).then_some(out)
+    }
+
     /// Metadata field as a string, e.g. `exif-ifd0-Make`.
     pub fn get_string(&self, name: &str) -> Option<String> {
         let n = CString::new(name).ok()?;
@@ -228,6 +238,26 @@ impl Image {
         out: &mut [f32],
         cancelled: &dyn Fn() -> bool,
     ) -> Result<(), Error> {
+        self.decode_float(h, out, cancelled, false)
+    }
+
+    /// Normalized encoded RGB, without an ICC/transfer conversion (HDR CICP inputs).
+    pub fn decode_rgb_float(
+        &self,
+        h: &Header,
+        out: &mut [f32],
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(), Error> {
+        self.decode_float(h, out, cancelled, true)
+    }
+
+    fn decode_float(
+        &self,
+        h: &Header,
+        out: &mut [f32],
+        cancelled: &dyn Fn() -> bool,
+        raw: bool,
+    ) -> Result<(), Error> {
         assert_eq!(out.len(), h.width as usize * h.height as usize * 3);
         let user: *const &dyn Fn() -> bool = &cancelled;
         // SAFETY: `out` has the decoded size; `user` outlives the call.
@@ -237,6 +267,7 @@ impl Image {
                 out.as_mut_ptr(),
                 Some(cancel_trampoline),
                 user as *mut c_void,
+                raw as c_int,
             )
         };
         match rc {
@@ -274,6 +305,8 @@ pub struct SaveOpts<'a> {
     pub height: u32,
     /// 16-bit samples (RGB16), else 8-bit sRGB.
     pub sixteen_bit: bool,
+    /// Linear float32 RGB samples (scRGB); overrides `sixteen_bit`.
+    pub floating_point: bool,
     /// Resize target (linear-light Lanczos-3); `(width, height)` for none.
     pub out_size: (u32, u32),
     /// libvips built-in profile to embed: `"srgb"`, `"p3"`.
@@ -357,7 +390,13 @@ fn with_opts<R>(o: &SaveOpts<'_>, f: impl FnOnce(&SaveOptsC) -> R) -> Result<R, 
     let ov = o.overlay;
     if let Some(v) = ov {
         let n = v.width as usize * v.height as usize;
-        let bps = if o.sixteen_bit { 2 } else { 1 };
+        let bps = if o.floating_point {
+            4
+        } else if o.sixteen_bit {
+            2
+        } else {
+            1
+        };
         if v.rgb.len() != n * 3 * bps || v.alpha.len() != n {
             return Err(Error::Vips("watermark buffer size mismatch".into()));
         }
@@ -384,6 +423,7 @@ fn with_opts<R>(o: &SaveOpts<'_>, f: impl FnOnce(&SaveOptsC) -> R) -> Result<R, 
         width: o.width as c_int,
         height: o.height as c_int,
         sixteen_bit: o.sixteen_bit as c_int,
+        floating_point: o.floating_point as c_int,
         out_width: o.out_size.0 as c_int,
         out_height: o.out_size.1 as c_int,
         icc,
@@ -409,7 +449,13 @@ fn with_opts<R>(o: &SaveOpts<'_>, f: impl FnOnce(&SaveOptsC) -> R) -> Result<R, 
 }
 
 fn bpp(o: &SaveOpts<'_>) -> usize {
-    if o.sixteen_bit { 6 } else { 3 }
+    if o.floating_point {
+        12
+    } else if o.sixteen_bit {
+        6
+    } else {
+        3
+    }
 }
 
 /// Generate the image from `fill` and save it. libvips picks the saver and its options from
@@ -571,6 +617,7 @@ mod tests {
             width: w,
             height: h,
             sixteen_bit: false,
+            floating_point: false,
             out_size: (w, h),
             icc: Some("srgb"),
             exif: None,
@@ -613,6 +660,7 @@ mod tests {
             width: w,
             height: h,
             sixteen_bit: false,
+            floating_point: false,
             out_size: (w, h),
             icc: Some("srgb"),
             exif: None,
@@ -660,6 +708,7 @@ mod tests {
             width: 32,
             height: 16,
             sixteen_bit: true,
+            floating_point: false,
             out_size: (32, 16),
             icc: None,
             exif: Some(&Exif {
@@ -677,6 +726,7 @@ mod tests {
         save_file(
             &SaveOpts {
                 sixteen_bit: false,
+                floating_point: false,
                 suffix: ".jpg[Q=100]",
                 ..opts.clone()
             },
@@ -713,6 +763,7 @@ mod tests {
             width: 64,
             height: 64,
             sixteen_bit: false,
+            floating_point: false,
             out_size: (64, 64),
             icc: None,
             exif: None,
@@ -724,4 +775,106 @@ mod tests {
         };
         assert!(save_buffer(&opts, &|_, _, _, _, _, _| false).is_err());
     }
+}
+
+/// A borrowed generated float image, valid only during [`with_float_image`].
+pub struct FloatImage<'a> {
+    ptr: *mut c_void,
+    pub width: u32,
+    pub height: u32,
+    _life: std::marker::PhantomData<&'a ()>,
+}
+// SAFETY: VipsImage is thread-safe; each read allocates its own VipsRegion. The borrow
+// ensures every thread is joined before the synchronous generator callback returns.
+unsafe impl Send for FloatImage<'_> {}
+unsafe impl Sync for FloatImage<'_> {}
+impl FloatImage<'_> {
+    pub fn row(&self, y: u32) -> Result<Vec<f32>, Error> {
+        if y >= self.height {
+            return Err(Error::Vips("row out of bounds".into()));
+        }
+        let mut out = vec![0.0; self.width as usize * 3];
+        // SAFETY: the generated image is alive; out holds one complete float RGB row.
+        let rc = unsafe { aigle_vips_float_row(self.ptr, y as c_int, out.as_mut_ptr()) };
+        if rc == 0 { Ok(out) } else { Err(last_error()) }
+    }
+}
+unsafe extern "C" {
+    fn aigle_vips_with_float_image(
+        o: *const SaveOptsC,
+        fill: FillFn,
+        user: *mut c_void,
+        consume: unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int,
+        consumer: *mut c_void,
+    ) -> c_int;
+    fn aigle_vips_float_row(image: *mut c_void, y: c_int, out: *mut f32) -> c_int;
+}
+
+/// Run a custom codec over a generated linear-float image after resize, sharpening and
+/// watermarking, keeping libvips' on-demand evaluation and bounded memory working set.
+pub fn with_float_image<F: FnOnce(&FloatImage<'_>) -> Result<(), String>>(
+    opts: &SaveOpts<'_>,
+    fill: &Fill<'_>,
+    consume: F,
+) -> Result<(), String> {
+    if !opts.floating_point {
+        return Err("float image requires float samples".into());
+    }
+    struct Consumer<F> {
+        consume: Option<F>,
+        width: u32,
+        height: u32,
+        result: Option<Result<(), String>>,
+    }
+    unsafe extern "C" fn callback<F: FnOnce(&FloatImage<'_>) -> Result<(), String>>(
+        im: *mut c_void,
+        user: *mut c_void,
+    ) -> c_int {
+        // SAFETY: user is the exclusively borrowed consumer below, alive until C returns.
+        let ctx = unsafe { &mut *user.cast::<Consumer<F>>() };
+        let image = FloatImage {
+            ptr: im,
+            width: ctx.width,
+            height: ctx.height,
+            _life: std::marker::PhantomData,
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ctx.consume.take().unwrap()(&image)
+        }))
+        .unwrap_or_else(|_| Err("HDR codec panicked".into()));
+        let ok = result.is_ok();
+        ctx.result = Some(result);
+        if ok { 0 } else { -1 }
+    }
+    let mut consumer = Consumer {
+        consume: Some(consume),
+        width: opts.out_size.0,
+        height: opts.out_size.1,
+        result: None,
+    };
+    let ctx = FillCtx {
+        fill,
+        bpp: bpp(opts),
+    };
+    let rc = with_opts(opts, |o| {
+        // SAFETY: both contexts, their callbacks and all borrowed buffers outlive the
+        // synchronous C call. The generated image cannot outlive callback's borrow.
+        unsafe {
+            aigle_vips_with_float_image(
+                o,
+                fill_trampoline,
+                (&ctx as *const FillCtx<'_>).cast_mut().cast(),
+                callback::<F>,
+                (&mut consumer as *mut Consumer<F>).cast(),
+            )
+        }
+    })
+    .map_err(|e| e.to_string())?;
+    consumer.result.unwrap_or_else(|| {
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(last_error().to_string())
+        }
+    })
 }

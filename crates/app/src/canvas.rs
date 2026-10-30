@@ -35,7 +35,18 @@ use crate::photo::{Photo, PhotoEvent, Tool, crop_ops};
 use crate::tools::{self, CirclePart, Mapping, MaskSpace, Part};
 use crate::viewport::{ViewState, reproject};
 
-type Shown = (Arc<Frame>, Arc<RenderImage>);
+#[derive(Clone)]
+struct Shown {
+    frame: Arc<Frame>,
+    // Keep the last SDR image with its own coverage until the native surface
+    // presents its first HDR frame, and for immediate fallback after device loss.
+    fallback: Option<(Arc<Frame>, Arc<RenderImage>)>,
+}
+fn retire(shown: Shown, cx: &mut App) {
+    if let Some((_, image)) = shown.fallback {
+        release_image(image, cx);
+    }
+}
 
 // UI callbacks may run while their window is temporarily removed from App.windows.
 // Defer eviction until it is back, otherwise drop_image(None) misses that window.
@@ -111,6 +122,11 @@ const EYE_RADIUS: f32 = 0.012;
 
 pub struct Canvas {
     photo: Entity<Photo>,
+    native: Option<crate::native_canvas::CanvasSurface>,
+    _native_status: Option<Task<anyhow::Result<()>>>,
+    hdr_enabled: bool,
+    native_ready: bool,
+    hdr_status: Option<String>,
     view: View,
     state: ViewState,
     frame: Option<Shown>,
@@ -159,13 +175,22 @@ fn listen(
             let Some(f) = rx.borrow_and_update().clone() else {
                 continue;
             };
-            let Some(img) = render_image(&f.pixels) else {
-                continue;
+            let image = if f.pixels.format == aigle_engine_api::PixelFormat::Bgra8 {
+                render_image(&f.pixels)
+            } else {
+                None
             };
             this.update(cx, |c, cx| {
-                if let Some((_, old)) = slot(c).replace((f, img)) {
-                    release_image(old, cx);
-                }
+                let previous = slot(c).take();
+                let fallback = if let Some(image) = image {
+                    if let Some(old) = previous {
+                        retire(old, cx);
+                    }
+                    Some((f.clone(), image))
+                } else {
+                    previous.and_then(|old| old.fallback)
+                };
+                *slot(c) = Some(Shown { frame: f, fallback });
                 cx.notify();
             })?;
         }
@@ -192,7 +217,9 @@ impl Canvas {
                 &mut canvas.overview_frame,
                 &mut canvas.before_overview_frame,
             ] {
-                if let Some((_, image)) = slot.take() {
+                if let Some(shown) = slot.take()
+                    && let Some((_, image)) = shown.fallback
+                {
                     cx.drop_image(image, Some(window));
                 }
             }
@@ -221,8 +248,32 @@ impl Canvas {
             cx.notify()
         })
         .detach();
+        let (native, native_status, native_message) =
+            match crate::native_canvas::CanvasSurface::new(window) {
+                Ok((surface, mut status)) => {
+                    let task = cx.spawn(async move |this, cx| {
+                        while status.changed().await.is_ok() {
+                            let status = status.borrow_and_update().clone();
+                            this.update(cx, |c, cx| {
+                                c.native_ready = status.available;
+                                c.hdr_status = Some(status.message);
+                                c.update_viewport(Interaction::Final, false, cx);
+                                cx.notify();
+                            })?;
+                        }
+                        Ok(())
+                    });
+                    (Some(surface), Some(task), None)
+                }
+                Err(error) => (None, None, Some(format!("SDR canvas: {error}"))),
+            };
         Canvas {
             photo,
+            native,
+            _native_status: native_status,
+            hdr_enabled: true,
+            native_ready: false,
+            hdr_status: native_message,
             view,
             state: ViewState::default(),
             frame: None,
@@ -274,13 +325,13 @@ impl Canvas {
             }
             self.view.set_uncropped(tool == Tool::Crop);
             self.overview.set_uncropped(tool == Tool::Crop);
-            if let Some((_, old)) = self.overview_frame.take() {
-                release_image(old, cx);
+            if let Some(old) = self.overview_frame.take() {
+                retire(old, cx);
             }
             self.overview_sent = None;
             self.state = ViewState::default();
-            if let Some((_, old)) = self.frame.take() {
-                release_image(old, cx);
+            if let Some(old) = self.frame.take() {
+                retire(old, cx);
             }
             self.update_viewport(Interaction::Final, true, cx);
         }
@@ -358,7 +409,7 @@ impl Canvas {
         let overview = Viewport {
             region: aigle_core::geometry::Rect::new(0.0, 0.0, crop.0, crop.1),
             output_size: overview_size(crop),
-            display: crate::display::profile(cx),
+            display: self.output_profile(cx),
         };
         if self.overview_sent.as_ref() != Some(&overview) {
             self.overview
@@ -371,7 +422,7 @@ impl Canvas {
         let vp = Viewport {
             region: self.state.region(crop, out),
             output_size: (out.w, out.h),
-            display: crate::display::profile(cx),
+            display: self.output_profile(cx),
         };
         if self.sent.as_ref() != Some(&vp) || force {
             self.view.set_viewport(vp.clone(), hint);
@@ -387,6 +438,26 @@ impl Canvas {
             return;
         }
         self.layout = Some((bounds, sf));
+        self.update_viewport(Interaction::Final, false, cx);
+        cx.notify();
+    }
+
+    fn output_profile(&self, cx: &App) -> DisplayProfileId {
+        if self.hdr_open() {
+            DisplayProfileId::HdrRec2020
+        } else {
+            crate::display::profile(cx)
+        }
+    }
+
+    pub fn hdr_open(&self) -> bool {
+        self.hdr_enabled
+            && self.native_ready
+            && self.native.as_ref().is_some_and(|n| n.handle().available())
+    }
+
+    pub fn toggle_hdr(&mut self, cx: &mut Context<Self>) {
+        self.hdr_enabled = !self.hdr_enabled;
         self.update_viewport(Interaction::Final, false, cx);
         cx.notify();
     }
@@ -514,8 +585,8 @@ impl Canvas {
             self.view.set_params_source(source.clone());
             self.overview.set_params_source(source);
             for slot in [&mut self.frame, &mut self.overview_frame] {
-                if let Some((_, old)) = slot.take() {
-                    release_image(old, cx);
+                if let Some(old) = slot.take() {
+                    retire(old, cx);
                 }
             }
         }
@@ -551,12 +622,12 @@ impl Canvas {
         } else {
             self.before = None;
             self.before_overview = None;
-            if let Some((_, old)) = self.before_overview_frame.take() {
-                release_image(old, cx);
+            if let Some(old) = self.before_overview_frame.take() {
+                retire(old, cx);
             }
             self.split_drag = false;
-            if let Some((_, old)) = self.before_frame.take() {
-                release_image(old, cx);
+            if let Some(old) = self.before_frame.take() {
+                retire(old, cx);
             }
         }
         cx.notify();
@@ -1225,7 +1296,7 @@ impl Canvas {
             .geometry(cx)
             .map(|(crop, out, _)| format!("{:.0}%", self.state.scale(crop, out) * 100.0))
             .unwrap_or_default();
-        let q = match self.frame.as_ref().map(|(f, _)| f.quality) {
+        let q = match self.frame.as_ref().map(|s| s.frame.quality) {
             Some(Quality::Draft) => crate::i18n::t("canvas.quality.draft"),
             Some(Quality::Refined) => crate::i18n::t("canvas.quality.refined"),
             Some(Quality::Full) => "1:1".into(),
@@ -1250,11 +1321,19 @@ impl Canvas {
                 Tool::None => None,
             }
         };
-        [Some(zoom), Some(q), before, hint]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" · ")
+        [
+            Some(zoom),
+            Some(q),
+            before,
+            hint,
+            self.hdr_status.clone(),
+            self.hdr_open()
+                .then(|| "Histogram: HDR PQ, 0–1000 nits".to_string()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ")
     }
 }
 
@@ -1438,6 +1517,22 @@ impl Render for Canvas {
         let before_frame = self.before_frame.clone();
         let split = (self.compare == Compare::Split).then_some(self.split_at);
         let cursor = self.cursor(cx);
+        let native = self
+            .native
+            .as_ref()
+            .filter(|_| self.hdr_open())
+            .map(|n| n.handle());
+        let hdr_frame = |s: &Option<Shown>| {
+            s.as_ref()
+                .filter(|s| s.frame.pixels.format == aigle_engine_api::PixelFormat::Rgba16F)
+                .map(|s| s.frame.clone())
+        };
+        let native_frames = [
+            hdr_frame(&overview_frame),
+            hdr_frame(&frame),
+            hdr_frame(&before_overview_frame),
+            hdr_frame(&before_frame),
+        ];
         let labels = split.zip(self.layout).map(|(f, (b, _))| {
             let w = f32::from(b.size.width);
             (w * f, w)
@@ -1478,8 +1573,32 @@ impl Render for Canvas {
                         let Some((region, out, scale)) = target else {
                             return;
                         };
+                        let native_drawn = if let Some(native) = &native {
+                            let (hole, physical) = native.layout(bounds, sf);
+                            let has_images = native_frames.iter().any(Option::is_some);
+                            native.submit(crate::hdr_surface::CanvasScene {
+                                frames: native_frames,
+                                region,
+                                size: physical,
+                                split,
+                            });
+                            if native.presented() && has_images {
+                                window.paint_native_surface_hole(hole);
+                                native.note_hole_painted();
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
                         let paint = |window: &mut Window, shown: &Shown, clip: Bounds<Pixels>| {
-                            let (f, img) = shown;
+                            if native_drawn {
+                                return;
+                            }
+                            let Some((f, img)) = &shown.fallback else {
+                                return;
+                            };
                             let r = reproject(f.viewport.region, region, out);
                             let to_px = |v: f64| px(v as f32 / sf);
                             let at = Bounds::new(

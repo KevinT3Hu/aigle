@@ -324,20 +324,21 @@ impl Render for ImportDialog {
             theme.danger,
         );
         let label = |s: String| div().text_xs().text_color(muted).child(s);
-        let path_row =
-            |id: &'static str, path: Option<&Path>, on: Choose, cx: &mut Context<Self>| {
-                h_flex()
-                    .gap_2()
-                    .child(div().flex_1().min_w_0().text_xs().truncate().child(
-                        path.map_or_else(|| t("import.none_chosen"), |p| p.display().to_string()),
-                    ))
-                    .child(
-                        Button::new(id)
-                            .label(t("export.change_dir"))
-                            .small()
-                            .on_click(cx.listener(move |d, _, _, cx| on(d, cx))),
-                    )
-            };
+        let path_row = |id: &'static str,
+                        path: Option<&Path>,
+                        on: Choose,
+                        cx: &mut Context<Self>| {
+            h_flex()
+                .gap_2()
+                .child(div().flex_1().min_w_0().text_xs().truncate().child(
+                    path.map_or_else(|| t("import.none_chosen"), |p| p.display().to_string()),
+                ))
+                .child(
+                    crate::ui::icon_button(id, crate::ui::Glyph::Folder, t("export.change_dir"))
+                        .small()
+                        .on_click(cx.listener(move |d, _, _, cx| on(d, cx))),
+                )
+        };
         let s = self.settings.clone();
         let dest = s.dest.clone().unwrap_or_else(default_dest);
         let found = match &self.found {
@@ -382,12 +383,15 @@ impl Render for ImportDialog {
             .child(label(t("import.from")))
             .child(
                 h_flex().gap_1().flex_wrap().children(volumes).child(
-                    Button::new("import-source")
-                        .label(t("import.choose_folder"))
-                        .small()
-                        .on_click(cx.listener(|d, _, _, cx| {
-                            d.choose("import.from", |d, p, cx| d.set_source(p, cx), cx)
-                        })),
+                    crate::ui::labeled_button(
+                        "import-source",
+                        crate::ui::Glyph::Folder,
+                        t("import.choose_folder"),
+                    )
+                    .small()
+                    .on_click(cx.listener(|d, _, _, cx| {
+                        d.choose("import.from", |d, p, cx| d.set_source(p, cx), cx)
+                    })),
                 ),
             )
             .child(
@@ -473,21 +477,27 @@ impl Render for ImportDialog {
                     .gap_2()
                     .justify_end()
                     .child(
-                        Button::new("import-cancel")
-                            .label(t("common.cancel"))
-                            .small()
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(ImportEvent::Done(None)))),
+                        crate::ui::labeled_button(
+                            "import-cancel",
+                            crate::ui::Glyph::Close,
+                            t("common.cancel"),
+                        )
+                        .small()
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(ImportEvent::Done(None)))),
                     )
                     .child(
-                        Button::new("import-go")
-                            .label(t("import.import"))
-                            .small()
-                            .primary()
-                            .on_click(cx.listener(|d, _, _, cx| {
-                                if d.prompt.is_none() {
-                                    d.confirm(cx)
-                                }
-                            })),
+                        crate::ui::labeled_button(
+                            "import-go",
+                            crate::ui::Glyph::Import,
+                            t("import.import"),
+                        )
+                        .small()
+                        .primary()
+                        .on_click(cx.listener(|d, _, _, cx| {
+                            if d.prompt.is_none() {
+                                d.confirm(cx)
+                            }
+                        })),
                     ),
             );
         div()

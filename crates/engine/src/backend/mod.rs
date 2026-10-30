@@ -573,13 +573,22 @@ impl Backend {
 
     /// Run a batch of C1 tiles (one GPU submission, or rayon over tiles on the CPU).
     pub fn c1_tiles(&self, jobs: &[C1Job<'_>], field: Option<FieldRef<'_>>) -> Vec<C1Data> {
+        self.c1_tiles_with_readback(jobs, field, false)
+    }
+
+    pub fn c1_tiles_with_readback(
+        &self,
+        jobs: &[C1Job<'_>],
+        field: Option<FieldRef<'_>>,
+        readback: bool,
+    ) -> Vec<C1Data> {
         if jobs.is_empty() {
             return Vec::new();
         }
         if let Some(g) = self.gpu_active() {
             let res = on_gpu(&g, || {
                 let aux = field.map(|f| aux_input(&g, f.aux));
-                c1_gpu(&g, jobs, field, aux.as_ref().map(AuxIn::input), false)
+                c1_gpu(&g, jobs, field, aux.as_ref().map(AuxIn::input), readback)
             });
             match res {
                 Ok(t) => return t,
@@ -600,6 +609,19 @@ impl Backend {
     ) -> Result<Vec<Vec<u8>>, StaleDeviceData> {
         if jobs.is_empty() {
             return Ok(Vec::new());
+        }
+        // HDR output currently runs on the host over read-back C1 tiles.
+        if jobs
+            .iter()
+            .any(|j| j.params.e1.transfer == crate::hdr::TRANSFER_LINEAR_HDR)
+        {
+            return jobs
+                .par_iter()
+                .map(|j| match j.c1 {
+                    C1Data::Host(px) => Ok(out_cpu(j, px, &lut.data)),
+                    C1Data::Device(_) => Err(StaleDeviceData),
+                })
+                .collect();
         }
         let g = self.gpu_active();
         let current = g.as_ref().map(|g| g.generation);
@@ -633,8 +655,15 @@ impl Backend {
     /// of both are within the GPU tolerance of each other (doc 02 §14).
     pub fn s_blocks(&self, jobs: &[SJob<'_>]) -> Vec<PxVec> {
         use std::sync::atomic::AtomicUsize;
-        let cpu =
-            |j: &SJob<'_>| PxVec::from_rgb(detail::run_cpu(j.plan, &j.src), j.src.data.is_f32());
+        let many_blocks = jobs.len() >= rayon::current_num_threads();
+        let cpu = |j: &SJob<'_>| {
+            let rgb = if many_blocks {
+                detail::run_cpu_in_batch(j.plan, &j.src)
+            } else {
+                detail::run_cpu(j.plan, &j.src)
+            };
+            PxVec::from_rgb(rgb, j.src.data.is_f32())
+        };
         let gpu = self.gpu_active().filter(|g| {
             jobs.iter()
                 .all(|j| j.plan.work_len() as u64 * 4 <= g.max_binding)
@@ -1354,7 +1383,8 @@ pub fn out_bpp(full: bool) -> usize {
 
 fn out_cpu(job: &OutJob<'_>, c1: &HostC1, lut: &[f32]) -> Vec<u8> {
     let full = job.full;
-    let bpp = out_bpp(full);
+    let hdr = job.params.e1.transfer == crate::hdr::TRANSFER_LINEAR_HDR;
+    let bpp = if hdr { 16 } else { out_bpp(full) };
     let mut out = vec![0u8; job.w as usize * job.h as usize * bpp];
     out.par_chunks_mut(job.w as usize * bpp)
         .enumerate()
@@ -1364,7 +1394,12 @@ fn out_cpu(job: &OutJob<'_>, c1: &HostC1, lut: &[f32]) -> Vec<u8> {
                 let v = c1.rgb.as_px().get(i);
                 let d = (!c1.d.is_empty()).then(|| c1.d.get(i));
                 let (gx, gy) = (job.gx0 + x as u32, job.gy0 + y as u32);
-                if full {
+                if hdr {
+                    let (rgb, flags) = crate::hdr::output(v, d, gx, gy, &job.params, lut);
+                    for (c, value) in rgb.into_iter().chain([1.0 + flags as f32]).enumerate() {
+                        o[c * 4..c * 4 + 4].copy_from_slice(&value.to_le_bytes());
+                    }
+                } else if full {
                     let lin = tiles::out_lin_local(v, d, gx, gy, &job.params, lut);
                     let w = tiles::encode_out16(lin, &job.params.e1, lut);
                     o[..4].copy_from_slice(&w[0].to_le_bytes());

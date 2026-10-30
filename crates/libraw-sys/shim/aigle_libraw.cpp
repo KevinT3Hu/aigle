@@ -7,6 +7,7 @@
 #include <cstring>
 #include <ctime>
 #include <new>
+#include <thread>
 
 #include "libraw/libraw.h"
 
@@ -354,14 +355,24 @@ int aigle_raw_copy_cfa(void *h, const float *white, float *out, uint8_t *clip,
       inv[c] = 1.0f / range[c];
       clip_at[c] = 0.995f * range[c];
     }
+    // CFA lookup is periodic and immutable; avoid an out-of-line fcol call per pixel.
+    int colours[16][16];
+    for (int y = 0; y < 16; ++y) for (int x = 0; x < 16; ++x)
+      colours[y][x] = r->fcol(y, x) & 3;
+    const unsigned team = std::max(1u, std::min(8u, std::thread::hardware_concurrency()));
     uint64_t n = 0;
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(team) reduction(+:n)
+#endif
     for (int row = 0; row < hgt; row++) {
       const ushort *src = d.rawdata.raw_image + size_t(row + top) * pitch + left;
       const int maxcol = (left + w <= d.sizes.raw_width) ? w : d.sizes.raw_width - left;
       bool valid_row = row + top < d.sizes.raw_height;
       for (int col = 0; col < w; col++) {
         float v = 0;
-        int cc = r->fcol(row, col) & 3;
+        const int cc = d.idata.filters == 9 ? colours[row % 6][col % 6]
+                     : d.idata.filters == 1 ? colours[row & 15][col & 15]
+                     : colours[row & 7][col & 1];
         if (valid_row && col < maxcol) {
           float black = float(C.cblack[cc]);
           if (pw && ph)

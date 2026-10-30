@@ -24,7 +24,7 @@ Edits:
 
 Output:
   -o, --output DIR            destination folder, created if missing (required)
-  -f, --format NAME           jpeg (default), png, tiff, tiff16, webp, avif, heic, jxl, dng
+  -f, --format NAME           jpeg (default), png, tiff, tiff16, webp, avif, heic, jxl, dng, hdr-tiff, hdr-png, exr
   -q, --quality N             1-100 for jpeg, webp, avif, heic and jxl (default 90)
       --long-edge PX          resize so the long edge is at most PX (default: full size)
       --color-space NAME      srgb (default), p3, adobe-rgb, prophoto, rec2020
@@ -93,6 +93,9 @@ fn format(name: &str, quality: u8) -> Result<EncodedFormat, String> {
         "png" => EncodedFormat::Png,
         "tiff" | "tif" => EncodedFormat::Tiff { sixteen_bit: false },
         "tiff16" | "tif16" => EncodedFormat::Tiff { sixteen_bit: true },
+        "hdr-tiff" | "tiff-hdr" => EncodedFormat::HdrTiff,
+        "hdr-png" | "png-hdr" => EncodedFormat::HdrPng,
+        "exr" | "openexr" => EncodedFormat::OpenExr,
         "webp" => EncodedFormat::WebP { quality },
         "avif" => EncodedFormat::Avif { quality },
         "heic" | "heif" => EncodedFormat::Heic { quality },
@@ -109,6 +112,7 @@ fn color_space(name: &str) -> Result<DisplayProfileId, String> {
         "adobe-rgb" | "adobergb" => DisplayProfileId::AdobeRgb,
         "prophoto" => DisplayProfileId::ProPhoto,
         "rec2020" => DisplayProfileId::Rec2020,
+        "hdr" => DisplayProfileId::HdrRec2020,
         _ => return Err(format!("unknown color space `{name}`")),
     })
 }

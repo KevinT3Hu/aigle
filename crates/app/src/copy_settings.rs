@@ -276,18 +276,24 @@ impl Render for CopyDialog {
                 h_flex()
                     .gap_1()
                     .child(
-                        Button::new("copy-all")
-                            .label(crate::i18n::t("common.select_all"))
-                            .xsmall()
-                            .ghost()
-                            .on_click(cx.listener(|d, _, _, cx| d.set_all(true, cx))),
+                        crate::ui::icon_button(
+                            "copy-all",
+                            crate::ui::Glyph::Select,
+                            crate::i18n::t("common.select_all"),
+                        )
+                        .xsmall()
+                        .ghost()
+                        .on_click(cx.listener(|d, _, _, cx| d.set_all(true, cx))),
                     )
                     .child(
-                        Button::new("copy-none")
-                            .label(crate::i18n::t("common.select_none"))
-                            .xsmall()
-                            .ghost()
-                            .on_click(cx.listener(|d, _, _, cx| d.set_all(false, cx))),
+                        crate::ui::icon_button(
+                            "copy-none",
+                            crate::ui::Glyph::Deselect,
+                            crate::i18n::t("common.select_none"),
+                        )
+                        .xsmall()
+                        .ghost()
+                        .on_click(cx.listener(|d, _, _, cx| d.set_all(false, cx))),
                     ),
             )
             .child(
@@ -296,14 +302,16 @@ impl Render for CopyDialog {
                     .gap_2()
                     .justify_end()
                     .child(
-                        Button::new("copy-cancel")
-                            .label(crate::i18n::t("common.cancel"))
-                            .small()
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(CopyEvent::Done(None)))),
+                        crate::ui::labeled_button(
+                            "copy-cancel",
+                            crate::ui::Glyph::Close,
+                            crate::i18n::t("common.cancel"),
+                        )
+                        .small()
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(CopyEvent::Done(None)))),
                     )
                     .child(
-                        Button::new("copy-go")
-                            .label(confirm)
+                        crate::ui::labeled_button("copy-go", crate::ui::Glyph::Copy, confirm)
                             .small()
                             .primary()
                             .on_click(cx.listener(|d, _, _, cx| d.confirm(cx))),

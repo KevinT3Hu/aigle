@@ -14,7 +14,7 @@ use std::path::Path;
 
 use aigle_kernels::Rgb;
 use aigle_kernels::resample::Rgb2D;
-use half::f16;
+use half::{f16, slice::HalfFloatSliceExt};
 use rayon::prelude::*;
 
 /// Pixel storage of a level: on the heap, or in a spilled, memory-mapped file.
@@ -112,7 +112,20 @@ pub struct Level {
 impl Level {
     pub fn from_f32(width: u32, height: u32, rgb: &[Rgb]) -> Level {
         assert_eq!(rgb.len(), width as usize * height as usize);
-        let data: Vec<_> = rgb.par_iter().map(|p| p.map(f16::from_f32)).collect();
+        // Convert bounded stack blocks in parallel, then reuse the allocation.
+        // This avoids both per-component feature dispatch and a serial zero-fill
+        // of the complete 275 MB destination before conversion.
+        let blocks: Vec<[[f16; 3]; 64]> = rgb
+            .par_chunks(64)
+            .map(|src| {
+                let mut dst = [[f16::ZERO; 3]; 64];
+                bytemuck::cast_slice_mut::<[f16; 3], f16>(&mut dst[..src.len()])
+                    .convert_from_f32_slice(bytemuck::cast_slice(src));
+                dst
+            })
+            .collect();
+        let mut data: Vec<[f16; 3]> = bytemuck::allocation::cast_vec(blocks);
+        data.truncate(rgb.len());
         Level {
             width,
             height,
@@ -279,6 +292,37 @@ impl Pyramid {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_conversion_matches_scalar_at_chunk_and_rounding_boundaries() {
+        let values = [
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            65504.0,
+            65520.0,
+            f32::MAX,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NAN,
+            f32::from_bits(0x7f800001),
+            f32::from_bits(0x80000001),
+            2.0f32.powi(-24),
+            2.0f32.powi(-25),
+            f32::from_bits(0x3f80_1000), // halfway between two f16 values
+        ];
+        for n in [0usize, 1, 63, 64, 65, 127, 128, 129, 511] {
+            let input: Vec<Rgb> = (0..n)
+                .map(|i| std::array::from_fn(|c| values[(i * 3 + c) % values.len()]))
+                .collect();
+            let result = Level::from_f32(n as u32, 1, &input);
+            assert_eq!(result.data.len(), n);
+            for (a, b) in result.data.iter().zip(&input) {
+                assert_eq!(a.map(f16::to_bits), b.map(|v| f16::from_f32(v).to_bits()));
+            }
+        }
+    }
 
     #[test]
     fn builds_and_selects_levels() {

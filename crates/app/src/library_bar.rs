@@ -3,7 +3,7 @@
 //! filtered view.
 
 use gpui::{App, Entity, IntoElement, ParentElement, SharedString, Styled, div, prelude::*, px};
-use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::button::ButtonVariants;
 use gpui_component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_component::{ActiveTheme, Selectable, Sizable, h_flex};
 
@@ -116,54 +116,60 @@ pub fn filter_bar(lib: &Entity<Library>, cx: &App) -> impl IntoElement + use<> {
     let rating = {
         let lib = lib.clone();
         let current = filter.rating.clone();
-        Button::new("filter-rating")
-            .label(caption(
+        crate::ui::labeled_button(
+            "filter-rating",
+            crate::ui::Glyph::Star,
+            caption(
                 "library.filter.rating",
                 (current != RatingFilter::Any).then(|| rating_text(&current)),
-            ))
-            .xsmall()
-            .ghost()
-            .dropdown_menu(move |menu, _, _| {
-                let mut options = vec![RatingFilter::Any];
-                options.extend((1..=5).map(RatingFilter::AtLeast));
-                options.extend([RatingFilter::Unrated, RatingFilter::Rejected]);
-                options.into_iter().fold(menu, |menu, r| {
-                    let checked = r == current;
-                    let text = rating_text(&r);
-                    menu.item(filter_item(&lib, text, checked, move |f| {
-                        f.rating = r.clone()
-                    }))
-                })
+            ),
+        )
+        .xsmall()
+        .ghost()
+        .dropdown_menu(move |menu, _, _| {
+            let mut options = vec![RatingFilter::Any];
+            options.extend((1..=5).map(RatingFilter::AtLeast));
+            options.extend([RatingFilter::Unrated, RatingFilter::Rejected]);
+            options.into_iter().fold(menu, |menu, r| {
+                let checked = r == current;
+                let text = rating_text(&r);
+                menu.item(filter_item(&lib, text, checked, move |f| {
+                    f.rating = r.clone()
+                }))
             })
+        })
     };
 
     let label = {
         let lib = lib.clone();
         let current = filter.label.clone();
-        Button::new("filter-label")
-            .label(caption(
+        crate::ui::labeled_button(
+            "filter-label",
+            crate::ui::Glyph::Tag,
+            caption(
                 "library.filter.label",
                 (current != LabelFilter::Any).then(|| label_text(&current)),
-            ))
-            .xsmall()
-            .ghost()
-            .dropdown_menu(move |menu, _, _| {
-                let mut options = vec![LabelFilter::Any, LabelFilter::None];
-                options.extend(
-                    LABELS
-                        .iter()
-                        .map(|(n, _)| *n)
-                        .chain(["Purple"])
-                        .map(|n| LabelFilter::Is(n.to_string())),
-                );
-                options.into_iter().fold(menu, |menu, o| {
-                    let checked = o == current;
-                    let text = label_text(&o);
-                    menu.item(filter_item(&lib, text, checked, move |f| {
-                        f.label = o.clone()
-                    }))
-                })
+            ),
+        )
+        .xsmall()
+        .ghost()
+        .dropdown_menu(move |menu, _, _| {
+            let mut options = vec![LabelFilter::Any, LabelFilter::None];
+            options.extend(
+                LABELS
+                    .iter()
+                    .map(|(n, _)| *n)
+                    .chain(["Purple"])
+                    .map(|n| LabelFilter::Is(n.to_string())),
+            );
+            options.into_iter().fold(menu, |menu, o| {
+                let checked = o == current;
+                let text = label_text(&o);
+                menu.item(filter_item(&lib, text, checked, move |f| {
+                    f.label = o.clone()
+                }))
             })
+        })
     };
 
     let choice = |id: &'static str,
@@ -172,14 +178,21 @@ pub fn filter_bar(lib: &Entity<Library>, cx: &App) -> impl IntoElement + use<> {
                   values: fn(&Library) -> Vec<String>,
                   field: fn(&mut Filter) -> &mut Option<String>| {
         let lib = lib.clone();
-        Button::new(id)
-            .label(caption(category, current.clone()))
-            .xsmall()
-            .ghost()
-            .dropdown_menu(move |menu, _, cx| {
-                let values = values(lib.read(cx));
-                choice_menu(menu, &lib, current.clone(), values, field)
-            })
+        crate::ui::labeled_button(
+            id,
+            match id {
+                "filter-camera" => crate::ui::Glyph::Camera,
+                "filter-lens" => crate::ui::Glyph::Lens,
+                _ => crate::ui::Glyph::Filter,
+            },
+            caption(category, current.clone()),
+        )
+        .xsmall()
+        .ghost()
+        .dropdown_menu(move |menu, _, cx| {
+            let values = values(lib.read(cx));
+            choice_menu(menu, &lib, current.clone(), values, field)
+        })
     };
     let camera = choice(
         "filter-camera",
@@ -206,52 +219,54 @@ pub fn filter_bar(lib: &Entity<Library>, cx: &App) -> impl IntoElement + use<> {
     let date = {
         let lib = lib.clone();
         let current = filter.date.clone();
-        Button::new("filter-date")
-            .label(caption("library.filter.date", current.clone()))
-            .xsmall()
-            .ghost()
-            .dropdown_menu(move |menu, window, cx| {
-                let years = lib.read(cx).facets().years();
-                let menu = menu
-                    .item(filter_item(
-                        &lib,
-                        t("library.filter.any"),
-                        current.is_none(),
-                        |f| f.date = None,
-                    ))
-                    .separator();
-                if years.is_empty() {
-                    return menu.label(t("library.filter.nothing"));
-                }
-                years.into_iter().fold(menu, |menu, (year, days)| {
-                    let lib = lib.clone();
-                    let current = current.clone();
-                    menu.submenu(year.clone(), window, cx, move |menu, _, _| {
-                        let all =
-                            rust_i18n::t!("library.filter.whole_year", arg0 = year).into_owned();
-                        let y = year.clone();
-                        let menu = menu
-                            .scrollable(true)
-                            .max_h(px(420.0))
-                            .item(filter_item(
-                                &lib,
-                                all,
-                                current.as_deref() == Some(year.as_str()),
-                                move |f| f.date = Some(y.clone()),
-                            ))
-                            .separator();
-                        days.iter().fold(menu, |menu, d| {
-                            let day = d.clone();
-                            menu.item(filter_item(
-                                &lib,
-                                d.clone(),
-                                current.as_deref() == Some(d.as_str()),
-                                move |f| f.date = Some(day.clone()),
-                            ))
-                        })
+        crate::ui::labeled_button(
+            "filter-date",
+            crate::ui::Glyph::Calendar,
+            caption("library.filter.date", current.clone()),
+        )
+        .xsmall()
+        .ghost()
+        .dropdown_menu(move |menu, window, cx| {
+            let years = lib.read(cx).facets().years();
+            let menu = menu
+                .item(filter_item(
+                    &lib,
+                    t("library.filter.any"),
+                    current.is_none(),
+                    |f| f.date = None,
+                ))
+                .separator();
+            if years.is_empty() {
+                return menu.label(t("library.filter.nothing"));
+            }
+            years.into_iter().fold(menu, |menu, (year, days)| {
+                let lib = lib.clone();
+                let current = current.clone();
+                menu.submenu(year.clone(), window, cx, move |menu, _, _| {
+                    let all = rust_i18n::t!("library.filter.whole_year", arg0 = year).into_owned();
+                    let y = year.clone();
+                    let menu = menu
+                        .scrollable(true)
+                        .max_h(px(420.0))
+                        .item(filter_item(
+                            &lib,
+                            all,
+                            current.as_deref() == Some(year.as_str()),
+                            move |f| f.date = Some(y.clone()),
+                        ))
+                        .separator();
+                    days.iter().fold(menu, |menu, d| {
+                        let day = d.clone();
+                        menu.item(filter_item(
+                            &lib,
+                            d.clone(),
+                            current.as_deref() == Some(d.as_str()),
+                            move |f| f.date = Some(day.clone()),
+                        ))
                     })
                 })
             })
+        })
     };
 
     let sort_button = {
@@ -261,8 +276,7 @@ pub fn filter_bar(lib: &Entity<Library>, cx: &App) -> impl IntoElement + use<> {
             caption("library.sort.title", Some(t(sort.key.label()))),
             if sort.descending { "↓" } else { "↑" }
         );
-        Button::new("sort")
-            .label(label)
+        crate::ui::labeled_button("sort", crate::ui::Glyph::Sort, label)
             .xsmall()
             .ghost()
             .dropdown_menu(move |menu, _, _| {
@@ -294,27 +308,34 @@ pub fn filter_bar(lib: &Entity<Library>, cx: &App) -> impl IntoElement + use<> {
 
     let clear = {
         let lib = lib.clone();
-        Button::new("filter-clear")
-            .label(t("library.filter.clear"))
-            .xsmall()
-            .ghost()
-            .on_click(move |_, _, cx| lib.update(cx, |l, cx| l.set_filter(Filter::default(), cx)))
+        crate::ui::icon_button(
+            "filter-clear",
+            crate::ui::Glyph::Clear,
+            t("library.filter.clear"),
+        )
+        .xsmall()
+        .ghost()
+        .on_click(move |_, _, cx| lib.update(cx, |l, cx| l.set_filter(Filter::default(), cx)))
     };
 
     let subfolders = {
         let lib = lib.clone();
         let on = lib.read(cx).recursive();
-        Button::new("subfolders")
-            .label(t("action.ToggleSubfolders"))
-            .xsmall()
-            .ghost()
-            .selected(on)
-            .tooltip(t("library.subfolders_tooltip"))
-            .on_click(move |_, _, cx| lib.update(cx, |l, cx| l.set_recursive(!on, cx)))
+        crate::ui::icon_button(
+            "subfolders",
+            crate::ui::Glyph::Folder,
+            t("action.ToggleSubfolders"),
+        )
+        .xsmall()
+        .ghost()
+        .selected(on)
+        .tooltip(t("library.subfolders_tooltip"))
+        .on_click(move |_, _, cx| lib.update(cx, |l, cx| l.set_recursive(!on, cx)))
     };
 
     h_flex()
         .w_full()
+        .flex_wrap()
         .flex_none()
         .px_2()
         .py_1()

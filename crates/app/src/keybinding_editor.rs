@@ -6,7 +6,7 @@ use gpui::{
     Context, Entity, EventEmitter, FocusHandle, IntoElement, ParentElement, Render, SharedString,
     Styled, Subscription, Window, div, prelude::*, px,
 };
-use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::button::ButtonVariants;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{ActiveTheme, Disableable, Selectable, Sizable, h_flex, v_flex};
 
@@ -107,7 +107,7 @@ fn description(action: &str) -> (String, String) {
         | "CreateVirtualCopy" | "RemoveVirtualCopy" | "ToggleCrop" | "AutoTone"
         | "ToggleMonochrome" | "ToggleMask" | "ToggleSpot" | "ToggleRedEye" | "DeleteRetouch"
         | "ToggleWbPicker" | "SwapAspect" | "Cancel" => "action_group.edit",
-        "ToggleZoom" | "ToggleBefore" | "ToggleSplit" | "ToggleSoftProof"
+        "ToggleHdrCanvas" | "ToggleZoom" | "ToggleBefore" | "ToggleSplit" | "ToggleSoftProof"
         | "ToggleGamutWarning" | "ProofSrgb" | "ProofDisplayP3" | "ProofAdobeRgb"
         | "ToggleInfo" | "ToggleHistory" | "ToggleOverlay" | "ToggleMetadata"
         | "ToggleSubfolders" => "action_group.view",
@@ -406,27 +406,30 @@ impl Render for KeybindingEditor {
                     .child(t("keybindings.syntax_help")),
             )
             .child(
-                Button::new("record-shortcut")
-                    .label(if self.recording {
+                crate::ui::labeled_button(
+                    "record-shortcut",
+                    crate::ui::Glyph::Keyboard,
+                    if self.recording {
                         t("keybindings.finish_recording")
                     } else {
                         t("keybindings.record")
-                    })
-                    .small()
-                    .selected(self.recording)
-                    .on_click(cx.listener(|editor, _, window, cx| {
-                        editor.recording = !editor.recording;
-                        if editor.recording {
-                            editor.before_record = editor.shortcut.read(cx).value().to_string();
-                            editor.recorded.clear();
-                            window.focus(&editor.focus, cx);
-                        } else {
-                            editor
-                                .shortcut
-                                .update(cx, |input, cx| input.focus(window, cx));
-                        }
-                        cx.notify();
-                    })),
+                    },
+                )
+                .small()
+                .selected(self.recording)
+                .on_click(cx.listener(|editor, _, window, cx| {
+                    editor.recording = !editor.recording;
+                    if editor.recording {
+                        editor.before_record = editor.shortcut.read(cx).value().to_string();
+                        editor.recorded.clear();
+                        window.focus(&editor.focus, cx);
+                    } else {
+                        editor
+                            .shortcut
+                            .update(cx, |input, cx| input.focus(window, cx));
+                    }
+                    cx.notify();
+                })),
             )
             .when(self.recording, |d| {
                 d.child(
@@ -449,33 +452,38 @@ impl Render for KeybindingEditor {
                 h_flex()
                     .gap_2()
                     .child(
-                        Button::new("unbind-action")
-                            .label(t("keybindings.unbind"))
-                            .small()
-                            .disabled(self.recording)
-                            .on_click(cx.listener(|editor, _, window, cx| {
-                                editor
-                                    .draft
-                                    .bindings
-                                    .retain(|_, owner| owner != &editor.selected);
-                                editor.set_input(String::new(), window, cx);
-                                cx.notify();
-                            })),
+                        crate::ui::icon_button(
+                            "unbind-action",
+                            crate::ui::Glyph::Close,
+                            t("keybindings.unbind"),
+                        )
+                        .small()
+                        .disabled(self.recording)
+                        .on_click(cx.listener(|editor, _, window, cx| {
+                            editor
+                                .draft
+                                .bindings
+                                .retain(|_, owner| owner != &editor.selected);
+                            editor.set_input(String::new(), window, cx);
+                            cx.notify();
+                        })),
                     )
                     .child(
-                        Button::new("reset-action")
-                            .label(t("keybindings.reset"))
-                            .small()
-                            .disabled(self.recording)
-                            .on_click(cx.listener(|editor, _, window, cx| {
-                                editor.set_input(
-                                    Draft::keys(&editor.draft.defaults, &editor.selected)
-                                        .join(", "),
-                                    window,
-                                    cx,
-                                );
-                                editor.assign(false, cx);
-                            })),
+                        crate::ui::icon_button(
+                            "reset-action",
+                            crate::ui::Glyph::Reset,
+                            t("keybindings.reset"),
+                        )
+                        .small()
+                        .disabled(self.recording)
+                        .on_click(cx.listener(|editor, _, window, cx| {
+                            editor.set_input(
+                                Draft::keys(&editor.draft.defaults, &editor.selected).join(", "),
+                                window,
+                                cx,
+                            );
+                            editor.assign(false, cx);
+                        })),
                     ),
             );
         if has_conflicts {
@@ -494,23 +502,29 @@ impl Render for KeybindingEditor {
                 );
             }
             detail = detail.child(
-                Button::new("replace-conflicts")
-                    .label(t("keybindings.replace"))
-                    .small()
-                    .disabled(self.recording)
-                    .on_click(cx.listener(|editor, _, _, cx| {
-                        editor.assign(true, cx);
-                    })),
+                crate::ui::labeled_button(
+                    "replace-conflicts",
+                    crate::ui::Glyph::Swap,
+                    t("keybindings.replace"),
+                )
+                .small()
+                .disabled(self.recording)
+                .on_click(cx.listener(|editor, _, _, cx| {
+                    editor.assign(true, cx);
+                })),
             );
         } else {
             detail = detail.child(
-                Button::new("assign-shortcut")
-                    .label(t("keybindings.assign"))
-                    .small()
-                    .disabled(invalid || self.recording)
-                    .on_click(cx.listener(|editor, _, _, cx| {
-                        editor.assign(false, cx);
-                    })),
+                crate::ui::labeled_button(
+                    "assign-shortcut",
+                    crate::ui::Glyph::Check,
+                    t("keybindings.assign"),
+                )
+                .small()
+                .disabled(invalid || self.recording)
+                .on_click(cx.listener(|editor, _, _, cx| {
+                    editor.assign(false, cx);
+                })),
             );
         }
         if invalid {
@@ -538,14 +552,17 @@ impl Render for KeybindingEditor {
                             .child(Input::new(&self.search).small().disabled(self.recording)),
                     )
                     .child(
-                        Button::new("modified-only")
-                            .label(t("keybindings.modified_only"))
-                            .small()
-                            .selected(self.modified_only)
-                            .on_click(cx.listener(|editor, _, _, cx| {
-                                editor.modified_only = !editor.modified_only;
-                                cx.notify();
-                            })),
+                        crate::ui::labeled_button(
+                            "modified-only",
+                            crate::ui::Glyph::Filter,
+                            t("keybindings.modified_only"),
+                        )
+                        .small()
+                        .selected(self.modified_only)
+                        .on_click(cx.listener(|editor, _, _, cx| {
+                            editor.modified_only = !editor.modified_only;
+                            cx.notify();
+                        })),
                     ),
             )
             .child(
@@ -589,20 +606,22 @@ impl Render for KeybindingEditor {
                     .border_color(border)
                     .gap_2()
                     .child(
-                        Button::new("reset-all-bindings")
-                            .label(t("keybindings.reset_all"))
-                            .small()
-                            .disabled(self.recording)
-                            .on_click(cx.listener(|editor, _, window, cx| {
-                                editor.draft.bindings = editor.draft.defaults.clone();
-                                editor.set_input(
-                                    Draft::keys(&editor.draft.bindings, &editor.selected)
-                                        .join(", "),
-                                    window,
-                                    cx,
-                                );
-                                cx.notify();
-                            })),
+                        crate::ui::labeled_button(
+                            "reset-all-bindings",
+                            crate::ui::Glyph::Reset,
+                            t("keybindings.reset_all"),
+                        )
+                        .small()
+                        .disabled(self.recording)
+                        .on_click(cx.listener(|editor, _, window, cx| {
+                            editor.draft.bindings = editor.draft.defaults.clone();
+                            editor.set_input(
+                                Draft::keys(&editor.draft.bindings, &editor.selected).join(", "),
+                                window,
+                                cx,
+                            );
+                            cx.notify();
+                        })),
                     )
                     .child(div().flex_1().text_xs().text_color(muted).child(if dirty {
                         t("keybindings.unsaved")
@@ -610,18 +629,24 @@ impl Render for KeybindingEditor {
                         t("keybindings.apply_note")
                     }))
                     .child(
-                        Button::new("cancel-keybindings")
-                            .label(t("common.cancel"))
-                            .small()
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(Closed))),
+                        crate::ui::labeled_button(
+                            "cancel-keybindings",
+                            crate::ui::Glyph::Close,
+                            t("common.cancel"),
+                        )
+                        .small()
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(Closed))),
                     )
                     .child(
-                        Button::new("save-keybindings")
-                            .label(t("common.save"))
-                            .small()
-                            .primary()
-                            .disabled(!dirty || invalid || has_conflicts || self.recording)
-                            .on_click(cx.listener(|editor, _, _, cx| editor.save(cx))),
+                        crate::ui::labeled_button(
+                            "save-keybindings",
+                            crate::ui::Glyph::Save,
+                            t("common.save"),
+                        )
+                        .small()
+                        .primary()
+                        .disabled(!dirty || invalid || has_conflicts || self.recording)
+                        .on_click(cx.listener(|editor, _, _, cx| editor.save(cx))),
                     ),
             )
     }

@@ -24,6 +24,12 @@ gpui_platform = { version = "=0.3.9", package = "gpui-pre-platform", features = 
 gpui-component = "=0.8.0"
 gpui-kit-assets = "=0.8.0"
 image = { workspace = true }
+half.workspace = true
+rustix.workspace = true
+wayland-client = { version = "=0.31.15", features = ["system"] }
+raw-window-handle = "0.6.2"
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "wgsl"] }
+wayland-protocols = { version = "=0.32.13", features = ["client", "staging"] }
 rust-i18n = "4.2.4"
 serde.workspace = true
 serde_json.workspace = true
@@ -35,3 +41,6 @@ signal-hook = "0.4"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+gpui_wgpu = { version = "=0.3.9", package = "gpui-pre-wgpu", features = ["test-support"] }

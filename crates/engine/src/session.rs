@@ -602,7 +602,7 @@ impl SessionImpl for SessionShared {
                 let r = s
                     .engine
                     .render_full(s.id, src, &params, le, &d, Some(cancel))?;
-                let (hist, mut clip) = analysis::stats(&analysis::histogram(&r.data));
+                let (hist, mut clip) = analysis::stats(&analysis::rendered_histogram(&r));
                 clip.sensor_clipped_pct = src.sensor_clipped.map(|f| f * 100.0);
                 Ok(Analysis {
                     rev_key: Prepared::new(src, &params, &d).state_key().hex(),

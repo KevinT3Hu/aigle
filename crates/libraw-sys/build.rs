@@ -1,8 +1,10 @@
 //! Builds the vendored LibRaw (tag 0.22.2, commit 24fa7e54) and the aigle shim.
 //!
 //! Native code is always optimised, even in dev builds, because unoptimised decoders are
-//! unusably slow. OpenMP is off: the engine scheduler owns the CPU (doc 05 §5). The
-//! reentrant build is used (no `LIBRAW_NOTHREADS`): one instance per decode worker.
+//! unusably slow. Decoder files stay serial; only the normalization shim uses
+//! a bounded OpenMP team. The reentrant build is used (no `LIBRAW_NOTHREADS`): one instance per decode worker.
+//! The vendored Nikon entropy decoder has an aigle patch for buffered byte reads
+//! and register-local predictor/bit state; decoded samples remain unchanged.
 //! zlib is required (deflate DNG). The system libjpeg, found with pkg-config, decodes lossy
 //! DNG and Kodak JPEG raws (on Debian/Ubuntu: `apt install libjpeg-turbo8-dev` or
 //! `libjpeg62-turbo-dev`). LibRaw reports libjpeg errors by throwing a C++ exception through
@@ -28,13 +30,12 @@ fn main() {
             .ends_with("_ph.cpp")
     });
     sources.sort();
-    sources.push(root.join("shim/aigle_libraw.cpp"));
 
     let mut build = cc::Build::new();
     build
         .cpp(true)
         .std("c++11")
-        .opt_level(2)
+        .opt_level(3)
         .debug(false)
         .warnings(false)
         .include(&vendor)
@@ -46,6 +47,21 @@ fn main() {
         build.include(p);
     }
     build.compile("aigle_libraw");
+    // Only the independent CFA normalization rows use OpenMP. Decoder internals
+    // remain serial; one bounded team is shared with the RAW-stage CPU budget.
+    let mut shim = cc::Build::new();
+    shim.cpp(true)
+        .std("c++11")
+        .opt_level(3)
+        .debug(false)
+        .warnings(false)
+        .include(&vendor)
+        .file(root.join("shim/aigle_libraw.cpp"));
+    if shim.get_compiler().is_like_gnu() {
+        shim.flag("-fopenmp");
+        println!("cargo:rustc-link-lib=gomp");
+    }
+    shim.compile("aigle_libraw_shim");
 
     println!("cargo:rustc-link-lib=z");
     println!("cargo:rerun-if-changed=shim");

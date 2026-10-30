@@ -26,7 +26,9 @@ fn fail(_: &[u8], _: &mut Task) -> Result<Reply, Failure> {
 
 fn big(body: &[u8], _: &mut Task) -> Result<Reply, Failure> {
     let n: usize = serde_json::from_slice(body).map_err(|e| e.to_string())?;
-    Reply::new(&n).map(|r| r.blob(vec![[0.25f32; 3]; n]))
+    let pixels = aigle_isolate::Payload::filled(n, |p: &mut [[f32; 3]]| p.fill([0.25; 3]))
+        .map_err(|e| Failure::Failed(e.to_string()))?;
+    Reply::new(&n).map(|r| r.payload(pixels))
 }
 
 fn crash(_: &[u8], _: &mut Task) -> Result<Reply, Failure> {
@@ -74,6 +76,10 @@ fn main() {
         ("cancel_hung", cancel_hung),
         ("parallel", parallel),
         ("large_result", large_result),
+        (
+            "mapping_survives_worker_crash",
+            mapping_survives_worker_crash,
+        ),
     ];
     for (name, t) in tests {
         eprint!("test {name} ... ");
@@ -172,8 +178,27 @@ fn large_result() {
     let t0 = Instant::now();
     let mut c = Call::start("big", &n, None).unwrap();
     assert!(matches!(c.event::<usize>().unwrap(), Event::Done(m) if m == n));
-    let v: Vec<[f32; 3]> = c.blob().unwrap();
+    let v = c.payload::<[f32; 3]>().unwrap();
     assert_eq!(v.len(), n);
     assert_eq!(v[n - 1], [0.25; 3]);
     eprint!("({:?}) ", t0.elapsed());
+}
+
+fn mapping_survives_worker_crash() {
+    let n = 200_000usize;
+    let mut c = Call::start("big", &n, None).unwrap();
+    assert!(matches!(c.event::<usize>().unwrap(), Event::Done(m) if m==n));
+    let v = c.payload::<[f32; 3]>().unwrap();
+    if cfg!(target_os = "linux") && std::env::var_os("AIGLE_SHARED_BLOBS").is_none_or(|s| s != "0")
+    {
+        assert!(v.is_mapped());
+    }
+    // The call returns its worker to the pool. A crash/replacement must not affect
+    // pages retained by the consumer, or poison the following request.
+    assert!(matches!(
+        call::<()>("crash", &(), None),
+        Err(Error::Crashed(_))
+    ));
+    assert!(v.iter().all(|&p| p == [0.25; 3]));
+    assert_eq!(call::<u64>("admit", &7u64, None).unwrap(), 7);
 }

@@ -39,6 +39,7 @@ pub mod disk_cache;
 pub mod dng;
 pub mod encode;
 mod engine;
+pub mod hdr;
 pub mod icc;
 pub mod ledger;
 mod lens;

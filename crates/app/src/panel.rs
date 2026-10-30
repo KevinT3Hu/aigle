@@ -10,9 +10,8 @@ use aigle_core::params::{Aspect, CameraProfile, Demosaic, HighlightRecon, LensPr
 use aigle_doc::{EditCommand, GestureId, ParamOp, value_at};
 use aigle_engine_api::{Histogram, ImportKind, Interaction, SourceKind, watch};
 use gpui::{
-    App, Context, Entity, IntoElement, ParentElement, PathBuilder, PathPromptOptions, Render,
-    SharedString, Styled, Subscription, Task, Window, canvas, div, point, prelude::*, px, rgb,
-    rgba,
+    App, Context, Entity, IntoElement, ParentElement, PathPromptOptions, Render, SharedString,
+    Styled, Subscription, Task, Window, div, prelude::*, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::slider::{Slider, SliderEvent, SliderScale, SliderState};
@@ -393,6 +392,7 @@ pub struct Panel {
     tab: usize,
     expanded: [bool; TOOL_GROUPS.len()],
     histogram: Option<Arc<Histogram>>,
+    scopes: Entity<crate::scopes::Scopes>,
     curve: Entity<CurveEditor>,
     masks: Entity<MaskPanel>,
     retouch: Entity<RetouchPanel>,
@@ -510,6 +510,7 @@ impl Panel {
                         c.histogram = h.clone();
                         cx.notify();
                     });
+                    p.scopes.update(cx, |s, cx| s.set_histogram(h.clone(), cx));
                     p.histogram = h;
                     cx.notify();
                 })?;
@@ -529,6 +530,7 @@ impl Panel {
             tab: 0,
             expanded,
             histogram: None,
+            scopes: cx.new(|_| crate::scopes::Scopes::new()),
             curve,
             masks,
             retouch,
@@ -961,13 +963,14 @@ impl Panel {
                                     })),
                             )
                             .child(
-                                Button::new("profile-dcp")
-                                    .label(crate::i18n::t("panel.profile.choose_dcp"))
-                                    .small()
-                                    .selected(!matrix)
-                                    .on_click(
-                                        cx.listener(|p, _, _, cx| p.import(ImportKind::Dcp, cx)),
-                                    ),
+                                crate::ui::labeled_button(
+                                    "profile-dcp",
+                                    crate::ui::Glyph::Folder,
+                                    crate::i18n::t("panel.profile.choose_dcp"),
+                                )
+                                .small()
+                                .selected(!matrix)
+                                .on_click(cx.listener(|p, _, _, cx| p.import(ImportKind::Dcp, cx))),
                             ),
                     )
                     .child(status(camera_status))
@@ -977,28 +980,34 @@ impl Panel {
                 h_flex()
                     .gap_1()
                     .child(
-                        Button::new("profile-lut")
-                            .label(crate::i18n::t("panel.profile.choose_lut"))
-                            .small()
-                            .on_click(cx.listener(|p, _, _, cx| p.import(ImportKind::LookLut, cx))),
+                        crate::ui::labeled_button(
+                            "profile-lut",
+                            crate::ui::Glyph::Folder,
+                            crate::i18n::t("panel.profile.choose_lut"),
+                        )
+                        .small()
+                        .on_click(cx.listener(|p, _, _, cx| p.import(ImportKind::LookLut, cx))),
                     )
                     .when(profile.look.is_some(), |d| {
                         d.child(
-                            Button::new("profile-lut-off")
-                                .label(crate::i18n::t("panel.profile.remove"))
-                                .small()
-                                .on_click(cx.listener(|p, _, _, cx| {
-                                    p.send(
-                                        crate::i18n::join(&[
-                                            "section.profile",
-                                            "panel.profile.remove_lut",
-                                        ]),
-                                        resets(&["profile.look"]),
-                                        None,
-                                        Interaction::Final,
-                                        cx,
-                                    )
-                                })),
+                            crate::ui::icon_button(
+                                "profile-lut-off",
+                                crate::ui::Glyph::Close,
+                                crate::i18n::t("panel.profile.remove"),
+                            )
+                            .small()
+                            .on_click(cx.listener(|p, _, _, cx| {
+                                p.send(
+                                    crate::i18n::join(&[
+                                        "section.profile",
+                                        "panel.profile.remove_lut",
+                                    ]),
+                                    resets(&["profile.look"]),
+                                    None,
+                                    Interaction::Final,
+                                    cx,
+                                )
+                            })),
                         )
                     }),
             )
@@ -1042,26 +1051,37 @@ impl Panel {
                     h_flex()
                         .gap_2()
                         .child(
-                            Button::new("wb-pick")
-                                .label(crate::i18n::t("panel.wb.picker"))
-                                .small()
-                                .selected(picking)
-                                .tooltip(crate::keymap::hint("panel.wb.picker_tooltip", cx))
-                                .on_click(cx.listener(move |p, _, _, cx| {
+                            crate::ui::icon_button(
+                                "wb-pick",
+                                crate::ui::Glyph::Picker,
+                                crate::i18n::t("panel.wb.picker"),
+                            )
+                            .small()
+                            .selected(picking)
+                            .tooltip(crate::keymap::hint("panel.wb.picker_tooltip", cx))
+                            .on_click(cx.listener(
+                                move |p, _, _, cx| {
                                     p.photo.update(cx, |ph, cx| ph.set_wb_pick(!picking, cx))
-                                })),
+                                },
+                            )),
                         )
                         .child(
-                            Button::new("wb-as-shot")
-                                .label(crate::i18n::t("panel.wb.as_shot"))
-                                .small()
-                                .on_click(cx.listener(|p, _, _, cx| p.as_shot(cx))),
+                            crate::ui::icon_button(
+                                "wb-as-shot",
+                                crate::ui::Glyph::Camera,
+                                crate::i18n::t("panel.wb.as_shot"),
+                            )
+                            .small()
+                            .on_click(cx.listener(|p, _, _, cx| p.as_shot(cx))),
                         )
                         .child(
-                            Button::new("wb-auto")
-                                .label(crate::i18n::t("panel.wb.auto"))
-                                .small()
-                                .on_click(cx.listener(|p, _, _, cx| p.auto_wb(cx))),
+                            crate::ui::icon_button(
+                                "wb-auto",
+                                crate::ui::Glyph::Auto,
+                                crate::i18n::t("panel.wb.auto"),
+                            )
+                            .small()
+                            .on_click(cx.listener(|p, _, _, cx| p.auto_wb(cx))),
                         )
                         .into_any_element(),
                 )
@@ -1083,16 +1103,22 @@ impl Panel {
                             h_flex()
                                 .gap_2()
                                 .child(
-                                    Button::new("lens-match")
-                                        .label(crate::i18n::t("panel.lens.auto_match"))
-                                        .small()
-                                        .on_click(cx.listener(|p, _, _, cx| p.match_lens(cx))),
+                                    crate::ui::labeled_button(
+                                        "lens-match",
+                                        crate::ui::Glyph::Lens,
+                                        crate::i18n::t("panel.lens.auto_match"),
+                                    )
+                                    .small()
+                                    .on_click(cx.listener(|p, _, _, cx| p.match_lens(cx))),
                                 )
                                 .child(
-                                    Button::new("lens-off")
-                                        .label(crate::i18n::t("panel.lens.disable"))
-                                        .small()
-                                        .on_click(cx.listener(|p, _, _, cx| p.lens_off(cx))),
+                                    crate::ui::icon_button(
+                                        "lens-off",
+                                        crate::ui::Glyph::Disable,
+                                        crate::i18n::t("panel.lens.disable"),
+                                    )
+                                    .small()
+                                    .on_click(cx.listener(|p, _, _, cx| p.lens_off(cx))),
                                 ),
                         )
                         .child(
@@ -1151,10 +1177,19 @@ impl Panel {
         };
         let button = |id: &'static str, label: String, f: fn(&mut Photo, &mut Context<Photo>)| {
             let photo = photo.clone();
-            Button::new(id)
-                .label(label)
-                .small()
-                .on_click(move |_, _, cx| photo.update(cx, f))
+            let icon = match id {
+                "rot-ccw" => crate::ui::Glyph::RotateLeft,
+                "rot-cw" => crate::ui::Glyph::RotateRight,
+                "mirror" => crate::ui::Glyph::Mirror,
+                "crop-reset" => crate::ui::Glyph::Reset,
+                _ => crate::ui::Glyph::Check,
+            };
+            let button = if id == "crop-done" {
+                crate::ui::labeled_button(id, icon, label)
+            } else {
+                crate::ui::icon_button(id, icon, label)
+            };
+            button.small().on_click(move |_, _, cx| photo.update(cx, f))
         };
         let angle = self
             .rows
@@ -1195,15 +1230,20 @@ impl Panel {
                                 };
                                 let photo = photo.clone();
                                 d.child(
-                                    Button::new("aspect-swap")
-                                        .label(crate::i18n::t("crop.swap"))
-                                        .small()
-                                        .tooltip(crate::keymap::hint("crop.swap_tooltip", cx))
-                                        .on_click(move |_, _, cx| {
+                                    crate::ui::icon_button(
+                                        "aspect-swap",
+                                        crate::ui::Glyph::Swap,
+                                        crate::i18n::t("crop.swap"),
+                                    )
+                                    .small()
+                                    .tooltip(crate::keymap::hint("crop.swap_tooltip", cx))
+                                    .on_click(
+                                        move |_, _, cx| {
                                             photo.update(cx, |p, cx| {
                                                 p.set_aspect(Aspect::Ratio { w: h, h: w }, cx)
                                             })
-                                        }),
+                                        },
+                                    ),
                                 )
                             }),
                     ),
@@ -1323,7 +1363,9 @@ impl Panel {
                         .when(modified, |d| {
                             d.child(
                                 Button::new(SharedString::from(format!("reset-{group}-{j}")))
-                                    .label(crate::i18n::t("common.reset"))
+                                    .icon(crate::ui::Glyph::Reset.icon())
+                                    .tooltip(crate::i18n::t("common.reset"))
+                                    .accessibility_label(crate::i18n::t("common.reset"))
                                     .xsmall()
                                     .ghost()
                                     .on_click(cx.listener(move |p, _, _, cx| {
@@ -1376,56 +1418,13 @@ impl Panel {
     }
 }
 
-fn histogram_element(h: Option<Arc<Histogram>>) -> impl IntoElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds, _, window, _| {
-            window.paint_quad(gpui::fill(bounds, rgb(0x141414)));
-            let Some(h) = h else { return };
-            // Ignore the end bins for scaling so that clipped pixels do not flatten the rest.
-            let peak = [&h.red, &h.green, &h.blue]
-                .iter()
-                .flat_map(|c| c.iter().skip(1).take(254))
-                .copied()
-                .max()
-                .unwrap_or(1)
-                .max(1) as f32;
-            let (x0, y0) = (bounds.origin.x, bounds.origin.y);
-            let (w, hgt) = (bounds.size.width, bounds.size.height);
-            for (bins, color) in [
-                (&h.red, rgba(0xff4040a0)),
-                (&h.green, rgba(0x40ff40a0)),
-                (&h.blue, rgba(0x4080ffa0)),
-            ] {
-                let n = bins.len().max(2);
-                let mut b = PathBuilder::fill();
-                b.move_to(point(x0, y0 + hgt));
-                for (i, &c) in bins.iter().enumerate() {
-                    let x = x0 + w * (i as f32 / (n - 1) as f32);
-                    let y = y0 + hgt * (1.0 - (c as f32 / peak).min(1.0).sqrt());
-                    b.line_to(point(x, y));
-                }
-                b.line_to(point(x0 + w, y0 + hgt));
-                b.close();
-                if let Ok(path) = b.build() {
-                    window.paint_path(path, color);
-                }
-            }
-        },
-    )
-    .w_full()
-    .h(px(110.0))
-}
-
 impl Render for Panel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tool = self.photo.read(cx).tool;
-        let top = v_flex().size_full().min_h_0().child(
-            div()
-                .flex_none()
-                .p_3()
-                .child(histogram_element(self.histogram.clone())),
-        );
+        let top = v_flex()
+            .size_full()
+            .min_h_0()
+            .child(div().flex_none().p_3().child(self.scopes.clone()));
         let tabs = TabBar::new("develop-tabs")
             .underline()
             .small()

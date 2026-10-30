@@ -16,6 +16,8 @@ aigle-lensfun.workspace = true
 aigle-libraw-sys.workspace = true
 aigle-rtprocess-sys.workspace = true
 aigle-vips-sys.workspace = true
+exr = "=1.74.2"
+png = "=0.18.1"
 blake3.workspace = true
 bytemuck = "1.23"
 futures.workspace = true

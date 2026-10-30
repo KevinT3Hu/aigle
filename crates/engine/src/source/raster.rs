@@ -36,6 +36,12 @@ pub fn decode(
     admit: &mut dyn FnMut(u32, u32) -> Result<(), LoadError>,
     cancel: Option<&CancelToken>,
 ) -> Result<Decoded, LoadError> {
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("exr"))
+    {
+        return decode_exr(path, admit, cancel);
+    }
     let (im, h) = vips::Image::open(path).map_err(fail(path))?;
     let (w, ht) = (h.width.max(0) as u32, h.height.max(0) as u32);
     if w == 0 || ht == 0 {
@@ -47,6 +53,23 @@ pub fn decode(
     admit(w, ht)?;
     let camera = camera_info(&im);
     let mut xyz = vec![0f32; w as usize * ht as usize * 3];
+    let cicp = super::hdr_file::detect(path, &im).map_err(LoadError::Failed)?;
+    if let Some(cicp) = cicp {
+        let matrix = cicp.matrix().map_err(LoadError::Failed)?;
+        im.decode_rgb_float(&h, &mut xyz, &|| cancel.is_some_and(|c| c.is_cancelled()))
+            .map_err(fail(path))?;
+        let rgb = xyz
+            .par_chunks_exact(3)
+            .map(|p| cicp.decode([p[0], p[1], p[2]], &matrix))
+            .collect();
+        return Ok(Decoded {
+            width: w,
+            height: ht,
+            exif_orientation: h.orientation.clamp(1, 8) as u16,
+            rgb,
+            camera,
+        });
+    }
     im.decode_xyz(&h, &mut xyz, &|| cancel.is_some_and(|c| c.is_cancelled()))
         .map_err(fail(path))?;
     drop(im);
@@ -207,6 +230,7 @@ mod tests {
                 width: 64,
                 height: 32,
                 sixteen_bit: false,
+                floating_point: false,
                 out_size: (64, 32),
                 icc: Some("srgb"),
                 exif: None,
@@ -304,5 +328,180 @@ mod tests {
         use crate::source::raw::valid_utc_offset;
         assert!(valid_utc_offset("+08:00") && valid_utc_offset("-05:30"));
         assert!(!valid_utc_offset(":") && !valid_utc_offset("0800"));
+    }
+}
+
+fn decode_exr(
+    path: &Path,
+    admit: &mut dyn FnMut(u32, u32) -> Result<(), LoadError>,
+    cancel: Option<&CancelToken>,
+) -> Result<Decoded, LoadError> {
+    use exr::prelude::*;
+    let error = |e: exr::error::Error| LoadError::Failed(format!("{}: {e}", path.display()));
+    let meta = MetaData::read_from_file(path, false).map_err(error)?;
+    let max_area = meta
+        .headers
+        .iter()
+        .map(|h| h.layer_size.area())
+        .max()
+        .unwrap_or(0);
+    let header = meta
+        .headers
+        .iter()
+        .find(|h| h.layer_size.area() == max_area)
+        .ok_or_else(|| LoadError::Failed("OpenEXR has no image layers".into()))?;
+    let (w, h) = (header.layer_size.width(), header.layer_size.height());
+    if w == 0 || h == 0 || w > u32::MAX as usize || h > u32::MAX as usize {
+        return Err(LoadError::Failed("invalid OpenEXR dimensions".into()));
+    }
+    admit(w as u32, h as u32)?;
+    if cancel.is_some_and(CancelToken::is_cancelled) {
+        return Err(LoadError::Cancelled);
+    }
+    let image = read_first_rgba_layer_from_file(
+        path,
+        |size, _| (size.width(), vec![[0.0f32; 3]; size.area()]),
+        |pixels, pos, (r, g, b, _): (f32, f32, f32, f32)| {
+            pixels.1[pos.y() * pixels.0 + pos.x()] =
+                [r, g, b].map(|v| if v.is_finite() { v } else { 0.0 });
+        },
+    )
+    .map_err(error)?;
+    if cancel.is_some_and(CancelToken::is_cancelled) {
+        return Err(LoadError::Cancelled);
+    }
+    let layer = image.layer_data;
+    let c = image.attributes.chromaticities;
+    let (native, white) = if let Some(c) = c {
+        let xy = |v: Vec2<f32>| (v.x() as f64, v.y() as f64);
+        // Avoid the matrix helper's panic for malformed/dependent primaries.
+        let r = color::xy_to_xyz(c.red.x() as f64, c.red.y() as f64);
+        let g = color::xy_to_xyz(c.green.x() as f64, c.green.y() as f64);
+        let b = color::xy_to_xyz(c.blue.x() as f64, c.blue.y() as f64);
+        let basis = [[r[0], g[0], b[0]], [r[1], g[1], b[1]], [r[2], g[2], b[2]]];
+        if color::invert(&basis).is_none()
+            || basis.iter().flatten().any(|v| !v.is_finite())
+            || !c.white.x().is_finite()
+            || !c.white.y().is_finite()
+            || c.white.y() <= 0.0
+        {
+            return Err(LoadError::Failed("invalid OpenEXR chromaticities".into()));
+        }
+        (
+            color::primaries_to_xyz(xy(c.red), xy(c.green), xy(c.blue), xy(c.white)),
+            xy(c.white),
+        )
+    } else {
+        (color::SRGB_TO_XYZ, color::D65_XY)
+    };
+    let adapt = color::bradford(
+        color::xy_to_xyz(white.0, white.1),
+        color::xy_to_xyz(color::D65_XY.0, color::D65_XY.1),
+    );
+    let m = color::to_f32(&color::mul(
+        &color::invert(&color::REC2020_TO_XYZ).unwrap(),
+        &color::mul(&adapt, &native),
+    ));
+    let luminance = layer
+        .attributes
+        .white_luminance
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .map_or(1.0, |v| v / crate::hdr::REFERENCE_WHITE);
+    let rgb = layer
+        .channel_data
+        .pixels
+        .1
+        .into_par_iter()
+        .map(|p| aigle_kernels::math::mat3_mul(&m, p).map(|v| v * luminance))
+        .collect();
+    Ok(Decoded {
+        width: layer.size.width() as u32,
+        height: layer.size.height() as u32,
+        exif_orientation: 1,
+        rgb,
+        camera: None,
+    })
+}
+
+#[cfg(test)]
+mod hdr_tests {
+    use super::*;
+    #[test]
+    fn float_tiff_retains_highlights_and_wide_gamut_profile() {
+        let path = std::env::temp_dir().join(format!("aigle-hdr-float-{}.tif", std::process::id()));
+        let patches: [[f32; 3]; 4] = [[0.18; 3], [1.0; 3], [4.0; 3], [0.1, 3.0, 0.2]];
+        let fill = |x: u32, _: u32, w: u32, h: u32, out: &mut [u8], stride: usize| {
+            for y in 0..h as usize {
+                for i in 0..w as usize {
+                    for (c, value) in patches[x as usize + i].iter().enumerate() {
+                        let at = y * stride + i * 12 + c * 4;
+                        out[at..at + 4].copy_from_slice(&value.to_ne_bytes());
+                    }
+                }
+            }
+            true
+        };
+        // A Rec.2020 matrix profile on float TIFF must be honored, not read as scRGB.
+        let profile =
+            crate::output_space::icc_profile(&aigle_engine_api::DisplayProfileId::HdrRec2020);
+        let opts = vips::SaveOpts {
+            width: 4,
+            height: 1,
+            sixteen_bit: false,
+            floating_point: true,
+            out_size: (4, 1),
+            icc: None,
+            exif: None,
+            suffix: ".tif[compression=none]",
+            sharpen: None,
+            icc_data: Some(&profile),
+            resize_gamma: None,
+            overlay: None,
+        };
+        let base = path.with_extension("");
+        vips::save_file(&opts, &fill, &base).unwrap();
+        let decoded = decode(&path, &mut |_, _| Ok(()), None).unwrap();
+        std::fs::remove_file(&path).ok();
+        for (got, want) in decoded.rgb.iter().zip(patches) {
+            for c in 0..3 {
+                assert!((got[c] - want[c]).abs() < 0.002, "{got:?} vs {want:?}");
+            }
+        }
+    }
+    #[test]
+    fn exr_chromaticities_white_luminance_and_float_range_are_preserved() {
+        use exr::prelude::*;
+        let path = std::env::temp_dir().join(format!("aigle-hdr-exr-{}.exr", std::process::id()));
+        let mut attrs = LayerAttributes::named("RGB");
+        attrs.white_luminance = Some(406.0);
+        let layer = Layer::new(
+            (4, 2),
+            attrs,
+            Encoding::SMALL_FAST_LOSSLESS,
+            SpecificChannels::rgb(|_: Vec2<usize>| (0.25f32, 2.0f32, 0.5f32)),
+        );
+        let mut image = Image::from_layer(layer);
+        image.attributes.chromaticities = Some(exr::meta::attribute::Chromaticities {
+            red: Vec2(0.708, 0.292),
+            green: Vec2(0.170, 0.797),
+            blue: Vec2(0.131, 0.046),
+            white: Vec2(0.3127, 0.3290),
+        });
+        image.write().to_file(&path).unwrap();
+        let decoded = decode(
+            &path,
+            &mut |w, h| {
+                assert_eq!((w, h), (4, 2));
+                Ok(())
+            },
+            None,
+        )
+        .unwrap();
+        std::fs::remove_file(path).ok();
+        for p in decoded.rgb {
+            for (got, want) in p.into_iter().zip([0.5, 4.0, 1.0]) {
+                assert!((got - want).abs() < 0.001, "{p:?}");
+            }
+        }
     }
 }

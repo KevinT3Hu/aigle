@@ -23,6 +23,8 @@
 ////////////////////////////////////////////////////////////////
 
 #include <memory>
+#include <atomic>
+#include <thread>
 
 #include "bayerhelper.h"
 #include "gauss.h"
@@ -132,10 +134,12 @@ rpError CA_correct(
     float inputScale,
     float outputScale,
     std::size_t chunkSize,
-    bool measure
+    bool measure,
+    bool multiThread
 )
 {
     BENCHFUN
+    const unsigned team = multiThread ? std::max(1u, std::min(8u, std::thread::hardware_concurrency())) : 1u;
 // multithreaded and vectorized by Ingo Weyrich
     std::unique_ptr<StopWatch> stop;
 
@@ -171,7 +175,7 @@ rpError CA_correct(
         }
         // copy raw values before ca correction
 #ifdef _OPENMP
-        #pragma omp parallel for
+        #pragma omp parallel for num_threads(team)
 #endif
         for (int i = cb; i < H - cb; ++i) {
             for (int j = cb + (fc(cfarray, i + winy, winx) & 1); j < W - cb; j += 2) {
@@ -183,7 +187,7 @@ rpError CA_correct(
     if (rawDataOut && rawDataOut != rawDataIn) {
         // copy raw values before ca correction
 #ifdef _OPENMP
-        #pragma omp parallel for
+        #pragma omp parallel for num_threads(team)
 #endif
         for (int i = 0; i < H; ++i) {
             for (int j = 0; j < W; ++j) {
@@ -193,7 +197,7 @@ rpError CA_correct(
     }
 
     double progress = 0.0;
-    setProgCancel(progress);
+    if (setProgCancel(progress)) return RP_CANCELLED;
 
     const int width = W + (W & 1), height = H;
     constexpr int border = 8;
@@ -229,8 +233,8 @@ rpError CA_correct(
     const bool fitParamsSet = fitParamsIn && iterations < 2;
 
     rpError rc = RP_NO_ERROR;
-    bool cancelled = false; // aigle patch
-    for (size_t it = 0; it < iterations && processpasstwo; ++it) {
+    std::atomic<bool> cancelled{false}; // aigle patch
+    for (size_t it = 0; it < iterations && processpasstwo && !cancelled; ++it) {
         float blockave[2][2] = {};
         float blocksqave[2][2] = {};
         float blockdenom[2][2] = {};
@@ -243,7 +247,7 @@ rpError CA_correct(
 
 
 #ifdef _OPENMP
-        #pragma omp parallel
+        #pragma omp parallel num_threads(team)
 #endif
         {
             int progresscounter = 0;
@@ -302,8 +306,6 @@ rpError CA_correct(
                     //measured CA shift parameters for a tile
                     float CAshift[2][2];
 
-                    //per thread data for evaluation of block CA shift variance
-                    float   blockavethr[2][2] = {{0, 0}, {0, 0}}, blocksqavethr[2][2] = {{0, 0}, {0, 0}}, blockdenomthr[2][2] = {{0, 0}, {0, 0}};
 
 #ifdef _OPENMP
                     #pragma omp for collapse(2) schedule(dynamic, chunkSize) nowait
@@ -473,16 +475,20 @@ rpError CA_correct(
                                     rgb[1][indx] = (wtu * rgb[1][indx - v1] + wtd * rgb[1][indx + v1] + wtl * rgb[1][indx - 1] + wtr * rgb[1][indx + 1]) / (wtu + wtd + wtl + wtr);
                                 }
 
-                                if (row > -1 && row < height) {
+                                // aigle patch: disjoint ownership of the green scratch
+                                // image. Serial tiles previously overwrote this overlap;
+                                // assign it to the later tile to preserve that result.
+                                if (row > -1 && row < std::min(top + ts - border2 + 3, height)) {
+                                    const int copyEnd = std::min(left + ts - border2 + 3, width);
                                     int offset = (fc(cfarray, row,std::max(left + 3, 0)) & 1);
                                     int col = std::max(left + 3, 0) + offset;
                                     int indx1 = rr * ts + 3 - (left < 0 ? (left+3) : 0) + offset;
 #ifdef __SSE2__
-                                    for(; col < std::min(cc1 + left - 3, width) - 7; col+=8, indx1+=8) {
+                                    for(; col < copyEnd - 7; col+=8, indx1+=8) {
                                         STVFU(Gtmp[(row * width + col) >> 1], LC2VFU(rgb[1][indx1]));
                                     }
 #endif
-                                    for(; col < std::min(cc1 + left - 3, width); col+=2, indx1+=2) {
+                                    for(; col < copyEnd; col+=2, indx1+=2) {
                                         Gtmp[(row * width + col) >> 1] = rgb[1][indx1];
                                     }
                                 }
@@ -667,11 +673,6 @@ rpError CA_correct(
                                     //dir : 0=vert, 1=hor
 
                                     //offset gives NW corner of square containing the min; dir : 0=vert, 1=hor
-                                    if (fabsf(CAshift[dir][c]) < 2.0f) {
-                                        blockavethr[dir][c] += CAshift[dir][c];
-                                        blocksqavethr[dir][c] += SQR(CAshift[dir][c]);
-                                        blockdenomthr[dir][c] += 1;
-                                    }
                                     //evaluate the shifts to the location that minimizes CA within the tile
                                     blockshifts[vblock * hblsz + hblock][c][dir] = CAshift[dir][c]; //vert/hor CA shift for R/B
 
@@ -697,25 +698,30 @@ rpError CA_correct(
 
                         }
 
-                    //end of diagnostic pass
-#ifdef _OPENMP
-                    #pragma omp critical (cadetectpass2)
-#endif
-                    {
-                        for (int dir = 0; dir < 2; dir++)
-                            for (int c = 0; c < 2; c++) {
-                                blockdenom[dir][c] += blockdenomthr[dir][c];
-                                blocksqave[dir][c] += blocksqavethr[dir][c];
-                                blockave[dir][c]   += blockavethr[dir][c];
-                            }
-                    }
+                    // aigle patch: reduce already-stored tile shifts in raster order.
+                    // This preserves the original single-threaded floating point sum,
+                    // independently of the dynamic tile schedule and worker count.
 #ifdef _OPENMP
                     #pragma omp barrier
-
                     #pragma omp single
 #endif
                     {
-                        for (int dir = 0; dir < 2; dir++)
+                        if (cancelled) processpasstwo = false;
+                        for (int top = -border; top < height && !cancelled; top += ts - border2) {
+                            const int vb = ((top + border) / (ts - border2)) + 1;
+                            for (int left = -border; left < width - (W & 1); left += ts - border2) {
+                                const int hb = ((left + border) / (ts - border2)) + 1;
+                                for (int c = 0; c < 2; ++c) for (int dir = 0; dir < 2; ++dir) {
+                                    const float shift = blockshifts[vb * hblsz + hb][c][dir];
+                                    if (fabsf(shift) < 2.f) {
+                                        blockave[dir][c] += shift;
+                                        blocksqave[dir][c] += SQR(shift);
+                                        blockdenom[dir][c] += 1;
+                                    }
+                                }
+                            }
+                        }
+                        for (int dir = 0; dir < 2 && !cancelled; dir++)
                             for (int c = 0; c < 2; c++) {
                                 if (blockdenom[dir][c]) {
                                     blockvar[dir][c] = blocksqave[dir][c] / blockdenom[dir][c] - SQR(blockave[dir][c] / blockdenom[dir][c]);
@@ -1284,13 +1290,13 @@ rpError CA_correct(
             }
         }
 
-        if (!rc && avoidColourshift) {
+        if (!rc && !cancelled && avoidColourshift) {
             // to avoid or at least reduce the colour shift caused by raw ca correction we compute the per pixel difference factors
             // of red and blue channel and apply a gaussian blur to them.
             // Then we apply the resulting factors per pixel on the result of raw ca correction
 
 #ifdef _OPENMP
-            #pragma omp parallel
+            #pragma omp parallel num_threads(team)
 #endif
             {
 #ifdef __SSE2__

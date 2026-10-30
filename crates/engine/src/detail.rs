@@ -564,6 +564,16 @@ pub fn plan(
 /// Run `plan` on the CPU over the level `src` (addressed in full-level coordinates); the
 /// block interior in f32.
 pub fn run_cpu<R: Rgb2D + Sync>(plan: &SPlan, src: &R) -> Vec<[f32; 3]> {
+    run_cpu_mode(plan, src, true)
+}
+
+/// A block in an already parallel batch: keep its passes on one worker to avoid
+/// creating nested rayon jobs for every small plane and pass.
+pub(crate) fn run_cpu_in_batch<R: Rgb2D + Sync>(plan: &SPlan, src: &R) -> Vec<[f32; 3]> {
+    run_cpu_mode(plan, src, false)
+}
+
+fn run_cpu_mode<R: Rgb2D + Sync>(plan: &SPlan, src: &R, parallel: bool) -> Vec<[f32; 3]> {
     let n = plan.plane_len();
     let mut work = vec![0f32; plan.work_len()];
     let mut res = Vec::new();
@@ -571,19 +581,31 @@ pub fn run_cpu<R: Rgb2D + Sync>(plan: &SPlan, src: &R) -> Vec<[f32; 3]> {
         let (gw, gh) = (p.up[U_GW] as usize, p.up[U_GH] as usize);
         if matches!(p.up[U_OP], OP_BOX_H | OP_BOX_V) {
             res.resize(gw * gh, [0.0; 4]);
-            box_pass_cpu(&work, &p.up, &mut res);
-        } else {
+            box_pass_cpu(&work, &p.up, &mut res, parallel);
+        } else if parallel {
             (0..gw * gh)
                 .into_par_iter()
                 .map(|i| s_px(&work, src, &p.fp, &p.up, (i % gw) as u32, (i / gw) as u32))
                 .collect_into_vec(&mut res);
+        } else {
+            res.clear();
+            res.extend(
+                (0..gw * gh)
+                    .map(|i| s_px(&work, src, &p.fp, &p.up, (i % gw) as u32, (i / gw) as u32)),
+            );
         }
         if p.up[U_OP] == OP_REBUILD {
             let o = p.up[U_OUT] as usize * n;
-            work[o..o + 3 * gw * gh]
-                .par_chunks_mut(3)
-                .zip(&res)
-                .for_each(|(d, v)| d.copy_from_slice(&v[..3]));
+            if parallel {
+                work[o..o + 3 * gw * gh]
+                    .par_chunks_mut(3)
+                    .zip(&res)
+                    .for_each(|(d, v)| d.copy_from_slice(&v[..3]));
+            } else {
+                for (d, v) in work[o..o + 3 * gw * gh].chunks_mut(3).zip(&res) {
+                    d.copy_from_slice(&v[..3]);
+                }
+            }
             continue;
         }
         for k in 0..4 {
@@ -592,10 +614,16 @@ pub fn run_cpu<R: Rgb2D + Sync>(plan: &SPlan, src: &R) -> Vec<[f32; 3]> {
                 continue;
             }
             let o = pl as usize * n;
-            work[o..o + n]
-                .par_iter_mut()
-                .zip(&res)
-                .for_each(|(d, v)| *d = v[k]);
+            if parallel {
+                work[o..o + n]
+                    .par_iter_mut()
+                    .zip(&res)
+                    .for_each(|(d, v)| *d = v[k]);
+            } else {
+                for (d, v) in work[o..o + n].iter_mut().zip(&res) {
+                    *d = v[k];
+                }
+            }
         }
     }
     let (o, len) = plan.out_range();
@@ -605,13 +633,13 @@ pub fn run_cpu<R: Rgb2D + Sync>(plan: &SPlan, src: &R) -> Vec<[f32; 3]> {
 /// Row-batched box passes. Accumulate each pixel's taps in the same order as
 /// `box_px`, but expose independent neighbouring pixels to the CPU vectoriser.
 /// Prefix sums would change rounding in the guided filter's variance calculation.
-fn box_pass_cpu(work: &[f32], up: &[u32], out: &mut [[f32; 4]]) {
+fn box_pass_cpu(work: &[f32], up: &[u32], out: &mut [[f32; 4]], parallel: bool) {
     let (w, h) = (up[U_RW] as usize, up[U_RH] as usize);
     let n = w * h;
     let r = up[U_A] as usize;
     let np = up[U_B] as usize;
     debug_assert_eq!(out.len(), n);
-    out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+    let fill = |(y, row): (usize, &mut [[f32; 4]])| {
         row.fill([0.0; 4]);
         if up[U_OP] == OP_BOX_V {
             let a = y.saturating_sub(r);
@@ -669,7 +697,12 @@ fn box_pass_cpu(work: &[f32], up: &[u32], out: &mut [[f32; 4]]) {
                 *dst = box_px(work, up, (start + i) as u32, y as u32);
             }
         }
-    });
+    };
+    if parallel {
+        out.par_chunks_mut(w).enumerate().for_each(fill);
+    } else {
+        out.chunks_mut(w).enumerate().for_each(fill);
+    }
 }
 
 /// Process the `bw × bh` block at (`bx0`, `by0`) of `level` (index `l`) on the CPU.
@@ -822,7 +855,7 @@ mod tests {
                         up[U_B] = np;
                         up[U_IN..U_IN + 4].copy_from_slice(&[0, 1, NONE, 3]);
                         let mut out = vec![[f32::NAN; 4]; n];
-                        box_pass_cpu(&work, &up, &mut out);
+                        box_pass_cpu(&work, &up, &mut out, true);
                         for (i, actual) in out.iter().enumerate() {
                             let expected = box_px(&work, &up, (i % w) as u32, (i / w) as u32);
                             assert_eq!(
@@ -833,6 +866,29 @@ mod tests {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn batch_execution_matches_nested_parallel_passes() {
+        let lvl = noisy_level(111, 83, 0.01);
+        let noise = estimate_noise(&lvl);
+        for l in [0, 2] {
+            let mut sp = params();
+            sp.luma = 60.0;
+            sp.chroma = 80.0;
+            sp.texture = 40.0;
+            sp.defringe = [0.8, 55.0, 0.5, 225.0];
+            let p = plan(
+                lvl.width, lvl.height, l, &sp, noise, 0, 0, lvl.width, lvl.height, None,
+            );
+            let view = LevelView::whole(&lvl);
+            let a = run_cpu(&p, &view);
+            let b = run_cpu_in_batch(&p, &view);
+            assert_eq!(a.len(), b.len());
+            for (a, b) in a.iter().zip(&b) {
+                assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits));
             }
         }
     }
