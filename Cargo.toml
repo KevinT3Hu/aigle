@@ -50,7 +50,7 @@ libm = "0.2.15"
 parking_lot = "0.12.4"
 rayon = "1.11"
 # Bundled SQLite: the catalog must not depend on the system library's version.
-rusqlite = { version = "=0.41.0", features = ["bundled"] }
+rusqlite = { version = "=0.41.0", features = ["bundled", "backup"] }
 # Safe renameat2(RENAME_NOREPLACE) for moving photos without overwriting; poll, pipe sizes
 # and stdio redirection for worker processes.
 rustix = { version = "1.1.6", features = ["fs", "event", "pipe", "stdio", "net"] }

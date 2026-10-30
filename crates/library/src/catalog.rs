@@ -189,6 +189,45 @@ impl Catalog {
         Ok(Catalog { db: Mutex::new(db) })
     }
 
+    /// Consistent SQLite snapshot including WAL changes. Originals and XMP are separate.
+    pub fn backup(&self, path: &Path) -> Result<(), CatalogError> {
+        if path.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "Backup already exists",
+            )
+            .into());
+        }
+        self.db
+            .lock()
+            .backup(rusqlite::MAIN_DB, path, rusqlite::backup::NO_PROGRESS)?;
+        Ok(())
+    }
+
+    /// Restore only a validated catalog from this schema version.
+    pub fn restore(&self, path: &Path) -> Result<(), CatalogError> {
+        let source = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let version: i64 = source.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version != SCHEMA {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Backup schema {version}; this build requires schema {SCHEMA}"),
+            )
+            .into());
+        }
+        let integrity: String = source.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+        if integrity != "ok" {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, integrity).into());
+        }
+        for table in ["copies", "history", "facts", "albums", "album_photos"] {
+            source.prepare(&format!("SELECT * FROM {table} LIMIT 0"))?;
+        }
+        self.db
+            .lock()
+            .restore(rusqlite::MAIN_DB, path, rusqlite::backup::NO_PROGRESS)?;
+        Ok(())
+    }
+
     pub fn albums(&self) -> Result<Vec<(i64, String)>, CatalogError> {
         let db = self.db.lock();
         let mut stmt = db.prepare("SELECT id, name FROM albums ORDER BY name COLLATE NOCASE")?;
@@ -546,6 +585,25 @@ mod tests {
             edits: Some(p),
             ..PhotoMeta::default()
         }
+    }
+
+    #[test]
+    fn catalog_backup_restore_is_consistent_and_rejects_invalid_inputs() {
+        let dir = crate::sidecar::tests::temp_dir("catalog-backup");
+        let catalog = Catalog::open(&dir.join("live.sqlite3")).unwrap();
+        let a = catalog.create_album("Before", &[]).unwrap();
+        let backup = dir.join("backup.sqlite3");
+        catalog.backup(&backup).unwrap();
+        assert!(catalog.backup(&backup).is_err());
+        catalog.delete_album(a).unwrap();
+        catalog.create_album("After", &[]).unwrap();
+        catalog.restore(&backup).unwrap();
+        assert_eq!(catalog.albums().unwrap(), [(a, "Before".into())]);
+        std::fs::write(dir.join("invalid"), "not a database").unwrap();
+        assert!(catalog.restore(&dir.join("invalid")).is_err());
+        assert_eq!(catalog.albums().unwrap(), [(a, "Before".into())]);
+        drop(catalog);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -583,6 +583,16 @@ impl Library {
         cx.notify();
     }
 
+    pub fn reload_catalog(&mut self, cx: &mut Context<Self>) {
+        self.albums = self.catalog.albums().unwrap_or_default();
+        if let Some(id) = self.active_album {
+            self.open_album(id, cx);
+        } else if let Some(dir) = self.dir.clone() {
+            self.open_folder(dir, None, cx);
+        }
+        cx.notify();
+    }
+
     pub fn create_album(&mut self, name: &str, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
         match self.catalog.create_album(name, &paths) {
             Ok(_) => self.albums = self.catalog.albums().unwrap_or_default(),

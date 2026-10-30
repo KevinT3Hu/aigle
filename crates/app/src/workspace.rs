@@ -236,6 +236,109 @@ impl Workspace {
         self.open_source(SourceRef::File(path), None, initial, window, cx);
     }
 
+    fn backup_catalog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_history(true, cx);
+        self.library.update(cx, |l, cx| l.flush(cx));
+        let catalog = self.library.read(cx).catalog.clone();
+        let base = crate::data_dir().unwrap_or_default();
+        let prompt = cx.prompt_for_new_path(&base, Some("aigle-catalog-backup.sqlite3"));
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(path))) = prompt.await else {
+                return;
+            };
+            let shown = path.display().to_string();
+            let result = cx
+                .background_spawn(async move { catalog.backup(&path) })
+                .await;
+            let _ = this.update_in(cx, |_, window, cx| {
+                window.push_notification(
+                    match result {
+                        Ok(()) => format!("{}: {shown}", crate::i18n::t("action.BackupCatalog")),
+                        Err(e) => e.to_string(),
+                    },
+                    cx,
+                );
+            });
+        })
+        .detach();
+    }
+
+    fn choose_restore_catalog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let prompt = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(crate::i18n::t("action.RestoreCatalog").into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = prompt.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let target = this.clone();
+            let _ = this.update_in(cx, |_, window, cx| {
+                window.open_alert_dialog(cx, move |alert, _, _| {
+                    let this = target.clone();
+                    let path = path.clone();
+                    alert
+                        .title(crate::i18n::t("action.RestoreCatalog"))
+                        .description(crate::i18n::t("catalog.restore_hint"))
+                        .confirm()
+                        .on_ok(move |_, window, cx| {
+                            let _ = this
+                                .update(cx, |w, cx| w.restore_catalog(path.clone(), window, cx));
+                            true
+                        })
+                });
+            });
+        })
+        .detach();
+    }
+
+    fn restore_catalog(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.survey = None;
+        self.close_photo(cx);
+        self.library.update(cx, |l, cx| l.flush(cx));
+        let catalog = self.library.read(cx).catalog.clone();
+        let rollback = crate::data_dir().unwrap_or_default().join(format!(
+            "catalog-before-restore-{}.sqlite3",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    catalog.backup(&rollback)?;
+                    catalog.restore(&path)?;
+                    Ok::<_, aigle_library::CatalogError>(rollback)
+                })
+                .await;
+            let _ = this.update_in(cx, |w, window, cx| {
+                match result {
+                    Ok(rollback) => {
+                        w.mode = Mode::Library;
+                        w.library.update(cx, |l, cx| l.reload_catalog(cx));
+                        window.push_notification(
+                            format!(
+                                "{}: {}",
+                                crate::i18n::t("catalog.rollback"),
+                                rollback.display()
+                            ),
+                            cx,
+                        );
+                    }
+                    Err(e) => window.push_notification(e.to_string(), cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn create_album(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let paths = self
             .library
@@ -1595,6 +1698,16 @@ impl Workspace {
                         )
                         .separator()
                         .menu_with_icon(
+                            crate::i18n::t("action.BackupCatalog"),
+                            crate::ui::Glyph::Save.icon(),
+                            Box::new(BackupCatalog),
+                        )
+                        .menu_with_icon(
+                            crate::i18n::t("action.RestoreCatalog"),
+                            crate::ui::Glyph::Reset.icon(),
+                            Box::new(RestoreCatalog),
+                        )
+                        .menu_with_icon(
                             crate::i18n::t("action.Quit"),
                             crate::ui::Glyph::Close.icon(),
                             Box::new(Quit),
@@ -2105,6 +2218,12 @@ impl Render for Workspace {
             .key_context(CONTEXT)
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .on_action(cx.listener(|w, _: &BackupCatalog, window, cx| w.backup_catalog(window, cx)))
+            .on_action(
+                cx.listener(|w, _: &RestoreCatalog, window, cx| {
+                    w.choose_restore_catalog(window, cx)
+                }),
+            )
             .on_action(cx.listener(|w, _: &Open, window, cx| w.prompt_open(false, window, cx)))
             .on_action(cx.listener(|w, _: &OpenFolder, window, cx| w.prompt_open(true, window, cx)))
             .on_action(

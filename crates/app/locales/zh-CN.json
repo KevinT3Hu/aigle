@@ -755,5 +755,9 @@
   "param.hdr.diffuse_white": "漫反射白亮度",
   "param.hdr.peak": "峰值亮度",
   "param.hdr.shoulder": "高光柔化",
-  "export.paired_sdr": "同时导出 SDR sRGB JPEG（-sdr.jpg）"
+  "export.paired_sdr": "同时导出 SDR sRGB JPEG（-sdr.jpg）",
+  "action.BackupCatalog": "备份目录数据库…",
+  "action.RestoreCatalog": "恢复目录数据库…",
+  "catalog.restore_hint": "使用此备份替换历史、虚拟副本和相册？将先保存当前目录数据库的恢复副本。原片和 XMP 边车文件不会更改，也不包含在目录数据库备份中。",
+  "catalog.rollback": "目录数据库已恢复；原数据库保存在"
 }

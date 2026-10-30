@@ -6,6 +6,8 @@ actions!(
     [
         Open,
         OpenFolder,
+        BackupCatalog,
+        RestoreCatalog,
         Import,
         ToggleSubfolders,
         ShowGrid,

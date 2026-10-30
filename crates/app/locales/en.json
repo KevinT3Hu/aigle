@@ -755,5 +755,9 @@
   "param.hdr.diffuse_white": "Diffuse white",
   "param.hdr.peak": "Peak brightness",
   "param.hdr.shoulder": "Highlight roll-off",
-  "export.paired_sdr": "Also export an SDR sRGB JPEG (-sdr.jpg)"
+  "export.paired_sdr": "Also export an SDR sRGB JPEG (-sdr.jpg)",
+  "action.BackupCatalog": "Back up catalog…",
+  "action.RestoreCatalog": "Restore catalog…",
+  "catalog.restore_hint": "Replace catalog history, virtual copies and albums with this backup? A recovery copy of the current catalog is saved first. Originals and XMP sidecars are not changed or included in catalog backups.",
+  "catalog.rollback": "Catalog restored; previous catalog saved at"
 }
