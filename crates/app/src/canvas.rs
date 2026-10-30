@@ -169,6 +169,7 @@ pub struct Canvas {
     /// Soft-proof target used when proofing is turned on.
     proof_target: DisplayProfileId,
     crop_drag: Option<CropDrag>,
+    straighten_line: Option<(Point<Pixels>, Point<Pixels>)>,
     mask_drag: Option<MaskDrag>,
     retouch_drag: Option<RetouchDrag>,
 }
@@ -309,6 +310,7 @@ impl Canvas {
             overlays: Overlays::default(),
             proof_target: DisplayProfileId::Srgb,
             crop_drag: None,
+            straighten_line: None,
             mask_drag: None,
             retouch_drag: None,
         }
@@ -770,6 +772,31 @@ impl Canvas {
         }
     }
 
+    fn end_straighten(&mut self, cx: &mut Context<Self>) {
+        let Some((a, b)) = self.straighten_line.take() else {
+            return;
+        };
+        self.photo.update(cx, |p, cx| {
+            if !p.straighten_pick {
+                return;
+            }
+            p.straighten_pick = false;
+            let (dx, dy) = (f32::from(b.x - a.x), f32::from(b.y - a.y));
+            if dx.hypot(dy) >= 8.0 {
+                let angle = crop::straighten_angle(p.head().geometry.scalars.angle, dx, dy);
+                p.command(
+                    crate::i18n::t("crop.straighten"),
+                    vec![ParamOp::set("geometry.angle", angle)],
+                    None,
+                    Interaction::Final,
+                    cx,
+                );
+            }
+            cx.notify();
+        });
+        cx.notify();
+    }
+
     fn end_crop(&mut self, cx: &mut Context<Self>) {
         if let Some(CropDrag {
             gesture,
@@ -1137,6 +1164,14 @@ impl Canvas {
     // Events
 
     fn on_down(&mut self, e: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.photo.read(cx).straighten_pick {
+            if e.button == MouseButton::Left {
+                self.straighten_line = Some((e.position, e.position));
+                cx.notify();
+            }
+            return;
+        }
+
         if self.photo.read(cx).color_mask_pick.is_some() {
             if e.button == MouseButton::Left {
                 if let Some((at, radius)) = self.image_point(e.position, cx) {
@@ -1199,6 +1234,18 @@ impl Canvas {
             cx.notify();
         }
         let left = e.pressed_button == Some(MouseButton::Left);
+        if let Some((a, _)) = self.straighten_line {
+            if !self.photo.read(cx).straighten_pick {
+                self.straighten_line = None;
+            } else if left {
+                self.straighten_line = Some((a, e.position));
+            } else {
+                self.end_straighten(cx);
+            }
+            cx.notify();
+            return;
+        }
+
         if self.crop_drag.is_some() {
             if left {
                 self.move_crop(e.position, cx);
@@ -1262,6 +1309,7 @@ impl Canvas {
     }
 
     fn end_drag(&mut self, cx: &mut Context<Self>) {
+        self.end_straighten(cx);
         self.end_crop(cx);
         self.end_mask(cx);
         self.end_retouch(cx);
@@ -1290,7 +1338,7 @@ impl Canvas {
 
     fn cursor(&self, cx: &App) -> Option<CursorStyle> {
         let p = self.photo.read(cx);
-        if p.wb_pick || p.color_mask_pick.is_some() {
+        if p.wb_pick || p.color_mask_pick.is_some() || p.straighten_pick {
             return Some(CursorStyle::Crosshair);
         }
         if self.split_drag || self.near_divider {
@@ -1351,7 +1399,9 @@ impl Canvas {
             Compare::Before => Some(crate::i18n::t("canvas.before")),
             Compare::Split => Some(crate::i18n::t("canvas.split")),
         };
-        let hint = if photo.color_mask_pick.is_some() {
+        let hint = if photo.straighten_pick {
+            Some(crate::i18n::t("crop.straighten_hint"))
+        } else if photo.color_mask_pick.is_some() {
             Some(crate::i18n::t("masks.range.pick"))
         } else if photo.wb_pick {
             Some(crate::keymap::hint("canvas.hint.wb_pick", cx))
@@ -1568,6 +1618,7 @@ impl Render for Canvas {
         let before_frame = self.before_frame.clone();
         let split = (self.compare == Compare::Split).then_some(self.split_at);
         let cursor = self.cursor(cx);
+        let straighten_line = self.straighten_line.filter(|_| photo.straighten_pick);
         let native = self
             .native
             .as_ref()
@@ -1747,6 +1798,14 @@ impl Render for Canvas {
                                 selected,
                             } => tools::paint_eyes(window, space, &m, eyes, *selected),
                             ToolOverlay::None => {}
+                        }
+                        if let Some((a, b)) = straighten_line {
+                            let mut path = PathBuilder::stroke(px(2.0));
+                            path.move_to(a);
+                            path.line_to(b);
+                            if let Ok(path) = path.build() {
+                                window.paint_path(path, gpui::rgba(0xffd45aff));
+                            }
                         }
                         if let Some(c) = ring {
                             paint_ring(window, c);

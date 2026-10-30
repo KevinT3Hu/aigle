@@ -331,7 +331,7 @@ impl Workspace {
                     let path = path.clone();
                     alert
                         .title(crate::i18n::t("action.RestoreCatalog"))
-                        .description(crate::i18n::t("catalog.restore_hint"))
+                        .description(crate::i18n::t("recovery.catalog_restore_hint"))
                         .confirm()
                         .on_ok(move |_, window, cx| {
                             let _ = this
@@ -372,7 +372,7 @@ impl Workspace {
                         window.push_notification(
                             format!(
                                 "{}: {}",
-                                crate::i18n::t("catalog.rollback"),
+                                crate::i18n::t("recovery.catalog_rollback"),
                                 rollback.display()
                             ),
                             cx,
@@ -772,7 +772,10 @@ impl Workspace {
             return;
         }
         self.with_photo(cx, |p, cx| {
-            if p.color_mask_pick.take().is_some() || p.pending_mask.take().is_some() {
+            if std::mem::take(&mut p.straighten_pick)
+                || p.color_mask_pick.take().is_some()
+                || p.pending_mask.take().is_some()
+            {
                 cx.notify();
             } else if p.wb_pick {
                 p.set_wb_pick(false, cx);

@@ -272,7 +272,7 @@
   "panel.raw.ca_note": "自动色差校正仅用于拜耳传感器。",
   "panel.raw.hot_pixels": "坏点去除",
   "crop.crop": "裁剪",
-  "crop.straighten": "拉直",
+  "crop.straighten": "按参考线校正水平",
   "crop.aspect_ratio": "长宽比",
   "crop.aspect.free": "自由",
   "crop.aspect.original": "原始",
@@ -758,9 +758,10 @@
   "export.paired_sdr": "同时导出 SDR sRGB JPEG（-sdr.jpg）",
   "action.BackupCatalog": "备份目录数据库…",
   "action.RestoreCatalog": "恢复目录数据库…",
-  "catalog.restore_hint": "使用此备份替换历史、虚拟副本和相册？将先保存当前目录数据库的恢复副本。原片和 XMP 边车文件不会更改，也不包含在目录数据库备份中。",
-  "catalog.rollback": "目录数据库已恢复；原数据库保存在",
+  "recovery.catalog_restore_hint": "使用此备份替换历史、虚拟副本和相册？将先保存当前目录数据库的恢复副本。原片和 XMP 边车文件不会更改，也不包含在目录数据库备份中。",
+  "recovery.catalog_rollback": "目录数据库已恢复；原数据库保存在",
   "action.LocateOriginal": "定位丢失的原片…",
   "recovery.available": "所选原片存在。请在相册中选择丢失的照片。",
-  "recovery.located": "原片已重新关联"
+  "recovery.located": "原片已重新关联",
+  "crop.straighten_hint": "沿地平线或垂直边缘拖动以校正倾斜。按 Esc 取消。"
 }

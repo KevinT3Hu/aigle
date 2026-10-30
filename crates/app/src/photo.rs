@@ -49,6 +49,7 @@ pub struct Photo {
     pub load: LoadState,
     /// The white balance picker is active on the canvas.
     pub wb_pick: bool,
+    pub straighten_pick: bool,
     pub color_mask_pick: Option<MaskId>,
     pick_job: Option<Task<()>>,
     next_gesture: u64,
@@ -216,6 +217,7 @@ impl Photo {
             snapshots,
             load: LoadState::Loading,
             wb_pick: false,
+            straighten_pick: false,
             color_mask_pick: None,
             pick_job: None,
             next_gesture: 1,
@@ -272,6 +274,8 @@ impl Photo {
         if self.tool != tool {
             self.tool = tool;
             self.wb_pick = false;
+            self.straighten_pick = false;
+            self.color_mask_pick = None;
             if tool != Tool::Mask {
                 self.mask_overlay = false;
             }

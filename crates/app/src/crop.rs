@@ -439,3 +439,31 @@ mod tests {
         assert_eq!(mirror(mirror(d1)), d1);
     }
 }
+
+/// Rotate a drawn reference line onto its nearest horizontal or vertical axis.
+pub fn straighten_angle(current: f32, dx: f32, dy: f32) -> f32 {
+    if !dx.is_finite() || !dy.is_finite() || dx.hypot(dy) < 1e-6 {
+        return current;
+    }
+    let angle = dy.atan2(dx).to_degrees();
+    let deviation = angle - (angle / 90.0).round() * 90.0;
+    (current - deviation).clamp(-45.0, 45.0)
+}
+
+#[cfg(test)]
+mod straighten_tests {
+    use super::*;
+    #[test]
+    fn horizontal_and_vertical_lines_work_in_both_drag_directions() {
+        for (dx, dy, expected) in [
+            (10.0, 1.0, -5.710593),
+            (-10.0, -1.0, -5.710593),
+            (1.0, 10.0, 5.710593),
+            (-1.0, -10.0, 5.710593),
+        ] {
+            assert!((straighten_angle(0.0, dx, dy) - expected).abs() < 0.0001);
+        }
+        assert_eq!(straighten_angle(10.0, 0.0, 0.0), 10.0);
+        assert!((straighten_angle(10.0, 10.0, 1.0) - 4.289407).abs() < 0.0001);
+    }
+}

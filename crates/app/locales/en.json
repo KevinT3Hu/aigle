@@ -272,7 +272,7 @@
   "panel.raw.ca_note": "Auto CA correction applies to Bayer sensors only.",
   "panel.raw.hot_pixels": "Hot Pixel Removal",
   "crop.crop": "Crop",
-  "crop.straighten": "Straighten",
+  "crop.straighten": "Straighten by line",
   "crop.aspect_ratio": "Aspect Ratio",
   "crop.aspect.free": "Free",
   "crop.aspect.original": "Original",
@@ -758,9 +758,10 @@
   "export.paired_sdr": "Also export an SDR sRGB JPEG (-sdr.jpg)",
   "action.BackupCatalog": "Back up catalog…",
   "action.RestoreCatalog": "Restore catalog…",
-  "catalog.restore_hint": "Replace catalog history, virtual copies and albums with this backup? A recovery copy of the current catalog is saved first. Originals and XMP sidecars are not changed or included in catalog backups.",
-  "catalog.rollback": "Catalog restored; previous catalog saved at",
+  "recovery.catalog_restore_hint": "Replace catalog history, virtual copies and albums with this backup? A recovery copy of the current catalog is saved first. Originals and XMP sidecars are not changed or included in catalog backups.",
+  "recovery.catalog_rollback": "Catalog restored; previous catalog saved at",
   "action.LocateOriginal": "Locate missing original…",
   "recovery.available": "The selected original is already available. Select a missing photo in an album.",
-  "recovery.located": "Original relinked"
+  "recovery.located": "Original relinked",
+  "crop.straighten_hint": "Drag along a horizon or vertical edge to straighten. Escape cancels."
 }

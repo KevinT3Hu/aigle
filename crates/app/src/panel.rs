@@ -1288,6 +1288,26 @@ impl Panel {
             .child(
                 h_flex()
                     .gap_1()
+                    .child(
+                        crate::ui::icon_button(
+                            "crop-straighten",
+                            crate::ui::Glyph::Gradient,
+                            crate::i18n::t("crop.straighten_hint"),
+                        )
+                        .small()
+                        .selected(self.photo.read(cx).straighten_pick)
+                        .on_click({
+                            let photo = self.photo.clone();
+                            move |_, _, cx| {
+                                photo.update(cx, |p, cx| {
+                                    p.straighten_pick = !p.straighten_pick;
+                                    p.wb_pick = false;
+                                    p.color_mask_pick = None;
+                                    cx.notify();
+                                })
+                            }
+                        }),
+                    )
                     .child(button(
                         "crop-reset",
                         crate::i18n::t("common.reset"),
