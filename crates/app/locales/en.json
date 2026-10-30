@@ -759,5 +759,8 @@
   "action.BackupCatalog": "Back up catalog…",
   "action.RestoreCatalog": "Restore catalog…",
   "catalog.restore_hint": "Replace catalog history, virtual copies and albums with this backup? A recovery copy of the current catalog is saved first. Originals and XMP sidecars are not changed or included in catalog backups.",
-  "catalog.rollback": "Catalog restored; previous catalog saved at"
+  "catalog.rollback": "Catalog restored; previous catalog saved at",
+  "action.LocateOriginal": "Locate missing original…",
+  "recovery.available": "The selected original is already available. Select a missing photo in an album.",
+  "recovery.located": "Original relinked"
 }

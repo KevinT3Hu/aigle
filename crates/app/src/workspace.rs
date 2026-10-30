@@ -236,6 +236,53 @@ impl Workspace {
         self.open_source(SourceRef::File(path), None, initial, window, cx);
     }
 
+    fn locate_original(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(from) = self
+            .library
+            .read(cx)
+            .selected_item()
+            .map(|it| it.entry.path.clone())
+        else {
+            return;
+        };
+        if from.exists() {
+            window.push_notification(crate::i18n::t("recovery.available"), cx);
+            return;
+        }
+        let prompt = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(crate::i18n::t("action.LocateOriginal").into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = prompt.await else {
+                return;
+            };
+            let Some(to) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update_in(cx, |w, window, cx| {
+                w.release_open(std::slice::from_ref(&from), window, cx);
+                w.survey = None;
+                let result = w
+                    .library
+                    .update(cx, |l, cx| l.relink_original(&from, &to, cx));
+                window.push_notification(
+                    match result {
+                        Ok(()) => {
+                            format!("{}: {}", crate::i18n::t("recovery.located"), to.display())
+                        }
+                        Err(e) => e,
+                    },
+                    cx,
+                );
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn backup_catalog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.save_history(true, cx);
         self.library.update(cx, |l, cx| l.flush(cx));
@@ -1698,6 +1745,11 @@ impl Workspace {
                         )
                         .separator()
                         .menu_with_icon(
+                            crate::i18n::t("action.LocateOriginal"),
+                            crate::ui::Glyph::Folder.icon(),
+                            Box::new(LocateOriginal),
+                        )
+                        .menu_with_icon(
                             crate::i18n::t("action.BackupCatalog"),
                             crate::ui::Glyph::Save.icon(),
                             Box::new(BackupCatalog),
@@ -2218,6 +2270,9 @@ impl Render for Workspace {
             .key_context(CONTEXT)
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .on_action(
+                cx.listener(|w, _: &LocateOriginal, window, cx| w.locate_original(window, cx)),
+            )
             .on_action(cx.listener(|w, _: &BackupCatalog, window, cx| w.backup_catalog(window, cx)))
             .on_action(
                 cx.listener(|w, _: &RestoreCatalog, window, cx| {

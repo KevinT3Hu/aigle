@@ -459,10 +459,29 @@ impl Catalog {
     /// The photo at `from` is now at `to`: its virtual copies and history follow it. Rows
     /// left for an earlier photo at `to` are dropped.
     pub fn move_photo(&self, from: &Path, to: &Path) -> Result<(), CatalogError> {
+        self.move_photo_impl(from, to, true)
+    }
+
+    pub fn relink_photo(&self, from: &Path, to: &Path) -> Result<(), CatalogError> {
+        self.move_photo_impl(from, to, false)
+    }
+
+    fn move_photo_impl(&self, from: &Path, to: &Path, replace: bool) -> Result<(), CatalogError> {
         let (fd, ff) = split(from);
         let (td, tf) = split(to);
         let mut db = self.db.lock();
         let tx = db.transaction()?;
+        if !replace {
+            let occupied: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM history WHERE dir = ?1 AND file = ?2 UNION ALL SELECT 1 FROM copies WHERE dir = ?1 AND file = ?2)",
+                params![td, tf], |r| r.get(0))?;
+            if occupied {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "The replacement already has catalog edits or virtual copies",
+                )
+                .into());
+            }
+        }
         tx.execute(
             "DELETE FROM history WHERE dir = ?1 AND file = ?2",
             params![td, tf],
@@ -585,6 +604,18 @@ mod tests {
             edits: Some(p),
             ..PhotoMeta::default()
         }
+    }
+
+    #[test]
+    fn relink_refuses_to_replace_existing_virtual_copies() {
+        let catalog = Catalog::in_memory();
+        let from = PathBuf::from("/old/a.nef");
+        let to = PathBuf::from("/new/a.nef");
+        let id = catalog
+            .create_copy(&to, "Keep", &PhotoMeta::default())
+            .unwrap();
+        assert!(catalog.relink_photo(&from, &to).is_err());
+        assert!(catalog.copy_meta(id).unwrap().is_some());
     }
 
     #[test]

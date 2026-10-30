@@ -759,5 +759,8 @@
   "action.BackupCatalog": "备份目录数据库…",
   "action.RestoreCatalog": "恢复目录数据库…",
   "catalog.restore_hint": "使用此备份替换历史、虚拟副本和相册？将先保存当前目录数据库的恢复副本。原片和 XMP 边车文件不会更改，也不包含在目录数据库备份中。",
-  "catalog.rollback": "目录数据库已恢复；原数据库保存在"
+  "catalog.rollback": "目录数据库已恢复；原数据库保存在",
+  "action.LocateOriginal": "定位丢失的原片…",
+  "recovery.available": "所选原片存在。请在相册中选择丢失的照片。",
+  "recovery.located": "原片已重新关联"
 }

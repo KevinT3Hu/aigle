@@ -583,6 +583,44 @@ impl Library {
         cx.notify();
     }
 
+    pub fn relink_original(
+        &mut self,
+        from: &Path,
+        to: &Path,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        self.flush(cx);
+        let created = aigle_library::relink_sidecars(from, to).map_err(|e| e.to_string())?;
+        if let Err(error) = self.catalog.relink_photo(from, to) {
+            for path in created {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(error.to_string());
+        }
+        self.store.forget(from);
+        self.store.forget(to);
+        let metadata = std::fs::metadata(to).map_err(|e| e.to_string())?;
+        let meta = self.read_meta(to);
+        self.jobs.retain(|job| job.key.path != from);
+        for item in self.all.iter_mut().filter(|it| it.entry.path == from) {
+            item.failed_for = None;
+            item.unreadable = None;
+            if item.copy.is_none() {
+                item.meta = Some(meta.clone());
+                item.shown = meta.edits.clone().map(Arc::new);
+                item.thumb_of = None;
+            }
+            item.entry.path = to.to_path_buf();
+            item.entry.name = file_name(to);
+            item.entry.bytes = metadata.len();
+            item.entry.modified = metadata.modified().ok();
+        }
+        self.reindex(cx);
+        self.refresh.retain(|key, _| key.path != from);
+        cx.notify();
+        Ok(())
+    }
+
     pub fn reload_catalog(&mut self, cx: &mut Context<Self>) {
         self.albums = self.catalog.albums().unwrap_or_default();
         if let Some(id) = self.active_album {

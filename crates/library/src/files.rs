@@ -78,6 +78,51 @@ fn sidecar_target(from: &Path, to: &Path, sidecar: &Path, others: &[PathBuf]) ->
     }
 }
 
+/// Copy surviving sidecars when an original was moved outside Aigle. The old copies are
+/// retained for recovery; no destination sidecar is overwritten. Return newly created paths.
+pub fn relink_sidecars(from: &Path, to: &Path) -> Result<Vec<PathBuf>, FileError> {
+    if from.try_exists().map_err(io_err(from))? {
+        return Err(FileError::Exists(from.to_path_buf()));
+    }
+    if !to.is_file() || !is_photo_path(to) {
+        return Err(io_err(to)(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Choose an existing photo file",
+        )));
+    }
+    let sidecars = sidecars_of(from);
+    let targets: Vec<_> = sidecars
+        .iter()
+        .map(|s| sidecar_target(from, to, s, &sidecars))
+        .collect();
+    for target in &targets {
+        if std::fs::symlink_metadata(target).is_ok() {
+            return Err(FileError::Exists(target.clone()));
+        }
+    }
+    let mut created = Vec::new();
+    for (source, target) in sidecars.iter().zip(targets) {
+        let result = (|| -> io::Result<()> {
+            let mut source = std::fs::File::open(source)?;
+            let mut destination = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)?;
+            created.push(target.clone());
+            io::copy(&mut source, &mut destination)?;
+            destination.sync_all()?;
+            Ok(())
+        })();
+        if let Err(e) = result {
+            for path in created {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(io_err(&target)(e));
+        }
+    }
+    Ok(created)
+}
+
 /// Rename without replacing an existing file; across file systems, copy then delete.
 fn move_file(from: &Path, to: &Path) -> Result<(), FileError> {
     use rustix::fs::{CWD, RenameFlags, renameat_with};
@@ -189,6 +234,23 @@ pub fn trash_photo(photo: &Path) -> Result<(), FileError> {
 mod tests {
     use super::*;
     use crate::sidecar::tests::temp_dir;
+
+    #[test]
+    fn relink_keeps_old_sidecars_and_never_overwrites_new_sidecars() {
+        let dir = temp_dir("relink");
+        let old = dir.join("old.nef");
+        let new = dir.join("new.nef");
+        std::fs::write(&new, b"raw").unwrap();
+        std::fs::write(dir.join("old.xmp"), b"old edits").unwrap();
+        let created = relink_sidecars(&old, &new).unwrap();
+        assert_eq!(created, [dir.join("new.xmp")]);
+        assert_eq!(std::fs::read(dir.join("old.xmp")).unwrap(), b"old edits");
+        std::fs::write(dir.join("new.xmp"), b"new edits").unwrap();
+        assert!(relink_sidecars(&old, &new).is_err());
+        assert_eq!(std::fs::read(dir.join("new.xmp")).unwrap(), b"new edits");
+        assert!(relink_sidecars(&new, &old).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn names(dir: &Path) -> Vec<String> {
         let mut v: Vec<String> = std::fs::read_dir(dir)
