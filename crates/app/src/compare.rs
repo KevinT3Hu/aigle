@@ -119,7 +119,7 @@ impl Render for Survey {
                     .child(div().flex_1().truncate().text_xs().child(c.name.clone()))
                     .child(
                         crate::ui::icon_button(
-                            gpui::SharedString::from(format!("reject-{}", c.name)),
+                            gpui::SharedString::from(format!("reject-{:?}", c.key)),
                             crate::ui::Glyph::Disable,
                             crate::i18n::t(if rating < 0 {
                                 "compare.unreject"
@@ -137,7 +137,7 @@ impl Render for Survey {
                     )
                     .child(
                         crate::ui::icon_button(
-                            gpui::SharedString::from(format!("remove-{}", c.name)),
+                            gpui::SharedString::from(format!("remove-{:?}", c.key)),
                             crate::ui::Glyph::Close,
                             crate::i18n::t("compare.remove"),
                         )

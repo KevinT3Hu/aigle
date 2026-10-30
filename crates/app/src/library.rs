@@ -654,7 +654,13 @@ impl Library {
 
     pub fn delete_album(&mut self, id: i64, cx: &mut Context<Self>) {
         match self.catalog.delete_album(id) {
-            Ok(()) => self.albums = self.catalog.albums().unwrap_or_default(),
+            Ok(()) => {
+                self.albums = self.catalog.albums().unwrap_or_default();
+                if self.active_album == Some(id) {
+                    self.active_album = None;
+                    self.open_listing(None, Some(Vec::new()), None, cx);
+                }
+            }
             Err(e) => cx.emit(LibraryEvent::Notice(e.to_string())),
         }
         cx.notify();

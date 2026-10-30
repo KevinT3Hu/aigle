@@ -125,8 +125,8 @@ impl MaskPanel {
                         .step(step)
                         .default_value(default)
                 });
-                let sub = cx.subscribe_in(&state, window, move |p, _, ev, _, cx| {
-                    p.on_slider(i, ev, cx)
+                let sub = cx.subscribe_in(&state, window, move |p, _, ev, window, cx| {
+                    p.on_slider(i, ev, window, cx)
                 });
                 Knob {
                     key,
@@ -225,7 +225,13 @@ impl MaskPanel {
         cx.notify();
     }
 
-    fn on_slider(&mut self, i: usize, ev: &SliderEvent, cx: &mut Context<Self>) {
+    fn on_slider(
+        &mut self,
+        i: usize,
+        ev: &SliderEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let (v, hint) = match ev {
             SliderEvent::Change(v) => (v.start(), Interaction::Continuous),
             SliderEvent::Release(v) => (v.start(), Interaction::Final),
@@ -294,6 +300,7 @@ impl MaskPanel {
         });
         if hint == Interaction::Final {
             self.gesture = None;
+            self.sync(window, cx);
         }
     }
 

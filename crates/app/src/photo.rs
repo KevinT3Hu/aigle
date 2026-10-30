@@ -661,6 +661,7 @@ impl Photo {
         let on = on && self.info().is_some();
         if on {
             self.color_mask_pick = None;
+            self.straighten_pick = false;
         }
         if self.wb_pick != on {
             self.wb_pick = on;

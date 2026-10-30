@@ -138,6 +138,7 @@ pub struct Canvas {
     view: View,
     state: ViewState,
     navigation_sent: Option<Navigation>,
+    navigation_suppressed: bool,
     frame: Option<Shown>,
     _frames: Task<anyhow::Result<()>>,
     /// Whole-image backing remains visible outside the last detailed viewport.
@@ -287,6 +288,7 @@ impl Canvas {
             view,
             state: ViewState::default(),
             navigation_sent: None,
+            navigation_suppressed: false,
             frame: None,
             _frames: frames,
             overview,
@@ -422,7 +424,9 @@ impl Canvas {
         };
         if self.navigation_sent != Some(navigation) {
             self.navigation_sent = Some(navigation);
-            cx.emit(navigation);
+            if !self.navigation_suppressed {
+                cx.emit(navigation);
+            }
         }
         // Keep this target independent of pan/zoom: a gesture must never cancel
         // the full-image backing that supplies newly exposed pixels.
@@ -495,7 +499,9 @@ impl Canvas {
         };
         // Suppress feedback from subscribers linking multiple canvases.
         self.navigation_sent = Some(nav);
+        self.navigation_suppressed = true;
         self.update_viewport(Interaction::Continuous, false, cx);
+        self.navigation_suppressed = false;
         cx.notify();
     }
 
@@ -1173,11 +1179,11 @@ impl Canvas {
         }
 
         if self.photo.read(cx).color_mask_pick.is_some() {
-            if e.button == MouseButton::Left {
-                if let Some((at, radius)) = self.image_point(e.position, cx) {
-                    self.photo
-                        .update(cx, |p, cx| p.pick_mask_color(at, radius, cx));
-                }
+            if e.button == MouseButton::Left
+                && let Some((at, radius)) = self.image_point(e.position, cx)
+            {
+                self.photo
+                    .update(cx, |p, cx| p.pick_mask_color(at, radius, cx));
             }
             return;
         }

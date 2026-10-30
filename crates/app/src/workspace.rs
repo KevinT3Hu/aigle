@@ -347,6 +347,7 @@ impl Workspace {
     fn restore_catalog(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         self.survey = None;
         self.close_photo(cx);
+        self.mode = Mode::Library;
         self.library.update(cx, |l, cx| l.flush(cx));
         let catalog = self.library.read(cx).catalog.clone();
         let rollback = crate::data_dir().unwrap_or_default().join(format!(

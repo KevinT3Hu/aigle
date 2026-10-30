@@ -5,7 +5,7 @@ use gpui::{
     Context, EventEmitter, IntoElement, ParentElement, Render, Styled, Task, Window, div,
     prelude::*, px,
 };
-use gpui_component::{ActiveTheme, Sizable, h_flex, v_flex};
+use gpui_component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -313,6 +313,7 @@ impl Render for ExportQueue {
                             crate::i18n::t("queue.clear"),
                         )
                         .small()
+                        .disabled(self.task.is_some())
                         .on_click(cx.listener(|q, _, _, cx| {
                             // Keep stable indices while a task is running.
                             if q.task.is_none() {
