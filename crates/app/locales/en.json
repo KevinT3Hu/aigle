@@ -750,5 +750,10 @@
   "album.remove": "Remove selected originals",
   "album.delete": "Delete album (keep photos)",
   "library.duplicates": "Exact duplicate groups",
-  "library.duplicates.hint": "Show files with identical content in the current folder or album. Click again to show all or cancel scanning."
+  "library.duplicates.hint": "Show files with identical content in the current folder or album. Click again to show all or cancel scanning.",
+  "section.hdr": "HDR mastering (HDR output only)",
+  "param.hdr.diffuse_white": "Diffuse white",
+  "param.hdr.peak": "Peak brightness",
+  "param.hdr.shoulder": "Highlight roll-off",
+  "export.paired_sdr": "Also export an SDR sRGB JPEG (-sdr.jpg)"
 }

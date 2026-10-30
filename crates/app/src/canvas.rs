@@ -1373,8 +1373,13 @@ impl Canvas {
             before,
             hint,
             self.hdr_status.clone(),
-            self.hdr_open()
-                .then(|| "Histogram: HDR PQ, 0–1000 nits".to_string()),
+            self.hdr_open().then(|| {
+                format!(
+                    "HDR · {} / {} nit",
+                    photo.head().hdr.diffuse_white,
+                    photo.head().hdr.peak
+                )
+            }),
         ]
         .into_iter()
         .flatten()

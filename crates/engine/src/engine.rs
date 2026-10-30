@@ -683,6 +683,9 @@ mod hdr_pipeline_tests {
         });
         let source = SourceRef::File(input);
         let mut p = EditParams::default();
+        p.hdr.diffuse_white = 120.0;
+        p.hdr.peak = 600.0;
+        p.hdr.shoulder = 40.0;
         p.detail.sharpen.amount = 0.0;
         p.detail.noise.chroma = 0.0;
         let src = e.source_for(&source, &p, None).unwrap();

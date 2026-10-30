@@ -134,6 +134,10 @@ pub const TOOL_GROUPS: &[GroupDef] = &[
                 ],
             ),
             section(
+                "section.hdr",
+                &["hdr.diffuse_white", "hdr.peak", "hdr.shoulder"],
+            ),
+            section(
                 "section.presence",
                 &[
                     "presence.texture",

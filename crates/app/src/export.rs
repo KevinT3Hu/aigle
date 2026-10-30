@@ -165,6 +165,7 @@ impl WatermarkSettings {
 pub struct Settings {
     pub format: Format,
     pub quality: u8,
+    pub paired_sdr: bool,
     /// `None`: full size.
     pub long_edge: Option<u32>,
     pub output: DisplayProfileId,
@@ -186,6 +187,7 @@ impl Default for Settings {
         Settings {
             format: Format::Jpeg,
             quality: 90,
+            paired_sdr: false,
             long_edge: None,
             output: DisplayProfileId::Srgb,
             template: DEFAULT_TEMPLATE.into(),
@@ -912,6 +914,19 @@ impl Render for ExportDialog {
                     } else {
                         "export.hdr_float_note"
                     })))
+                    .child(
+                        crate::ui::labeled_button(
+                            "paired-sdr",
+                            crate::ui::Glyph::Copy,
+                            crate::i18n::t("export.paired_sdr"),
+                        )
+                        .small()
+                        .selected(s.paired_sdr)
+                        .on_click(cx.listener(|d, _, _, cx| {
+                            d.settings.paired_sdr = !d.settings.paired_sdr;
+                            cx.notify();
+                        })),
+                    )
                 })
                 .when(
                     !hdr && s.output == DisplayProfileId::ProPhoto && s.format != Format::Tiff16,

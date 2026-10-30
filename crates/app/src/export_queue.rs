@@ -133,15 +133,33 @@ impl ExportQueue {
         settings: Settings,
         cx: &mut Context<Self>,
     ) {
-        self.stored
-            .entries
-            .extend(jobs.into_iter().map(|(request, path)| Entry {
+        let mut reserved: std::collections::HashSet<_> =
+            self.stored.entries.iter().map(|e| e.path.clone()).collect();
+        reserved.extend(jobs.iter().map(|(_, path)| path.clone()));
+        for (request, path) in jobs {
+            if settings.paired_sdr && settings.format.encoded(settings.quality).is_hdr() {
+                let mut sdr = settings.clone();
+                sdr.paired_sdr = false;
+                sdr.format = export::Format::Jpeg;
+                sdr.output = aigle_engine_api::DisplayProfileId::Srgb;
+                let sdr_path = paired_path(&path, &reserved);
+                reserved.insert(sdr_path.clone());
+                self.stored.entries.push(Entry {
+                    request: request.clone(),
+                    settings: sdr,
+                    path: sdr_path,
+                    state: State::Pending,
+                    error: None,
+                });
+            }
+            self.stored.entries.push(Entry {
                 request,
                 settings: settings.clone(),
                 path,
                 state: State::Pending,
                 error: None,
-            }));
+            });
+        }
         self.paused = false;
         if self.persist() {
             self.start_next(cx);
@@ -213,6 +231,20 @@ impl ExportQueue {
         cx.notify();
     }
 }
+fn paired_path(path: &std::path::Path, reserved: &std::collections::HashSet<PathBuf>) -> PathBuf {
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    (1..)
+        .map(|n| {
+            path.with_file_name(if n == 1 {
+                format!("{stem}-sdr.jpg")
+            } else {
+                format!("{stem}-sdr-{n}.jpg")
+            })
+        })
+        .find(|p| !reserved.contains(p) && !p.exists())
+        .expect("unbounded file names")
+}
+
 fn queue_path() -> Option<PathBuf> {
     crate::data_dir().map(|p| p.join("export-queue.json"))
 }
@@ -376,6 +408,18 @@ impl Render for ExportQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn paired_sdr_names_avoid_reserved_outputs() {
+        let path = PathBuf::from("/nonexistent/edited.png");
+        let reserved = [PathBuf::from("/nonexistent/edited-sdr.jpg")]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            paired_path(&path, &reserved),
+            PathBuf::from("/nonexistent/edited-sdr-2.jpg")
+        );
+    }
+
     #[test]
     fn restart_recovers_incomplete_jobs_without_touching_completed_jobs() {
         let mut stored = Stored {

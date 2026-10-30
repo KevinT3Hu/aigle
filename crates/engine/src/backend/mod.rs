@@ -261,6 +261,7 @@ pub struct C1Job<'a> {
 
 /// One output tile over a C1 tile whose top-left grid pixel is (`gx0`, `gy0`).
 pub struct OutJob<'a> {
+    pub hdr: aigle_core::params::HdrParams,
     pub c1: &'a C1Data,
     /// The C1 tile carries D-tier local fields.
     pub fields: bool,
@@ -880,6 +881,7 @@ fn self_test(g: &gpu::Gpu) -> Result<(), String> {
         .remove(0);
         let a = out_cpu(
             &OutJob {
+                hdr: Default::default(),
                 c1: &host,
                 fields: true,
                 full: false,
@@ -895,6 +897,7 @@ fn self_test(g: &gpu::Gpu) -> Result<(), String> {
         let host_full = C1Data::Host(cpu_full.clone());
         let a_full = out_cpu(
             &OutJob {
+                hdr: Default::default(),
                 c1: &host_full,
                 fields: true,
                 full: true,
@@ -913,6 +916,7 @@ fn self_test(g: &gpu::Gpu) -> Result<(), String> {
             ("full precision", &host_full, true),
         ] {
             let job = OutJob {
+                hdr: Default::default(),
                 c1,
                 fields: true,
                 full,
@@ -1395,7 +1399,7 @@ fn out_cpu(job: &OutJob<'_>, c1: &HostC1, lut: &[f32]) -> Vec<u8> {
                 let d = (!c1.d.is_empty()).then(|| c1.d.get(i));
                 let (gx, gy) = (job.gx0 + x as u32, job.gy0 + y as u32);
                 if hdr {
-                    let (rgb, flags) = crate::hdr::output(v, d, gx, gy, &job.params, lut);
+                    let (rgb, flags) = crate::hdr::output(v, d, gx, gy, &job.params, lut, &job.hdr);
                     for (c, value) in rgb.into_iter().chain([1.0 + flags as f32]).enumerate() {
                         o[c * 4..c * 4 + 4].copy_from_slice(&value.to_le_bytes());
                     }
@@ -1896,6 +1900,7 @@ mod tests {
         aux.extend_from_slice(&self_test_look());
         let lut = Aux::new(aux);
         let out = |c1| OutJob {
+            hdr: Default::default(),
             c1,
             fields: false,
             full: false,

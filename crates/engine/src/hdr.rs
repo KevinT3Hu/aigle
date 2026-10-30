@@ -53,6 +53,7 @@ pub fn output(
     gy: u32,
     p: &OutParams,
     aux: &[f32],
+    hdr: &aigle_core::params::HdrParams,
 ) -> (Rgb, u32) {
     let d = fields.unwrap_or([0.0; local::D_FIELDS]);
     let s = p.d1_sliders;
@@ -63,8 +64,17 @@ pub fn output(
     let n = px.into_iter().fold(0.0f32, f32::max);
     let mut mapped = 0.18 * (n / 0.18).powf(2.0f32.powf(contrast / 100.0));
     mapped *= 2.0f32.powf(whites / 100.0);
+    let white = hdr.diffuse_white.clamp(80.0, 400.0);
+    let peak = hdr.peak.clamp(400.0, PEAK_NITS);
+    let headroom = peak / white;
     if mapped > 1.0 {
-        mapped = 1.0 + (HEADROOM - 1.0) * (1.0 - (-(mapped - 1.0) / (HEADROOM - 1.0)).exp());
+        let soft = if headroom > 1.0 {
+            1.0 + (headroom - 1.0) * (1.0 - (-(mapped - 1.0) / (headroom - 1.0)).exp())
+        } else {
+            1.0
+        };
+        let blend = hdr.shoulder.clamp(0.0, 100.0) / 100.0;
+        mapped = mapped.min(headroom) * (1.0 - blend) + soft * blend;
     }
     let v = px.map(|v| {
         let y = if n > 1e-10 { v * (mapped / n) } else { 0.0 };
@@ -83,7 +93,7 @@ pub fn output(
     } else {
         aigle_kernels::d3::d3(v, gx, gy, &p.d3, p.seed)
     };
-    let mut v = v.map(|v| v * scale);
+    let mut v = v.map(|v| v * scale * (white / REFERENCE_WHITE));
     let mut flags = 0;
     if p.e1.proof != 0 {
         let o = p.e1.proof as usize;
@@ -101,7 +111,7 @@ pub fn output(
     } else {
         v = math::mat3_mul(&p.e1.matrix, v);
     }
-    if v.into_iter().any(|v| v >= HEADROOM) {
+    if v.into_iter().any(|v| v >= peak / REFERENCE_WHITE) {
         flags |= aigle_kernels::tiles::CLIP_HIGH;
     }
     if v.into_iter().any(|v| v <= 0.0) {
@@ -110,7 +120,7 @@ pub fn output(
     (
         v.map(|v| {
             if v.is_finite() {
-                v.clamp(0.0, HEADROOM)
+                v.clamp(0.0, peak / REFERENCE_WHITE)
             } else {
                 0.0
             }

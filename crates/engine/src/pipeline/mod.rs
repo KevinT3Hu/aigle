@@ -1422,6 +1422,7 @@ fn compute_tiles(
         .map(|(&i, c1)| {
             let (tx, ty) = tiles[i];
             OutJob {
+                hdr: prep.edit.hdr.clone(),
                 c1: &c1.data,
                 fields: prep.uses.d_fields,
                 full: ctx.full_at(level),

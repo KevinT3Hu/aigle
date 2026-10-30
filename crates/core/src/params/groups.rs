@@ -545,3 +545,15 @@ nested_group! {
         grain: Grain,
     }
 }
+
+// HDR mastering controls. Internal transport stays linear Rec.2020, 1 = 203 nits.
+scalar_group! {
+    pub struct HdrParams {
+        /// Absolute luminance of scene white in HDR output.
+        diffuse_white: 203.0, [80.0, 400.0], step 1.0, "nit";
+        /// Mastering ceiling within the native preview's negotiated 1000-nit range.
+        peak: 1000.0, [400.0, 1000.0], step 1.0, "nit";
+        /// Blend from hard clipping (0) to a smooth highlight shoulder (100).
+        shoulder: 100.0, [0.0, 100.0], step 1.0, "%";
+    }
+}

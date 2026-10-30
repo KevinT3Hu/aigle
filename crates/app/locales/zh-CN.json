@@ -750,5 +750,10 @@
   "album.remove": "移除所选原片",
   "album.delete": "删除相册（保留照片）",
   "library.duplicates": "完全重复组",
-  "library.duplicates.hint": "显示当前文件夹或相册中内容完全相同的文件。再次点击以显示全部或取消扫描。"
+  "library.duplicates.hint": "显示当前文件夹或相册中内容完全相同的文件。再次点击以显示全部或取消扫描。",
+  "section.hdr": "HDR 母版（仅影响 HDR 输出）",
+  "param.hdr.diffuse_white": "漫反射白亮度",
+  "param.hdr.peak": "峰值亮度",
+  "param.hdr.shoulder": "高光柔化",
+  "export.paired_sdr": "同时导出 SDR sRGB JPEG（-sdr.jpg）"
 }

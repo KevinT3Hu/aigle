@@ -75,6 +75,7 @@ pub fn out_key(p: &EditParams, display: &DisplayProfileId) -> CacheKey {
     let l = &p.light;
     let mut k = KeyBuilder::new("C2-D-E1");
     k.json(&p.process_version)
+        .json(&p.hdr)
         // D1
         .f32(l.contrast)
         .f32(l.whites)

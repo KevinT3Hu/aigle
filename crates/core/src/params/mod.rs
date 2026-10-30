@@ -70,6 +70,7 @@ pub struct EditParams {
     pub profile: InputProfile,
     pub wb: WhiteBalance,
     pub light: LightParams,
+    pub hdr: HdrParams,
     pub presence: PresenceParams,
     pub curve: ToneCurve,
     pub mixer: ColorMixer,
@@ -98,6 +99,7 @@ impl Scalars for EditParams {
         self.grading.visit(&join(prefix, "grading"), f);
         self.detail.visit(&join(prefix, "detail"), f);
         self.effects.visit(&join(prefix, "effects"), f);
+        self.hdr.visit(&join(prefix, "hdr"), f);
     }
 
     fn visit_mut(&mut self, prefix: &str, f: &mut dyn FnMut(&str, &FieldSpec, &mut f32)) {
@@ -114,6 +116,7 @@ impl Scalars for EditParams {
         self.grading.visit_mut(&join(prefix, "grading"), f);
         self.detail.visit_mut(&join(prefix, "detail"), f);
         self.effects.visit_mut(&join(prefix, "effects"), f);
+        self.hdr.visit_mut(&join(prefix, "hdr"), f);
     }
 }
 

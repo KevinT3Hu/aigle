@@ -24,6 +24,7 @@ pub enum Group {
     Profile,
     WhiteBalance,
     Light,
+    Hdr,
     Presence,
     Curve,
     Mixer,
@@ -40,10 +41,11 @@ pub enum Group {
 }
 
 impl Group {
-    pub const ALL: [Group; 16] = [
+    pub const ALL: [Group; 17] = [
         Group::Profile,
         Group::WhiteBalance,
         Group::Light,
+        Group::Hdr,
         Group::Presence,
         Group::Curve,
         Group::Mixer,
@@ -65,6 +67,7 @@ impl Group {
             Group::Profile => "profile",
             Group::WhiteBalance => "wb",
             Group::Light => "light",
+            Group::Hdr => "hdr",
             Group::Presence => "presence",
             Group::Curve => "curve",
             Group::Mixer => "mixer",
@@ -86,6 +89,7 @@ impl Group {
             Group::Profile => "copy_settings.group.profile",
             Group::WhiteBalance => "copy_settings.group.white_balance",
             Group::Light => "copy_settings.group.light",
+            Group::Hdr => "section.hdr",
             Group::Presence => "copy_settings.group.presence",
             Group::Curve => "copy_settings.group.curve",
             Group::Mixer => "copy_settings.group.mixer",
