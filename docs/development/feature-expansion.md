@@ -34,6 +34,10 @@ entire requested scope is finished**.
   and adds/removes originals. Albums span folders and include those originals'
   virtual copies. Deleting an album keeps the files. Membership follows moves made
   through Aigle. Missing members stay listed so they can be relinked.
+- Related-shot stacks: select photos and use View → Stack selected photos. The
+  library bar's grid icon collapses/expands stacks; the current sort order determines
+  each representative. Unstack removes the chosen groups from the current listing.
+  Stack IDs persist in XMP sidecars and virtual copies. Grouping is manual.
 - Exact duplicates: the copy icon in the library bar scans the current listing in
   the background, grouping by size before streaming BLAKE3 fingerprints. Virtual
   copies are deduplicated by path before scanning. Click again to cancel or show
@@ -64,7 +68,6 @@ entire requested scope is finished**.
 
 These remain part of the requested scope, not completed features:
 
-- Related-shot stacks.
 - Subject, sky and background inference masks; editable combined-mask components.
 - Bulk moved-folder relinking, persistent offline image previews, and a backup/
   restore workflow that includes originals and XMP sidecars.

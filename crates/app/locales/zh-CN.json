@@ -767,5 +767,9 @@
   "action.PickPhoto": "选中所选照片",
   "action.RejectPhoto": "拒绝所选照片",
   "action.ClearFlag": "清除选中/拒绝标记",
-  "library.filter.picked": "已选中"
+  "library.filter.picked": "已选中",
+  "action.StackPhotos": "将所选照片分组",
+  "action.UnstackPhotos": "解散此列表中选中的分组",
+  "action.ToggleStacks": "折叠/展开相关照片分组",
+  "library.stacks.wait": "请等待图库元数据加载完成后再更改分组。"
 }

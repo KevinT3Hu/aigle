@@ -15,6 +15,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 const RATING: &str = "Xmp.xmp.Rating";
 const LABEL: &str = "Xmp.xmp.Label";
 const FLAG: &str = "Xmp.aigle.Flag";
+const STACK: &str = "Xmp.aigle.Stack";
 const SCHEMA: &str = "Xmp.aigle.SchemaVersion";
 const EDITS: &str = "Xmp.aigle.Edits";
 const SNAPSHOTS: &str = "Xmp.aigle.Snapshots";
@@ -188,6 +189,7 @@ pub struct PhotoMeta {
     /// −1 (rejected) to 5; 0 is unrated.
     pub rating: i8,
     pub flag: Flag,
+    pub stack: Option<String>,
     /// `xmp:Label`, e.g. `Red`.
     pub label: Option<String>,
     /// `None` for an unedited photo.
@@ -452,14 +454,14 @@ impl Store {
         if let Some(packet) = &packet {
             let at = source.as_deref().unwrap_or(photo);
             let mut keys = vec![
-                RATING, LABEL, SCHEMA, EDITS, SNAPSHOTS, KEYWORDS, HIERARCHY, FLAG,
+                RATING, LABEL, SCHEMA, EDITS, SNAPSHOTS, KEYWORDS, HIERARCHY, FLAG, STACK,
             ];
             keys.extend(Field::ALL.iter().map(|f| f.property().0));
             let mut v = aigle_exiv2_sys::get(packet, &keys).map_err(xmp_err(at))?;
             if v.len() != keys.len() {
                 return Err(xmp_err(at)(aigle_exiv2_sys::Error("short result".into())));
             }
-            let fields = v.split_off(8);
+            let fields = v.split_off(9);
             let [
                 rating,
                 label,
@@ -469,13 +471,15 @@ impl Store {
                 keywords,
                 hierarchy,
                 flag,
-            ] = <[Option<String>; 8]>::try_from(v).expect("length checked");
+                stack,
+            ] = <[Option<String>; 9]>::try_from(v).expect("length checked");
             loaded.meta.rating = rating.as_deref().and_then(parse_rating).unwrap_or(0);
             loaded.meta.flag = match flag.as_deref() {
                 Some("picked") => Flag::Picked,
                 Some("rejected") => Flag::Rejected,
                 _ => Flag::None,
             };
+            loaded.meta.stack = stack.filter(|s| !s.is_empty());
             loaded.meta.label = label.filter(|l| !l.trim().is_empty());
             loaded.meta.keywords = keywords
                 .map(|k| clean_keywords(k.split(ITEM_SEP)))
@@ -573,6 +577,7 @@ impl Store {
         let mut changes: Vec<(&str, Kind, Option<&str>)> = vec![
             (RATING, Kind::Text, rating.as_deref()),
             (LABEL, Kind::Text, label),
+            (STACK, Kind::Text, meta.stack.as_deref()),
             (
                 FLAG,
                 Kind::Text,
@@ -755,6 +760,7 @@ pub(crate) mod tests {
 
         let meta = PhotoMeta {
             flag: Flag::Rejected,
+            stack: Some("burst-1".into()),
             rating: 4,
             label: Some("Red".into()),
             edits: Some(edited()),

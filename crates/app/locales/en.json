@@ -767,5 +767,9 @@
   "action.PickPhoto": "Pick selected photos",
   "action.RejectPhoto": "Reject selected photos",
   "action.ClearFlag": "Clear pick/reject flags",
-  "library.filter.picked": "Picked"
+  "library.filter.picked": "Picked",
+  "action.StackPhotos": "Stack selected photos",
+  "action.UnstackPhotos": "Unstack selected groups in this listing",
+  "action.ToggleStacks": "Collapse / expand related-shot stacks",
+  "library.stacks.wait": "Wait for library metadata to finish loading before changing stacks."
 }

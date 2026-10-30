@@ -205,6 +205,9 @@ fn cell(
                         ),
                     )
                 })
+                .when(item.meta.as_ref().is_some_and(|m| m.stack.is_some()), |d| {
+                    d.child(crate::ui::Glyph::Grid.icon().size(px(12.0)))
+                })
                 .when(item.edited(), |d| {
                     d.child(
                         div()

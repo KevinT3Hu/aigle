@@ -67,6 +67,7 @@ const SCHEMA: i64 = 3;
 struct StoredMeta {
     rating: i8,
     flag: crate::sidecar::Flag,
+    stack: Option<String>,
     label: Option<String>,
     edits: Option<EditParams>,
     snapshots: Vec<Snapshot>,
@@ -80,6 +81,7 @@ impl From<&PhotoMeta> for StoredMeta {
         StoredMeta {
             rating: m.rating,
             flag: m.flag,
+            stack: m.stack.clone(),
             label: m.label.clone(),
             edits: m.edits.clone(),
             snapshots: m.snapshots.clone(),
@@ -95,6 +97,7 @@ impl From<StoredMeta> for PhotoMeta {
         PhotoMeta {
             rating: m.rating,
             flag: m.flag,
+            stack: m.stack.clone(),
             label: m.label,
             edits: m.edits,
             snapshots: m.snapshots,
@@ -604,6 +607,8 @@ mod tests {
         p.light.exposure = exposure;
         PhotoMeta {
             rating,
+            flag: crate::sidecar::Flag::Picked,
+            stack: Some("test-stack".into()),
             edits: Some(p),
             ..PhotoMeta::default()
         }

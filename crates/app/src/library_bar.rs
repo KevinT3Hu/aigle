@@ -396,6 +396,19 @@ pub fn filter_bar(lib: &Entity<Library>, cx: &App) -> impl IntoElement + use<> {
             })
     };
 
+    let stacks = {
+        let lib = lib.clone();
+        let collapsed = lib.read(cx).collapse_stacks;
+        crate::ui::icon_button(
+            "collapse-stacks",
+            crate::ui::Glyph::Grid,
+            t("action.ToggleStacks"),
+        )
+        .xsmall()
+        .ghost()
+        .selected(collapsed)
+        .on_click(move |_, _, cx| lib.update(cx, |l, cx| l.toggle_stacks(cx)))
+    };
     let duplicates = {
         let lib = lib.clone();
         let active = lib.read(cx).show_duplicates || lib.read(cx).scanning_duplicates;
@@ -489,6 +502,7 @@ pub fn filter_bar(lib: &Entity<Library>, cx: &App) -> impl IntoElement + use<> {
         )
         .child(albums)
         .child(duplicates)
+        .child(stacks)
         .child(save)
         .child(load)
         .child(remove)

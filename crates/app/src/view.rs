@@ -281,6 +281,18 @@ impl Facets {
     }
 }
 
+/// Keep the first matching photo of each stack in the user's current sort order.
+pub fn collapse_stacks(items: &[Item], view: &mut Vec<usize>) {
+    let mut seen = std::collections::HashSet::new();
+    view.retain(|&s| {
+        items[s]
+            .meta
+            .as_ref()
+            .and_then(|m| m.stack.as_ref())
+            .is_none_or(|stack| seen.insert(stack.clone()))
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,6 +317,23 @@ mod tests {
         let mut v: Vec<&Item> = items.iter().filter(|it| filter.matches(it)).collect();
         v.sort_by(|a, b| sort.cmp(a, b));
         v.into_iter().map(Item::name).collect()
+    }
+
+    #[test]
+    fn stack_representative_follows_sort_and_keeps_unstacked_photos() {
+        let mut items = vec![
+            item("a.nef", 0, None, None),
+            item("b.nef", 0, None, None),
+            item("c.nef", 0, None, None),
+        ];
+        items[0].meta.as_mut().unwrap().stack = Some("burst".into());
+        items[1].meta.as_mut().unwrap().stack = Some("burst".into());
+        let mut view = vec![2, 0, 1];
+        collapse_stacks(&items, &mut view);
+        assert_eq!(view, [2, 0]);
+        let mut view = vec![1, 0, 2];
+        collapse_stacks(&items, &mut view);
+        assert_eq!(view, [1, 2]);
     }
 
     #[test]

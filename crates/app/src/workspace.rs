@@ -1995,6 +1995,21 @@ impl Workspace {
                         )
                         .separator()
                         .menu_with_icon(
+                            crate::i18n::t("action.StackPhotos"),
+                            crate::ui::Glyph::Grid.icon(),
+                            Box::new(StackPhotos),
+                        )
+                        .menu_with_icon(
+                            crate::i18n::t("action.UnstackPhotos"),
+                            crate::ui::Glyph::Clear.icon(),
+                            Box::new(UnstackPhotos),
+                        )
+                        .menu_with_icon(
+                            crate::i18n::t("action.ToggleStacks"),
+                            crate::ui::Glyph::Grid.icon(),
+                            Box::new(ToggleStacks),
+                        )
+                        .menu_with_icon(
                             crate::i18n::t("action.PickPhoto"),
                             crate::ui::Glyph::Check.icon(),
                             Box::new(PickPhoto),
@@ -2351,6 +2366,15 @@ impl Render for Workspace {
                 cx.listener(|w, _: &RejectPhoto, _, cx| w.flag(aigle_library::Flag::Rejected, cx)),
             )
             .on_action(cx.listener(|w, _: &ClearFlag, _, cx| w.flag(aigle_library::Flag::None, cx)))
+            .on_action(cx.listener(|w, _: &StackPhotos, _, cx| {
+                w.library.update(cx, |l, cx| l.stack_selection(false, cx))
+            }))
+            .on_action(cx.listener(|w, _: &UnstackPhotos, _, cx| {
+                w.library.update(cx, |l, cx| l.stack_selection(true, cx))
+            }))
+            .on_action(cx.listener(|w, _: &ToggleStacks, _, cx| {
+                w.library.update(cx, |l, cx| l.toggle_stacks(cx))
+            }))
             .on_action(cx.listener(|w, _: &Rate0, _, cx| w.rate(0, cx)))
             .on_action(cx.listener(|w, _: &Rate1, _, cx| w.rate(1, cx)))
             .on_action(cx.listener(|w, _: &Rate2, _, cx| w.rate(2, cx)))

@@ -208,6 +208,7 @@ pub struct Library {
     pub search_input: Entity<InputState>,
     pub albums: Vec<(i64, String)>,
     pub active_album: Option<i64>,
+    pub collapse_stacks: bool,
     pub show_duplicates: bool,
     pub scanning_duplicates: bool,
     duplicate_paths: HashSet<PathBuf>,
@@ -324,6 +325,7 @@ impl Library {
             search_input,
             albums: catalog.albums().unwrap_or_default(),
             active_album: None,
+            collapse_stacks: false,
             show_duplicates: false,
             scanning_duplicates: false,
             duplicate_paths: HashSet::new(),
@@ -522,6 +524,9 @@ impl Library {
             })
             .collect();
         view.sort_by(|&a, &b| self.sort.cmp(&self.all[a], &self.all[b]));
+        if self.collapse_stacks {
+            crate::view::collapse_stacks(&self.all, &mut view);
+        }
         self.positions = view
             .iter()
             .enumerate()
@@ -805,7 +810,7 @@ impl Library {
                     for (path, r, facts) in read {
                         l.loaded(path, r, facts, &mut warnings);
                     }
-                    if crate::view::depends_on_loading(&l.filter, &l.sort) {
+                    if l.collapse_stacks || crate::view::depends_on_loading(&l.filter, &l.sort) {
                         l.rebuild_view(cx);
                     } else {
                         l.request_thumbs(cx);
@@ -1240,6 +1245,61 @@ impl Library {
 
     pub fn item_by_key(&self, key: &PhotoKey) -> Option<&Item> {
         self.slots.get(key).map(|&s| &self.all[s])
+    }
+
+    pub fn toggle_stacks(&mut self, cx: &mut Context<Self>) {
+        self.collapse_stacks = !self.collapse_stacks;
+        self.rebuild_view(cx);
+    }
+
+    pub fn stack_selection(&mut self, remove: bool, cx: &mut Context<Self>) {
+        if self.loading {
+            cx.emit(LibraryEvent::Notice(crate::i18n::t("library.stacks.wait")));
+            return;
+        }
+        let selected: Vec<_> = self
+            .selection()
+            .into_iter()
+            .filter_map(|i| self.view.get(i).copied())
+            .collect();
+        if !remove && selected.len() < 2 {
+            return;
+        }
+        for &s in &selected {
+            self.meta_at(s);
+        }
+        let existing: HashSet<_> = selected
+            .iter()
+            .filter_map(|&s| self.all[s].meta.as_ref()?.stack.clone())
+            .collect();
+        let slots = if remove {
+            (0..self.all.len())
+                .filter(|&s| {
+                    self.all[s]
+                        .meta
+                        .as_ref()
+                        .and_then(|m| m.stack.as_ref())
+                        .is_some_and(|id| existing.contains(id))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            selected
+        };
+        let id = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        for s in slots {
+            if let Some(meta) = &mut self.all[s].meta {
+                meta.stack = (!remove).then(|| id.clone());
+                self.save(s, cx);
+            }
+        }
+        self.rebuild_view(cx);
     }
 
     pub fn set_flag_by_key(
