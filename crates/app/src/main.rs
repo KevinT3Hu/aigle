@@ -34,6 +34,7 @@ mod presets;
 mod rename;
 mod resources;
 mod retouch_panel;
+mod saved_searches;
 mod scopes;
 mod tools;
 mod ui;

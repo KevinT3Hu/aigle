@@ -719,5 +719,9 @@
   "masks.combine.subtract": "减去蒙版范围",
   "masks.combine.intersect": "与蒙版范围相交",
   "masks.combine.hint": "选择蒙版以复制其当前范围。调整仍独立，透明度不会复制。可通过撤销还原。",
-  "masks.combine.limit": "此蒙版组合嵌套过深。请撤销或组合更简单的蒙版。"
+  "masks.combine.limit": "此蒙版组合嵌套过深。请撤销或组合更简单的蒙版。",
+  "library.search.placeholder": "搜索照片…",
+  "library.search.saved": "已保存的搜索",
+  "library.search.save": "保存当前筛选和排序；同名搜索将被替换",
+  "library.search.delete": "删除已保存的搜索"
 }

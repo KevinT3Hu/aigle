@@ -22,7 +22,8 @@ use aigle_library::{
     WriteReport, Writer,
 };
 use futures::StreamExt;
-use gpui::{AppContext, Context, EventEmitter, RenderImage, Task};
+use gpui::{AppContext, Context, Entity, EventEmitter, RenderImage, Task, Window};
+use gpui_component::input::{InputEvent, InputState};
 
 use crate::canvas::render_image;
 use crate::view::{Facets, Filter, Sort};
@@ -193,6 +194,8 @@ pub struct Library {
     slots: HashMap<PhotoKey, usize>,
     /// View position by key.
     positions: HashMap<PhotoKey, usize>,
+    pub search_input: Entity<InputState>,
+    pub saved_searches: Vec<crate::saved_searches::SavedSearch>,
     filter: Filter,
     sort: Sort,
     /// The primary selection: the photo develop opens and single-photo commands act on.
@@ -247,7 +250,27 @@ fn save_recursive(on: bool) {
 }
 
 impl Library {
-    pub fn new(engine: Engine, catalog: Arc<Catalog>, cx: &mut Context<Self>) -> Library {
+    pub fn new(
+        engine: Engine,
+        catalog: Arc<Catalog>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Library {
+        let search_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(crate::i18n::t("library.search.placeholder"))
+        });
+        cx.subscribe(&search_input, |l, input, ev, cx| {
+            if matches!(ev, InputEvent::Change) {
+                let mut filter = l.filter.clone();
+                filter.query = input.read(cx).value().to_string();
+                l.set_filter(filter, cx);
+            }
+        })
+        .detach();
+        let saved_searches = crate::saved_searches::load().unwrap_or_else(|e| {
+            tracing::warn!("saved searches: {e}");
+            Vec::new()
+        });
         let store = Arc::new(Store::new());
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<WriteReport>();
         let writer = Writer::new(store.clone(), SAVE_DELAY, move |r| {
@@ -280,6 +303,8 @@ impl Library {
             view: Vec::new(),
             slots: HashMap::new(),
             positions: HashMap::new(),
+            search_input,
+            saved_searches,
             filter: Filter::default(),
             sort: Sort::default(),
             selected: None,
@@ -364,6 +389,66 @@ impl Library {
             self.filter = filter;
             self.rebuild_view(cx);
         }
+    }
+
+    pub fn save_search(&mut self, cx: &mut Context<Self>) {
+        let name = if self.filter.query.trim().is_empty() {
+            format!(
+                "{} {}",
+                crate::i18n::t("library.search.saved"),
+                self.saved_searches.len() + 1
+            )
+        } else {
+            self.filter.query.trim().to_string()
+        };
+        let search = crate::saved_searches::SavedSearch {
+            name: name.clone(),
+            filter: self.filter.clone(),
+            sort: self.sort,
+        };
+        let mut saved = self.saved_searches.clone();
+        if let Some(existing) = saved.iter_mut().find(|s| s.name == name) {
+            *existing = search;
+        } else {
+            saved.push(search);
+        }
+        self.store_searches(saved, cx);
+    }
+
+    pub fn remove_search(&mut self, index: usize, cx: &mut Context<Self>) {
+        let mut saved = self.saved_searches.clone();
+        if index < saved.len() {
+            saved.remove(index);
+            self.store_searches(saved, cx);
+        }
+    }
+
+    fn store_searches(
+        &mut self,
+        saved: Vec<crate::saved_searches::SavedSearch>,
+        cx: &mut Context<Self>,
+    ) {
+        match crate::saved_searches::save(&saved) {
+            Ok(()) => {
+                self.saved_searches = saved;
+                cx.notify();
+            }
+            Err(e) => cx.emit(LibraryEvent::Notice(e.to_string())),
+        }
+    }
+
+    pub fn apply_search(
+        &mut self,
+        filter: Filter,
+        sort: Sort,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.search_input
+            .update(cx, |s, cx| s.set_value(filter.query.clone(), window, cx));
+        self.sort = sort;
+        self.set_filter(filter, cx);
+        self.rebuild_view(cx);
     }
 
     pub fn set_sort(&mut self, sort: Sort, cx: &mut Context<Self>) {

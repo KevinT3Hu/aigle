@@ -4,6 +4,7 @@
 
 use gpui::{App, Entity, IntoElement, ParentElement, SharedString, Styled, div, prelude::*, px};
 use gpui_component::button::ButtonVariants;
+use gpui_component::input::Input;
 use gpui_component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_component::{ActiveTheme, Selectable, Sizable, h_flex};
 
@@ -315,7 +316,11 @@ pub fn filter_bar(lib: &Entity<Library>, cx: &App) -> impl IntoElement + use<> {
         )
         .xsmall()
         .ghost()
-        .on_click(move |_, _, cx| lib.update(cx, |l, cx| l.set_filter(Filter::default(), cx)))
+        .on_click(move |_, window, cx| {
+            lib.update(cx, |l, cx| {
+                l.apply_search(Filter::default(), l.sort(), window, cx)
+            })
+        })
     };
 
     let subfolders = {
@@ -333,6 +338,63 @@ pub fn filter_bar(lib: &Entity<Library>, cx: &App) -> impl IntoElement + use<> {
         .on_click(move |_, _, cx| lib.update(cx, |l, cx| l.set_recursive(!on, cx)))
     };
 
+    let saved = lib.read(cx).saved_searches.clone();
+    let save = {
+        let lib = lib.clone();
+        crate::ui::icon_button(
+            "search-save",
+            crate::ui::Glyph::Save,
+            t("library.search.save"),
+        )
+        .xsmall()
+        .ghost()
+        .on_click(move |_, _, cx| lib.update(cx, |l, cx| l.save_search(cx)))
+    };
+    let load = {
+        let lib = lib.clone();
+        let saved = saved.clone();
+        crate::ui::icon_button(
+            "search-load",
+            crate::ui::Glyph::Filter,
+            t("library.search.saved"),
+        )
+        .xsmall()
+        .ghost()
+        .dropdown_menu(move |menu, _, _| {
+            saved.iter().fold(menu, |menu, search| {
+                let lib = lib.clone();
+                let search = search.clone();
+                menu.item(
+                    PopupMenuItem::new(search.name.clone()).on_click(move |_, window, cx| {
+                        lib.update(cx, |l, cx| {
+                            l.apply_search(search.filter.clone(), search.sort, window, cx)
+                        });
+                    }),
+                )
+            })
+        })
+    };
+    let remove = {
+        let lib = lib.clone();
+        crate::ui::icon_button(
+            "search-delete",
+            crate::ui::Glyph::Delete,
+            t("library.search.delete"),
+        )
+        .xsmall()
+        .ghost()
+        .dropdown_menu(move |menu, _, _| {
+            saved.iter().enumerate().fold(menu, |menu, (i, search)| {
+                let lib = lib.clone();
+                menu.item(
+                    PopupMenuItem::new(search.name.clone()).on_click(move |_, _, cx| {
+                        lib.update(cx, |l, cx| l.remove_search(i, cx));
+                    }),
+                )
+            })
+        })
+    };
+
     h_flex()
         .w_full()
         .flex_wrap()
@@ -348,6 +410,14 @@ pub fn filter_bar(lib: &Entity<Library>, cx: &App) -> impl IntoElement + use<> {
                 .text_color(cx.theme().muted_foreground)
                 .child(t("library.filter.title")),
         )
+        .child(
+            div()
+                .w(px(200.0))
+                .child(Input::new(&lib.read(cx).search_input).small()),
+        )
+        .child(save)
+        .child(load)
+        .child(remove)
         .child(rating)
         .child(label)
         .child(camera)

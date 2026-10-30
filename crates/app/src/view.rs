@@ -1,11 +1,12 @@
 //! Which photos of the folder the grid and filmstrip show, and in what order.
 
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
 use crate::library::Item;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RatingFilter {
     #[default]
     Any,
@@ -15,7 +16,7 @@ pub enum RatingFilter {
     Rejected,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LabelFilter {
     #[default]
     Any,
@@ -24,8 +25,10 @@ pub enum LabelFilter {
     Is(String),
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Filter {
+    pub query: String,
     pub rating: RatingFilter,
     pub label: LabelFilter,
     pub camera: Option<String>,
@@ -43,6 +46,7 @@ impl Filter {
     /// The filter for another folder: its cameras, lenses, dates and keywords differ.
     pub fn for_new_folder(&self) -> Filter {
         Filter {
+            query: self.query.clone(),
             rating: self.rating.clone(),
             label: self.label.clone(),
             ..Filter::default()
@@ -91,11 +95,43 @@ impl Filter {
             .keyword
             .as_ref()
             .is_none_or(|k| item.meta.as_ref().is_some_and(|m| m.has_keyword(k)));
-        rating_ok && label_ok && camera_ok && lens_ok && date_ok && keyword_ok
+        rating_ok
+            && label_ok
+            && camera_ok
+            && lens_ok
+            && date_ok
+            && keyword_ok
+            && self.search_matches(item)
+    }
+
+    fn search_matches(&self, item: &Item) -> bool {
+        if self.query.trim().is_empty() {
+            return true;
+        }
+        let mut fields = vec![item.name(), item.entry.path.to_string_lossy().into_owned()];
+        if let Some(m) = &item.meta {
+            fields.extend(m.tags());
+            fields.extend(m.iptc.values().cloned());
+            fields.extend(m.label.iter().cloned());
+        }
+        if let Some(f) = &item.facts {
+            fields.extend(f.camera.iter().cloned());
+            fields.extend(f.lens.iter().cloned());
+            fields.extend(f.captured.iter().cloned());
+        }
+        let fields: Vec<_> = fields.into_iter().map(|s| s.to_lowercase()).collect();
+        self.query.split_whitespace().all(|word| {
+            let word = word.to_lowercase();
+            let (exclude, word) = word
+                .strip_prefix('-')
+                .filter(|s| !s.is_empty())
+                .map_or((false, word.as_str()), |s| (true, s));
+            fields.iter().any(|s| s.contains(word)) != exclude
+        })
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SortKey {
     #[default]
     Name,
@@ -122,7 +158,7 @@ impl SortKey {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sort {
     pub key: SortKey,
     pub descending: bool,
@@ -186,7 +222,10 @@ impl Sort {
 
 /// The view must be rebuilt when metadata or facts arrive.
 pub fn depends_on_loading(filter: &Filter, sort: &Sort) -> bool {
-    filter.needs_meta() || filter.needs_facts() || sort.needs_loading()
+    !filter.query.trim().is_empty()
+        || filter.needs_meta()
+        || filter.needs_facts()
+        || sort.needs_loading()
 }
 
 /// Values the filter menus offer, from every photo of the folder.
@@ -264,6 +303,33 @@ mod tests {
         let mut v: Vec<&Item> = items.iter().filter(|it| filter.matches(it)).collect();
         v.sort_by(|a, b| sort.cmp(a, b));
         v.into_iter().map(Item::name).collect()
+    }
+
+    #[test]
+    fn text_search_combines_metadata_and_exclusions() {
+        let photo = item("beach.nef", 3, None, Some("2024-05-06 10:00:00"));
+        for query in ["BEACH sea canon", "2024 -nikon", "beach -portrait"] {
+            assert!(
+                Filter {
+                    query: query.into(),
+                    ..Default::default()
+                }
+                .matches(&photo)
+            );
+        }
+        for query in ["sea -canon", "beach mountain", "2023"] {
+            assert!(
+                !Filter {
+                    query: query.into(),
+                    ..Default::default()
+                }
+                .matches(&photo)
+            );
+        }
+        assert_eq!(
+            serde_json::from_str::<Filter>("{}").unwrap(),
+            Filter::default()
+        );
     }
 
     #[test]

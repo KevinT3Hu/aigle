@@ -138,7 +138,7 @@ impl Workspace {
                 None => (Catalog::in_memory(), Some("no data folder".to_string())),
             };
         let catalog = Arc::new(catalog);
-        let library = cx.new(|cx| Library::new(engine.clone(), catalog, cx));
+        let library = cx.new(|cx| Library::new(engine.clone(), catalog, window, cx));
         let grid = cx.new(|cx| Grid::new(library.clone(), cx));
         let filmstrip = cx.new(|cx| Filmstrip::new(library.clone(), cx));
         let metadata = cx.new(|cx| MetadataPanel::new(library.clone(), false, window, cx));
