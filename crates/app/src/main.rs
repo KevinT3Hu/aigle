@@ -15,6 +15,7 @@ mod crop;
 mod curve;
 mod display;
 mod export;
+mod export_queue;
 mod filmstrip;
 mod grid;
 mod hdr_surface;

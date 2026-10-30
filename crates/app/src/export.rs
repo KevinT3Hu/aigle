@@ -221,7 +221,7 @@ const SIZES: [(Option<u32>, &str); 5] = [
 ];
 
 /// What to export.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Request {
     pub source: SourceRef,
     pub params: Arc<EditParams>,

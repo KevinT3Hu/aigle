@@ -729,5 +729,18 @@
   "compare.link": "同步照片的缩放和平移",
   "compare.remove": "从比较中移除",
   "compare.reject": "拒绝此照片",
-  "compare.unreject": "清除拒绝评分"
+  "compare.unreject": "清除拒绝评分",
+  "queue.title": "导出队列",
+  "queue.pending": "等待中",
+  "queue.running": "正在导出",
+  "queue.done": "已完成",
+  "queue.failed": "失败",
+  "queue.interrupted": "导出被中断：重试前请检查现有输出文件。",
+  "queue.exists": "目标文件已存在；请选择其他名称或删除现有文件后重试。",
+  "queue.pause": "暂停",
+  "queue.resume": "继续",
+  "queue.pause_hint": "当前文件完成后暂停。恢复的队列以暂停状态启动。",
+  "queue.retry": "重试失败文件；继续队列以开始",
+  "queue.clear": "停止导出后清除已完成文件",
+  "queue.cancelled": "已从等待导出中移除"
 }

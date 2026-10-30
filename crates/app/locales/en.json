@@ -729,5 +729,18 @@
   "compare.link": "Synchronize zoom and pan across photos",
   "compare.remove": "Remove from comparison",
   "compare.reject": "Reject this photo",
-  "compare.unreject": "Clear rejected rating"
+  "compare.unreject": "Clear rejected rating",
+  "queue.title": "Export queue",
+  "queue.pending": "Waiting",
+  "queue.running": "Exporting",
+  "queue.done": "Completed",
+  "queue.failed": "Failed",
+  "queue.interrupted": "Interrupted export: inspect any existing output before retrying.",
+  "queue.exists": "Destination already exists; choose another name or remove the existing file before retrying.",
+  "queue.pause": "Pause",
+  "queue.resume": "Resume",
+  "queue.pause_hint": "Pause after the current file. Recovered queues start paused.",
+  "queue.retry": "Retry failed files; resume the queue to start",
+  "queue.clear": "Clear completed files when exports are stopped",
+  "queue.cancelled": "Removed from pending exports"
 }

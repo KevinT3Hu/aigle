@@ -21,7 +21,7 @@ use gpui_component::{ActiveTheme, Selectable, Sizable, TitleBar, WindowExt, h_fl
 use crate::actions::*;
 use crate::canvas::{Canvas, Compare};
 use crate::copy_settings::{Clipboard, CopyDialog, CopyEvent, Group, Purpose};
-use crate::export::{self, ExportDialog, ExportEvent, Request, Settings};
+use crate::export::{ExportDialog, ExportEvent, Request, Settings};
 use crate::filmstrip::Filmstrip;
 use crate::grid::Grid;
 use crate::history::HistoryPanel;
@@ -65,13 +65,6 @@ fn set_display(mode: crate::display::Mode, window: &mut Window, cx: &mut App) {
     }
 }
 
-struct ExportJob {
-    id: u64,
-    total: usize,
-    done: usize,
-    _task: Task<()>,
-}
-
 /// A running import.
 struct ImportJob {
     progress: aigle_library::import::Progress,
@@ -111,8 +104,8 @@ pub struct Workspace {
     clipboard: Option<Clipboard>,
     presets: Entity<PresetsPanel>,
     /// Running export batches.
-    exports: Vec<ExportJob>,
-    next_export: u64,
+    export_queue: Entity<crate::export_queue::ExportQueue>,
+    show_export_queue: bool,
     import_dialog: Option<(Entity<ImportDialog>, Subscription)>,
     import: Option<ImportJob>,
     _subs: Vec<Subscription>,
@@ -168,6 +161,18 @@ impl Workspace {
                 async {}
             }),
         ];
+        let export_queue = cx.new(|_| crate::export_queue::ExportQueue::new(engine.clone()));
+        cx.subscribe_in(&export_queue, window, |w, _, event, window, cx| {
+            match event {
+                crate::export_queue::Event::Closed => w.show_export_queue = false,
+                crate::export_queue::Event::Notice(msg) => {
+                    window.push_notification(msg.clone(), cx)
+                }
+            }
+            cx.notify();
+        })
+        .detach();
+        cx.observe(&export_queue, |_, _, cx| cx.notify()).detach();
         let resources = cx.new(Resources::new);
         let mut ws = Workspace {
             engine,
@@ -191,8 +196,8 @@ impl Workspace {
             copy_groups: Group::defaults(),
             clipboard: None,
             presets,
-            exports: Vec::new(),
-            next_export: 0,
+            export_queue,
+            show_export_queue: false,
             import_dialog: None,
             import: None,
             _subs: subs,
@@ -560,6 +565,11 @@ impl Workspace {
 
     /// Esc: drop a pending mask, else leave the tool, else stop picking.
     fn cancel(&mut self, cx: &mut Context<Self>) {
+        if self.show_export_queue {
+            self.show_export_queue = false;
+            cx.notify();
+            return;
+        }
         if self.survey.take().is_some() {
             cx.notify();
             return;
@@ -1258,78 +1268,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let id = self.next_export;
-        self.next_export += 1;
-        let total = jobs.len();
-        let engine = self.engine.clone();
-        let task = cx.spawn_in(window, async move |this, cx| {
-            let mut last = None;
-            let mut failures = Vec::new();
-            for (request, path) in jobs {
-                let shown = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                match export::run(&engine, &request, &settings, path.clone()).await {
-                    Ok(done) if settings.format.is_raw() => {
-                        let written = cx
-                            .background_spawn(
-                                async move { export::write_dng_sidecar(&request, &path) },
-                            )
-                            .await;
-                        match written {
-                            Ok(()) => last = Some((shown, done)),
-                            Err(e) => failures.push((
-                                shown,
-                                rust_i18n::t!("export.dng_sidecar_failed", e = e).into_owned(),
-                            )),
-                        }
-                    }
-                    Ok(done) => last = Some((shown, done)),
-                    Err(e) => failures.push((shown, e.to_string())),
-                }
-                let ok = this.update(cx, |w, cx| {
-                    if let Some(e) = w.exports.iter_mut().find(|e| e.id == id) {
-                        e.done += 1;
-                    }
-                    cx.notify();
-                });
-                if ok.is_err() {
-                    return;
-                }
-            }
-            let _ = this.update_in(cx, |w, window, cx| {
-                w.exports.retain(|e| e.id != id);
-                let msg = match (total, last, failures.first()) {
-                    (1, Some((shown, done)), None) => rust_i18n::t!(
-                        "export.done_one",
-                        arg0 = done.width,
-                        arg1 = done.height,
-                        shown = shown
-                    )
-                    .into_owned(),
-                    (1, _, Some((shown, e))) => {
-                        rust_i18n::t!("export.failed_one", shown = shown, e = e).into_owned()
-                    }
-                    (_, _, None) => rust_i18n::t!("export.done_many", arg0 = total).into_owned(),
-                    (_, _, Some((shown, e))) => rust_i18n::t!(
-                        "export.failed_many",
-                        arg0 = failures.len(),
-                        shown = shown,
-                        e = e
-                    )
-                    .into_owned(),
-                };
-                window.push_notification(msg, cx);
-                cx.notify();
-            });
-        });
-        self.exports.push(ExportJob {
-            id,
-            total,
-            done: 0,
-            _task: task,
-        });
+        self.export_queue
+            .update(cx, |q, cx| q.enqueue(jobs, settings, cx));
+        self.show_export_queue = true;
+        let _ = window;
         cx.notify();
     }
 
@@ -2002,20 +1944,18 @@ impl Workspace {
                         ),
                 )
             })
-            .when(!self.exports.is_empty(), |row| {
-                let (done, total) = self
-                    .exports
-                    .iter()
-                    .fold((0, 0), |(d, t), e| (d + e.done, t + e.total));
-                row.child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(
-                            rust_i18n::t!("toolbar.exporting", arg0 = done, arg1 = total)
-                                .into_owned(),
-                        ),
+            .child({
+                let (done, total) = self.export_queue.read(cx).counts();
+                crate::ui::labeled_button(
+                    "show-export-queue",
+                    crate::ui::Glyph::Export,
+                    format!("{} {done}/{total}", crate::i18n::t("queue.title")),
                 )
+                .xsmall()
+                .on_click(cx.listener(|w, _, _, cx| {
+                    w.show_export_queue = !w.show_export_queue;
+                    cx.notify();
+                }))
             })
             .child(
                 div()
@@ -2296,7 +2236,10 @@ impl Render for Workspace {
                     .when_some(dialog, |d, e| d.child(e))
                     .when_some(copy_dialog, |d, e| d.child(e))
                     .when_some(rename_dialog, |d, e| d.child(e))
-                    .when_some(import_dialog, |d, e| d.child(e)),
+                    .when_some(import_dialog, |d, e| d.child(e))
+                    .when(self.show_export_queue, |d| {
+                        d.child(self.export_queue.clone())
+                    }),
             )
     }
 }
