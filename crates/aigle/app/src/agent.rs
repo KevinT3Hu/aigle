@@ -286,6 +286,44 @@ pub(crate) fn endpoint_base(endpoint: &str) -> Result<String> {
     Ok(url.as_str().trim_end_matches('/').to_string())
 }
 
+const MAX_TURNS: usize = 100;
+
+#[derive(Clone, Default)]
+pub(crate) struct RunStats {
+    pub(crate) usage: rig::completion::Usage,
+    pub(crate) requests: usize,
+    pub(crate) elapsed_seconds: f64,
+    // A rate is meaningful only when every response reports both counters.
+    cache_complete: bool,
+}
+impl RunStats {
+    fn record(&mut self, usage: rig::completion::Usage) {
+        self.cache_complete = (self.requests == 0 || self.cache_complete)
+            && usage.input_tokens.is_some()
+            && usage.cached_input_tokens.is_some();
+        self.requests += 1;
+        self.usage += usage;
+    }
+    pub(crate) fn cache_rate(&self) -> Option<f64> {
+        let input = self.usage.input_tokens?;
+        (self.cache_complete && input > 0)
+            .then(|| self.usage.cached_input_tokens.unwrap_or(0) as f64 / input as f64 * 100.0)
+    }
+}
+struct UsageObserver(Arc<std::sync::Mutex<RunStats>>);
+impl rig_agent::agent::AgentHook for UsageObserver {
+    async fn on_outcome(
+        &self,
+        _: &rig_agent::agent::HookContext,
+        event: rig_agent::agent::OutcomeEvent<'_>,
+    ) -> rig_agent::agent::OutcomeAction {
+        if let Some(response) = event.completion() {
+            self.0.lock().unwrap().record(response.usage);
+        }
+        rig_agent::agent::OutcomeAction::proceed()
+    }
+}
+
 pub(crate) fn run(
     settings: ActiveModel,
     key: String,
@@ -312,12 +350,15 @@ pub(crate) fn run(
             state: Arc::new(std::sync::Mutex::new(ProfileState { candidate: base.clone(), proposed: false, inspected: false })),
             cancel: cancel.clone(), events,
         };
+        let stats = Arc::new(std::sync::Mutex::new(RunStats::default()));
+        let started = std::time::Instant::now();
         let agent = rig_agent::AgentBuilder::new(provider.chat(settings.model.trim()))
             .preamble(format!("You edit photographs using the full non-destructive editing controls available in the editor. You MUST inspect the supplied image. Use present_profile to propose absolute parameter values relative to the starting profile, then see_preview to inspect the actual rendered result. Refine until it matches the user's intent. Only finish after inspecting a preview of the latest profile. Explain the result briefly. Do not claim to perform pixel generation or unsupported edits. Scalar ranges: {}. Full editing schema: {}. Use dotted paths for fields and array indices. Point curves are arrays of normalized x/y points at curve.point.rgb/red/green/blue. Masks, spots, and red_eye can be replaced with typed arrays, including empty arrays to remove them. Boolean toggles and enum selectors accept their schema types. Coordinates are normalized image coordinates. Use suggest_edits for automatic tone, white balance, lens matching, healing source selection, and scene-linear color sampling for range masks. Reuse existing asset references; do not invent asset identifiers. Preserve process_version. Starting profile: {}", json!(specs), EditParams::json_schema(), serde_json::to_string(&base)?))
             .tool(PresentProfile(tools.clone()))
             .tool(SeePreview(tools.clone()))
             .tool(SuggestEdits(tools.clone()))
             .add_hook(crate::agent_preview::UserImagePreviews)
+            .add_hook(UsageObserver(stats.clone()))
             .build();
         let operation = async {
             tools.check_cancelled()?;
@@ -326,25 +367,73 @@ pub(crate) fn run(
                 rig::message::UserContent::text(conversation),
                 rig::message::UserContent::Image(image),
             ] };
-            let response = agent.prompt(prompt).max_turns(12).tool_concurrency(1).run().await?;
+            let response = agent.prompt(prompt).max_turns(MAX_TURNS).tool_concurrency(1).run().await?;
             Ok((tools.finish()?, response.output().to_string()))
         };
-        tokio::select! {
+        let result = tokio::select! {
             result = operation => result,
             _ = async {
                 while !cancel.load(Ordering::Relaxed) { tokio::time::sleep(Duration::from_millis(50)).await; }
-            } => anyhow::bail!("Cancelled"),
-        }
+            } => Err(anyhow::anyhow!("Cancelled")),
+        };
+        let mut stats = stats.lock().unwrap().clone();
+        stats.elapsed_seconds = started.elapsed().as_secs_f64();
+        let _ = tools.events.unbounded_send(AgentEvent::Stats(stats));
+        result
     })
 }
 
 pub(crate) enum AgentEvent {
     Profile(Profile),
     Preview(Vec<u8>),
+    Stats(RunStats),
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn run_statistics_accumulate_and_measure_cache_hits() {
+        let mut stats = RunStats::default();
+        assert_eq!(stats.cache_rate(), None);
+        stats.record(rig::completion::Usage {
+            input_tokens: Some(100),
+            output_tokens: Some(20),
+            total_tokens: Some(120),
+            cached_input_tokens: Some(80),
+            ..Default::default()
+        });
+        stats.record(rig::completion::Usage {
+            input_tokens: Some(300),
+            output_tokens: Some(30),
+            total_tokens: Some(330),
+            cached_input_tokens: Some(120),
+            reasoning_tokens: Some(10),
+            ..Default::default()
+        });
+        assert_eq!(stats.requests, 2);
+        assert_eq!(stats.usage.total_tokens, Some(450));
+        assert_eq!(stats.usage.output_tokens, Some(50));
+        assert_eq!(stats.cache_rate(), Some(50.0));
+        // Missing cache metrics must not be presented as a zero hit rate.
+        stats.record(rig::completion::Usage {
+            input_tokens: Some(100),
+            ..Default::default()
+        });
+        assert_eq!(stats.cache_rate(), None);
+        assert_eq!(RunStats::default().usage.total_tokens, None);
+    }
+
+    #[test]
+    fn zero_input_usage_does_not_produce_an_invalid_rate() {
+        let mut stats = RunStats::default();
+        stats.record(rig::completion::Usage {
+            input_tokens: Some(0),
+            cached_input_tokens: Some(0),
+            ..Default::default()
+        });
+        assert_eq!(stats.cache_rate(), None);
+    }
+
     #[test]
     fn endpoints_accept_base_and_legacy_full_urls() {
         assert_eq!(

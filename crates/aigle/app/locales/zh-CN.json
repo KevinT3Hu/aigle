@@ -827,5 +827,16 @@
   "settings.fetch_failed": "无法获取模型列表",
   "settings.no_models": "服务商未返回模型，你可以手动输入模型 ID。",
   "settings.model_added": "已添加",
-  "settings.model_placeholder": "模型 ID（手动输入）"
+  "settings.model_placeholder": "模型 ID（手动输入）",
+  "agent.stats.tokens": "总词元",
+  "agent.stats.input": "输入",
+  "agent.stats.output": "输出",
+  "agent.stats.cached": "缓存读取",
+  "agent.stats.cache_rate": "缓存命中率",
+  "agent.stats.cache_write": "缓存写入",
+  "agent.stats.reasoning": "推理",
+  "agent.stats.requests": "请求数",
+  "agent.stats.duration": "耗时",
+  "agent.stats.unavailable": "未提供",
+  "agent.stats.cache": "缓存"
 }

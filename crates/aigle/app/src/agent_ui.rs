@@ -1,20 +1,22 @@
 //! Agent chat presentation and integration with the active photo document.
-use crate::agent::{AgentEvent, profile_ops, run};
+use crate::agent::{AgentEvent, RunStats, profile_ops, run};
 use crate::photo::Photo;
 use crate::providers::ModelSettings as Settings;
 use aigle_doc::Origin;
 use futures::{StreamExt, channel::mpsc::unbounded};
 use gpui::{
     Context, Entity, IntoElement, ParentElement, Render, ScrollHandle, Styled, StyledImage,
-    Subscription, Task, Window, div, img, prelude::*, px,
+    Subscription, Task, Window, div, img, prelude::*, px, rems,
 };
 use gpui_component::{
-    ActiveTheme, Disableable, Sizable,
-    button::ButtonVariants,
+    ActiveTheme, Disableable, IconName, Sizable,
+    button::{Button, ButtonVariants},
+    collapsible::Collapsible,
     h_flex,
     input::{InputEvent, Textarea, TextareaState},
     menu::{DropdownMenu, PopupMenuItem},
-    text::TextView,
+    text::{TextView, TextViewStyle},
+    tooltip::Tooltip,
     v_flex,
 };
 use serde_json::Value;
@@ -34,6 +36,8 @@ struct ChatMessage {
     text: String,
     profile: Vec<(String, Value)>,
     preview: Option<Arc<gpui::Image>>,
+    stats: Option<RunStats>,
+    details_expanded: bool,
 }
 impl ChatMessage {
     fn text(role: Role, text: String) -> Self {
@@ -42,6 +46,8 @@ impl ChatMessage {
             text,
             profile: vec![],
             preview: None,
+            stats: None,
+            details_expanded: true,
         }
     }
 }
@@ -91,6 +97,21 @@ impl AgentPanel {
         self.transcript.push(message);
         self.scroll.scroll_to_bottom();
         cx.notify();
+    }
+    fn push_stats(&mut self, stats: Option<RunStats>, cx: &mut Context<Self>) {
+        if let Some(stats) = stats {
+            self.push(
+                ChatMessage {
+                    role: Role::Tool,
+                    text: String::new(),
+                    profile: vec![],
+                    preview: None,
+                    stats: Some(stats),
+                    details_expanded: true,
+                },
+                cx,
+            );
+        }
     }
     fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.photo.read(cx).info().is_none() {
@@ -144,15 +165,19 @@ impl AgentPanel {
             .background_executor()
             .spawn(async move { run(settings, key, session, base, conversation, cancel, events) });
         self.task = Some(cx.spawn(async move |this, cx| {
+            let mut stats = None;
             while let Some(event) = incoming.next().await {
                 if this
                     .update(cx, |p, cx| match event {
+                        AgentEvent::Stats(value) => stats = Some(value),
                         AgentEvent::Profile(profile) => p.push(
                             ChatMessage {
                                 role: Role::Tool,
                                 text: profile.explanation,
                                 profile: profile.adjustments.into_iter().collect(),
                                 preview: None,
+                                stats: None,
+                                details_expanded: true,
                             },
                             cx,
                         ),
@@ -165,6 +190,8 @@ impl AgentPanel {
                                     gpui::ImageFormat::Jpeg,
                                     image,
                                 ))),
+                                stats: None,
+                                details_expanded: true,
                             },
                             cx,
                         ),
@@ -179,6 +206,7 @@ impl AgentPanel {
                 p.busy = false;
                 if p.cancel.load(Ordering::Relaxed) {
                     p.status = crate::i18n::t("agent.cancelled");
+                    p.push_stats(stats.take(), cx);
                     cx.notify();
                     return;
                 }
@@ -213,6 +241,7 @@ impl AgentPanel {
                     }
                     Err(e) => p.status = format!("Agent failed: {e}"),
                 }
+                p.push_stats(stats.take(), cx);
                 cx.notify();
             });
         }));
@@ -383,6 +412,92 @@ impl Render for AgentPanel {
             .iter()
             .enumerate()
             .map(|(i, message)| {
+                if let Some(stats) = &message.stats {
+                    let count = |v: Option<u64>| {
+                        v.map(|n| {
+                            if n >= 1_000_000 {
+                                format!("{:.1}m", n as f64 / 1_000_000.0)
+                            } else if n >= 1_000 {
+                                format!("{:.1}k", n as f64 / 1_000.0)
+                            } else {
+                                n.to_string()
+                            }
+                        })
+                        .unwrap_or_else(|| crate::i18n::t("agent.stats.unavailable"))
+                    };
+                    let usage = stats.usage;
+                    let cache_rate = stats
+                        .cache_rate()
+                        .map(|n| format!("{n:.0}%"))
+                        .unwrap_or_else(|| crate::i18n::t("agent.stats.unavailable"));
+                    let values = [
+                        (
+                            format!(
+                                "{} {}",
+                                crate::i18n::t("agent.stats.tokens"),
+                                count(usage.total_tokens)
+                            ),
+                            "agent.stats.tokens",
+                            usage.total_tokens,
+                        ),
+                        (
+                            format!("↑{}", count(usage.input_tokens)),
+                            "agent.stats.input",
+                            usage.input_tokens,
+                        ),
+                        (
+                            format!("↓{}", count(usage.output_tokens)),
+                            "agent.stats.output",
+                            usage.output_tokens,
+                        ),
+                        (
+                            format!(
+                                "{} {}/{}",
+                                crate::i18n::t("agent.stats.cache"),
+                                count(usage.cached_input_tokens),
+                                cache_rate
+                            ),
+                            "agent.stats.cached",
+                            usage.cached_input_tokens,
+                        ),
+                    ];
+                    return h_flex()
+                        .id(("chat-usage", i))
+                        .w_full()
+                        .min_w_0()
+                        .overflow_x_scroll()
+                        .gap_2()
+                        .px_2()
+                        .py_1()
+                        .text_size(px(10.0))
+                        .text_color(muted)
+                        .children(values.into_iter().enumerate().map(
+                            |(j, (text, label, exact))| {
+                                let detail = format!(
+                                    "{}: {}",
+                                    crate::i18n::t(label),
+                                    exact.map(|n| n.to_string()).unwrap_or_else(|| {
+                                        crate::i18n::t("agent.stats.unavailable")
+                                    })
+                                );
+                                div()
+                                    .id(("chat-usage-value", i * 4 + j))
+                                    .flex_none()
+                                    .whitespace_nowrap()
+                                    .child(text)
+                                    .tooltip(move |window, cx| {
+                                        Tooltip::new(detail.clone()).build(window, cx)
+                                    })
+                            },
+                        ))
+                        .child(
+                            div()
+                                .flex_none()
+                                .whitespace_nowrap()
+                                .child(format!("{:.1}s", stats.elapsed_seconds)),
+                        )
+                        .into_any_element();
+                }
                 let user = message.role == Role::User;
                 let tool = message.role == Role::Tool;
                 let name = crate::i18n::t(if user {
@@ -408,48 +523,84 @@ impl Render for AgentPanel {
                             .text_color(muted)
                             .child(name),
                     )
-                    .child(
-                        TextView::markdown(("chat-text", i), message.text.clone())
-                            .selectable(true)
-                            .scrollable(false),
-                    )
+                    .when(message.preview.is_none(), |d| {
+                        d.child(
+                            TextView::markdown(("chat-text", i), message.text.clone())
+                                .selectable(true)
+                                .scrollable(false)
+                                .text_size(px(12.0))
+                                .line_height(px(15.0))
+                                .style(TextViewStyle::default().paragraph_gap(rems(0.25))),
+                        )
+                    })
                     .when(!message.profile.is_empty(), |d| {
                         d.child(
-                            v_flex()
-                                .gap_1()
-                                .pt_1()
-                                .border_t_1()
-                                .border_color(border)
+                            Collapsible::new()
+                                .open(message.details_expanded)
                                 .child(
-                                    div()
-                                        .text_xs()
-                                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                                        .child(crate::i18n::t("agent.profile")),
-                                )
-                                .children(message.profile.iter().map(|(path, value)| {
-                                    h_flex()
-                                        .justify_between()
-                                        .gap_1()
-                                        .text_xs()
-                                        .child(crate::i18n::t(&format!("param.{path}")))
-                                        .child(match value {
-                                            Value::Number(n) => {
-                                                format!("{:.2}", n.as_f64().unwrap_or_default())
-                                            }
-                                            Value::Array(items) => format!("{} items", items.len()),
-                                            Value::Object(_) => "Updated".to_string(),
-                                            _ => value.to_string(),
+                                    Button::new(("chat-profile-toggle", i))
+                                        .label(crate::i18n::t("agent.profile"))
+                                        .icon(if message.details_expanded {
+                                            IconName::ChevronDown
+                                        } else {
+                                            IconName::ChevronRight
                                         })
-                                })),
+                                        .xsmall()
+                                        .ghost()
+                                        .on_click(cx.listener(move |p, _, _, cx| {
+                                            p.transcript[i].details_expanded =
+                                                !p.transcript[i].details_expanded;
+                                            cx.notify();
+                                        })),
+                                )
+                                .content(v_flex().gap_1().children(message.profile.iter().map(
+                                    |(path, value)| {
+                                        h_flex()
+                                            .justify_between()
+                                            .gap_1()
+                                            .text_xs()
+                                            .child(crate::i18n::t(&format!("param.{path}")))
+                                            .child(match value {
+                                                Value::Number(n) => {
+                                                    format!("{:.2}", n.as_f64().unwrap_or_default())
+                                                }
+                                                Value::Array(items) => {
+                                                    format!("{} items", items.len())
+                                                }
+                                                Value::Object(_) => "Updated".to_string(),
+                                                _ => value.to_string(),
+                                            })
+                                    },
+                                ))),
                         )
                     })
                     .when_some(message.preview.clone(), |d, image| {
                         d.child(
-                            img(image)
-                                .w_full()
-                                .max_h(px(180.0))
-                                .object_fit(gpui::ObjectFit::Contain)
-                                .rounded_md(),
+                            Collapsible::new()
+                                .open(message.details_expanded)
+                                .child(
+                                    Button::new(("chat-preview-toggle", i))
+                                        .label(crate::i18n::t("agent.preview"))
+                                        .icon(if message.details_expanded {
+                                            IconName::ChevronDown
+                                        } else {
+                                            IconName::ChevronRight
+                                        })
+                                        .xsmall()
+                                        .ghost()
+                                        .on_click(cx.listener(move |p, _, _, cx| {
+                                            p.transcript[i].details_expanded =
+                                                !p.transcript[i].details_expanded;
+                                            cx.notify();
+                                        })),
+                                )
+                                .content(
+                                    img(image)
+                                        .w_full()
+                                        .max_h(px(180.0))
+                                        .object_fit(gpui::ObjectFit::Contain)
+                                        .rounded_md(),
+                                ),
                         )
                     });
                 h_flex()
@@ -458,12 +609,13 @@ impl Render for AgentPanel {
                     .when(user, |d| d.child(div().w(px(24.0)).flex_none()))
                     .child(div().flex_1().min_w_0().child(bubble))
                     .when(!user, |d| d.child(div().w(px(12.0)).flex_none()))
+                    .into_any_element()
             })
             .collect::<Vec<_>>();
         v_flex()
             .size_full()
             .min_h_0()
-            .text_sm()
+            .text_xs()
             .child(
                 div()
                     .id("agent-messages")

@@ -87,9 +87,15 @@ sampling helpers. `see_preview` renders the proposed edits through Aigle's engin
 so the model can inspect and refine the result. A Rig request hook sends preview images as base64 JPEGs in
 following `user` messages, keeping tool acknowledgements text-only. This matches
 Chat Completions endpoints such as DeepSeek that accept images only in user
-messages; Rig continues to manage tool execution and the agent loop. A run is limited to 12 model requests, with a 120-second timeout
+messages; Rig continues to manage tool execution and the agent loop. A run is limited to 100 model requests, with a 120-second timeout
 per request. The endpoint must support vision; models that reject image input or
 finish without calling the preview tools fail without applying edits.
+
+Each run ends with a compact row of reported input/output and total tokens, cache
+reads and hit rate, and elapsed time. Hover token counts for exact values. Unreported
+metrics show N/A. Failed and cancelled runs include usage from responses received
+before they stopped; cache hit rate is shown only when every response supplies
+the input and cache-read counts.
 
 The completed profile is applied as one undoable agent edit. Intermediate
 profiles do not change the document. Editing the photo during a run discards its

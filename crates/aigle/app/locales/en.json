@@ -827,5 +827,16 @@
   "settings.fetch_failed": "Could not fetch models",
   "settings.no_models": "The provider returned no models. You can enter a model ID manually.",
   "settings.model_added": "Added",
-  "settings.model_placeholder": "Model ID (manual entry)"
+  "settings.model_placeholder": "Model ID (manual entry)",
+  "agent.stats.tokens": "Tokens",
+  "agent.stats.input": "Input",
+  "agent.stats.output": "Output",
+  "agent.stats.cached": "Cache read",
+  "agent.stats.cache_rate": "Cache hit rate",
+  "agent.stats.cache_write": "Cache write",
+  "agent.stats.reasoning": "Reasoning",
+  "agent.stats.requests": "Requests",
+  "agent.stats.duration": "Time",
+  "agent.stats.unavailable": "N/A",
+  "agent.stats.cache": "Cache"
 }
