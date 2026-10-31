@@ -1,4 +1,4 @@
-//! Durable sequential exports. Pause takes effect at file boundaries.
+//! Session-only sequential exports. Pause takes effect at file boundaries.
 use crate::export::{self, Request, Settings};
 use aigle_engine_api::Engine;
 use gpui::{
@@ -6,10 +6,9 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
     Pending,
     Running,
@@ -28,7 +27,7 @@ impl State {
         })
     }
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 struct Entry {
     request: Request,
     settings: Settings,
@@ -36,96 +35,37 @@ struct Entry {
     state: State,
     error: Option<String>,
 }
-#[derive(Default, Serialize, Deserialize)]
-struct Stored {
-    entries: Vec<Entry>,
-}
-impl Stored {
-    fn recover(&mut self) {
-        for entry in &mut self.entries {
-            if entry.state == State::Running {
-                // The output might have been written before the durable completion record.
-                entry.state = if entry.path.exists() {
-                    State::Failed
-                } else {
-                    State::Pending
-                };
-                entry.error = Some(crate::i18n::t("queue.interrupted"));
-            }
-        }
-    }
-}
 pub enum Event {
     Closed,
     Notice(String),
 }
 pub struct ExportQueue {
     engine: Engine,
-    stored: Stored,
+    entries: Vec<Entry>,
     paused: bool,
-    error: Option<String>,
     task: Option<Task<()>>,
 }
 impl EventEmitter<Event> for ExportQueue {}
 impl ExportQueue {
     pub fn new(engine: Engine) -> Self {
-        let loaded = (|| -> anyhow::Result<Stored> {
-            let Some(path) = queue_path() else {
-                return Ok(Stored::default());
-            };
-            match std::fs::read(path) {
-                Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Stored::default()),
-                Err(e) => Err(e.into()),
-            }
-        })();
-        let (mut stored, error) = match loaded {
-            Ok(s) => (s, None),
-            Err(e) => (Stored::default(), Some(e.to_string())),
-        };
-        stored.recover();
         Self {
             engine,
-            stored,
+            entries: Vec::new(),
             paused: true,
-            error,
             task: None,
         }
     }
     pub fn counts(&self) -> (usize, usize) {
         (
-            self.stored
-                .entries
+            self.entries
                 .iter()
                 .filter(|e| e.state == State::Done)
                 .count(),
-            self.stored.entries.len(),
+            self.entries
+                .iter()
+                .filter(|e| e.state != State::Cancelled)
+                .count(),
         )
-    }
-    fn persist(&mut self) -> bool {
-        let result = (|| -> anyhow::Result<()> {
-            let path =
-                queue_path().ok_or_else(|| anyhow::anyhow!("No application data directory"))?;
-            std::fs::create_dir_all(path.parent().unwrap())?;
-            let temp = path.with_extension("json.tmp");
-            let mut file = std::fs::File::create(&temp)?;
-            use std::io::Write;
-            file.write_all(&serde_json::to_vec(&self.stored)?)?;
-            file.sync_all()?;
-            std::fs::rename(temp, path)?;
-            Ok(())
-        })();
-        match result {
-            Ok(()) => {
-                self.error = None;
-                true
-            }
-            Err(e) => {
-                self.error = Some(e.to_string());
-                self.paused = true;
-                false
-            }
-        }
     }
     pub fn enqueue(
         &mut self,
@@ -134,7 +74,7 @@ impl ExportQueue {
         cx: &mut Context<Self>,
     ) {
         let mut reserved: std::collections::HashSet<_> =
-            self.stored.entries.iter().map(|e| e.path.clone()).collect();
+            self.entries.iter().map(|e| e.path.clone()).collect();
         reserved.extend(jobs.iter().map(|(_, path)| path.clone()));
         for (request, path) in jobs {
             if settings.paired_sdr && settings.format.encoded(settings.quality).is_hdr() {
@@ -144,7 +84,7 @@ impl ExportQueue {
                 sdr.output = aigle_engine_api::DisplayProfileId::Srgb;
                 let sdr_path = paired_path(&path, &reserved);
                 reserved.insert(sdr_path.clone());
-                self.stored.entries.push(Entry {
+                self.entries.push(Entry {
                     request: request.clone(),
                     settings: sdr,
                     path: sdr_path,
@@ -152,7 +92,7 @@ impl ExportQueue {
                     error: None,
                 });
             }
-            self.stored.entries.push(Entry {
+            self.entries.push(Entry {
                 request,
                 settings: settings.clone(),
                 path,
@@ -161,54 +101,37 @@ impl ExportQueue {
             });
         }
         self.paused = false;
-        if self.persist() {
-            self.start_next(cx);
-        }
+        self.start_next(cx);
         cx.notify();
     }
     fn start_next(&mut self, cx: &mut Context<Self>) {
         if self.paused || self.task.is_some() {
             return;
         }
-        let Some(index) = self
-            .stored
-            .entries
-            .iter()
-            .position(|e| e.state == State::Pending)
-        else {
+        let Some(index) = self.entries.iter().position(|e| e.state == State::Pending) else {
             return;
         };
-        self.stored.entries[index].state = State::Running;
-        if !self.persist() {
-            self.stored.entries[index].state = State::Pending;
-            cx.notify();
-            return;
-        }
-        let entry = self.stored.entries[index].clone();
+        self.entries[index].state = State::Running;
+        let entry = self.entries[index].clone();
         let engine = self.engine.clone();
         self.task = Some(cx.spawn(async move |this, cx| {
-            let path = entry.path.clone();
-            let exists = cx.background_spawn(async move { path.try_exists() }).await;
-            let result: Result<(), String> = match exists {
-                Ok(false) => {
-                    match export::run(&engine, &entry.request, &entry.settings, entry.path.clone())
+            // Single-file destinations were confirmed by the save picker. The engine
+            // replaces them atomically; batch and paired outputs already use unique names.
+            let result: Result<(), String> =
+                match export::run(&engine, &entry.request, &entry.settings, entry.path.clone())
+                    .await
+                {
+                    Ok(_) if entry.settings.format.is_raw() => {
+                        cx.background_spawn(async move {
+                            export::write_dng_sidecar(&entry.request, &entry.path)
+                        })
                         .await
-                    {
-                        Ok(_) if entry.settings.format.is_raw() => {
-                            cx.background_spawn(async move {
-                                export::write_dng_sidecar(&entry.request, &entry.path)
-                            })
-                            .await
-                        }
-                        Ok(_) => Ok(()),
-                        Err(e) => Err(e.to_string()),
                     }
-                }
-                Ok(true) => Err(crate::i18n::t("queue.exists")),
-                Err(e) => Err(e.to_string()),
-            };
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(e.to_string()),
+                };
             let _ = this.update(cx, |q, cx| {
-                let entry = &mut q.stored.entries[index];
+                let entry = &mut q.entries[index];
                 entry.state = if result.is_ok() {
                     State::Done
                 } else {
@@ -216,7 +139,6 @@ impl ExportQueue {
                 };
                 entry.error = result.err();
                 q.task = None;
-                q.persist();
                 q.start_next(cx);
                 if q.task.is_none() {
                     let (done, total) = q.counts();
@@ -245,9 +167,6 @@ fn paired_path(path: &std::path::Path, reserved: &std::collections::HashSet<Path
         .expect("unbounded file names")
 }
 
-fn queue_path() -> Option<PathBuf> {
-    crate::data_dir().map(|p| p.join("export-queue.json"))
-}
 impl Render for ExportQueue {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut card = v_flex()
@@ -280,7 +199,7 @@ impl Render for ExportQueue {
                         .tooltip(crate::i18n::t("queue.pause_hint"))
                         .on_click(cx.listener(|q, _, _, cx| {
                             q.paused = !q.paused;
-                            if !q.paused && q.persist() {
+                            if !q.paused {
                                 q.start_next(cx);
                             }
                             cx.notify();
@@ -294,15 +213,13 @@ impl Render for ExportQueue {
                         )
                         .small()
                         .on_click(cx.listener(|q, _, _, cx| {
-                            for e in &mut q.stored.entries {
+                            for e in &mut q.entries {
                                 if e.state == State::Failed {
                                     e.state = State::Pending;
                                     e.error = None;
                                 }
                             }
-                            if q.persist() {
-                                q.start_next(cx);
-                            }
+                            q.start_next(cx);
                             cx.notify();
                         })),
                     )
@@ -317,10 +234,8 @@ impl Render for ExportQueue {
                         .on_click(cx.listener(|q, _, _, cx| {
                             // Keep stable indices while a task is running.
                             if q.task.is_none() {
-                                q.stored
-                                    .entries
+                                q.entries
                                     .retain(|e| !matches!(e.state, State::Done | State::Cancelled));
-                                q.persist();
                                 cx.notify();
                             }
                         })),
@@ -335,62 +250,68 @@ impl Render for ExportQueue {
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(Event::Closed))),
                     ),
             );
-        if let Some(error) = &self.error {
-            card = card.child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().danger)
-                    .child(error.clone()),
-            );
-        }
         let rows = v_flex()
             .id("queue-files")
             .overflow_y_scroll()
             .gap_2()
-            .children(self.stored.entries.iter().enumerate().map(|(i, e)| {
-                v_flex()
-                    .gap_1()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .pb_2()
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(div().flex_1().text_sm().child(e.request.name.clone()))
-                            .child(div().text_xs().child(e.state.label()))
-                            .when(e.state == State::Pending, |row| {
-                                row.child(
-                                    crate::ui::icon_button(
-                                        gpui::SharedString::from(format!("queue-remove-{i}")),
-                                        crate::ui::Glyph::Close,
-                                        crate::i18n::t("common.delete"),
-                                    )
-                                    .xsmall()
-                                    .on_click(cx.listener(
-                                        move |q, _, _, cx| {
-                                            if let Some(e) = q.stored.entries.get_mut(i)
-                                                && e.state == State::Pending
-                                            {
-                                                e.state = State::Cancelled;
-                                                e.error = Some(crate::i18n::t("queue.cancelled"));
-                                                q.persist();
-                                                cx.notify();
-                                            }
+            .children(
+                self.entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| e.state != State::Cancelled)
+                    .map(|(i, e)| {
+                        v_flex()
+                            .gap_1()
+                            .border_b_1()
+                            .border_color(cx.theme().border)
+                            .pb_2()
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(div().flex_1().text_sm().child(e.request.name.clone()))
+                                    .child(div().text_xs().child(e.state.label()))
+                                    .when(
+                                        matches!(e.state, State::Pending | State::Failed),
+                                        |row| {
+                                            row.child(
+                                                crate::ui::icon_button(
+                                                    gpui::SharedString::from(format!(
+                                                        "queue-remove-{i}"
+                                                    )),
+                                                    crate::ui::Glyph::Close,
+                                                    crate::i18n::t("common.delete"),
+                                                )
+                                                .xsmall()
+                                                .on_click(cx.listener(move |q, _, _, cx| {
+                                                    if let Some(e) = q.entries.get_mut(i)
+                                                        && matches!(
+                                                            e.state,
+                                                            State::Pending | State::Failed
+                                                        )
+                                                    {
+                                                        // Retain the slot until cleanup so running tasks
+                                                        // keep their indices; cancelled rows are hidden.
+                                                        e.state = State::Cancelled;
+                                                        e.error =
+                                                            Some(crate::i18n::t("queue.cancelled"));
+                                                        cx.notify();
+                                                    }
+                                                })),
+                                            )
                                         },
-                                    )),
-                                )
-                            }),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(e.path.to_string_lossy().into_owned()),
-                    )
-                    .when_some(e.error.clone(), |d, error| {
-                        d.child(div().text_xs().text_color(cx.theme().danger).child(error))
-                    })
-            }));
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(e.path.to_string_lossy().into_owned()),
+                            )
+                            .when_some(e.error.clone(), |d, error| {
+                                d.child(div().text_xs().text_color(cx.theme().danger).child(error))
+                            })
+                    }),
+            );
         card = card.child(rows);
         div()
             .absolute()
@@ -419,44 +340,5 @@ mod tests {
             paired_path(&path, &reserved),
             PathBuf::from("/nonexistent/edited-sdr-2.jpg")
         );
-    }
-
-    #[test]
-    fn restart_recovers_incomplete_jobs_without_touching_completed_jobs() {
-        let mut stored = Stored {
-            entries: [State::Running, State::Pending, State::Failed, State::Done]
-                .into_iter()
-                .map(|state| Entry {
-                    request: Request {
-                        source: aigle_engine_api::SourceRef::Synthetic {
-                            width: 16,
-                            height: 16,
-                            pattern: aigle_engine_api::SyntheticPattern::Gradient,
-                        },
-                        params: Default::default(),
-                        name: "test".into(),
-                        folder: None,
-                    },
-                    settings: Default::default(),
-                    path: PathBuf::from("/nonexistent/aigle-export-queue-test.png"),
-                    state,
-                    error: None,
-                })
-                .collect(),
-        };
-        stored.recover();
-        assert_eq!(
-            stored.entries.iter().map(|e| e.state).collect::<Vec<_>>(),
-            [State::Pending, State::Pending, State::Failed, State::Done]
-        );
-        stored.entries[0].state = State::Running;
-        stored.entries[0].path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-        stored.recover();
-        assert_eq!(stored.entries[0].state, State::Failed);
-        assert!(stored.entries[0].path.exists());
-        let decoded: Stored =
-            serde_json::from_slice(&serde_json::to_vec(&stored).unwrap()).unwrap();
-        assert_eq!(decoded.entries.len(), 4);
-        assert_eq!(decoded.entries[3].state, State::Done);
     }
 }

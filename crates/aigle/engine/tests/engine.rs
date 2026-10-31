@@ -542,6 +542,8 @@ fn export_and_thumbnail() {
     let dir = std::env::temp_dir().join(format!("aigle-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("out.jpg");
+    // Saving over a picker-confirmed destination must replace its previous contents.
+    std::fs::write(&path, b"previous export").unwrap();
     let r = e
         .export(
             synthetic(1000, 500),
