@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Aigle
+Comment=Non-destructive photo editor
+Exec=aigle-gui %f
+Icon=aigle
+Terminal=false
+Categories=Graphics;Photography;
+MimeType=image/jpeg;image/png;image/tiff;image/webp;image/avif;image/heif;image/x-adobe-dng;

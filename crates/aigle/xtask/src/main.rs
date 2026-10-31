@@ -1,5 +1,6 @@
 //! Repository tasks.
 //!
+//! * `cargo xtask appimage` builds a Linux AppImage with its shared runtime libraries.
 //! * `cargo xtask native-deps [--server]` installs pinned native libraries with vcpkg.
 //! * `cargo xtask kernels [--check]` rebuilds the committed SPIR-V (doc 04 Q28) by running
 //!   `crates/aigle/kernels-build` with its own pinned nightly.
@@ -9,22 +10,68 @@
 //!   `--update` needs `git`, `curl`, `tar` and network access; `--check` is offline. Both
 //!   use `sha256sum`.
 
+mod appimage;
 mod native;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+use clap::{Args, Parser, Subcommand};
+
+#[derive(Parser)]
+#[command(
+    name = "xtask",
+    bin_name = "cargo xtask",
+    about = "Repository build and maintenance tasks"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Task,
+}
+
+#[derive(Subcommand)]
+enum Task {
+    /// Build a Linux AppImage with its shared runtime libraries.
+    Appimage(appimage::Options),
+    /// Install pinned native libraries with vcpkg.
+    NativeDeps {
+        /// Install only the native dependencies needed by Thesauros.
+        #[arg(long)]
+        server: bool,
+    },
+    /// Rebuild the committed SPIR-V with the pinned nightly toolchain.
+    Kernels {
+        /// Fail if rebuilding changes the committed module.
+        #[arg(long)]
+        check: bool,
+    },
+    /// Update or verify the bundled third-party datasets.
+    Data(DataOptions),
+}
+
+#[derive(Args)]
+#[group(required = true, multiple = false)]
+struct DataOptions {
+    /// Refresh bundled datasets and their manifest (requires network access).
+    #[arg(long)]
+    update: bool,
+    /// Verify bundled files against the manifest without network access.
+    #[arg(long)]
+    check: bool,
+}
+
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let res = match args.first().map(String::as_str) {
-        Some("native-deps") => native::install(&args[1..]),
-        Some("kernels") => return kernels(&args[1..]),
-        Some("data") => match args.get(1).map(String::as_str) {
-            Some("--update") => data_update(),
-            Some("--check") => data_check(),
-            _ => Err("usage: cargo xtask data --update | --check".into()),
-        },
-        _ => Err("usage: cargo xtask native-deps [--server] | kernels [--check] | data --update | data --check".into()),
+    let res = match Cli::parse().command {
+        Task::Appimage(options) => appimage::build(options),
+        Task::NativeDeps { server } => native::install(server),
+        Task::Kernels { check } => return kernels(check),
+        Task::Data(options) => {
+            if options.update {
+                data_update()
+            } else {
+                data_check()
+            }
+        }
     };
     match res {
         Ok(()) => ExitCode::SUCCESS,
@@ -39,12 +86,14 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
 }
 
-fn kernels(extra: &[String]) -> ExitCode {
+fn kernels(check: bool) -> ExitCode {
     let dir = root().join("crates/aigle/kernels-build");
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&dir)
-        .args(["run", "--release", "-p", "aigle-kernels-build", "--"])
-        .args(extra);
+        .args(["run", "--release", "-p", "aigle-kernels-build", "--"]);
+    if check {
+        cmd.arg("--check");
+    }
     // Let rustup pick the toolchain from crates/aigle/kernels-build/rust-toolchain.toml instead of
     // inheriting the stable toolchain this xtask runs under.
     for var in [
@@ -306,4 +355,52 @@ fn data_check() -> Result<(), String> {
     }
     msg.push_str("run `cargo xtask data --update` to refresh it from upstream");
     Err(msg)
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn command_definitions_are_consistent() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn data_requires_exactly_one_operation() {
+        for args in [
+            vec!["xtask", "data"],
+            vec!["xtask", "data", "--update", "--check"],
+            vec!["xtask", "data", "--check", "extra"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+        for flag in ["--check", "--update"] {
+            assert!(Cli::try_parse_from(["xtask", "data", flag]).is_ok());
+        }
+    }
+
+    #[test]
+    fn parses_task_options_and_rejects_invalid_flags() {
+        let cli = Cli::try_parse_from(["xtask", "native-deps", "--server"]).unwrap();
+        assert!(matches!(cli.command, Task::NativeDeps { server: true }));
+        let cli = Cli::try_parse_from(["xtask", "kernels", "--check"]).unwrap();
+        assert!(matches!(cli.command, Task::Kernels { check: true }));
+        assert!(Cli::try_parse_from(["xtask", "kernels", "--typo"]).is_err());
+        assert!(Cli::try_parse_from(["xtask", "appimage", "--output"]).is_err());
+        assert!(Cli::try_parse_from(["xtask", "appimage", "--unknown"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "xtask",
+                "appimage",
+                "--no-build",
+                "--output",
+                "output with spaces.AppImage",
+                "--appimagetool",
+                "/tmp/tool"
+            ])
+            .is_ok()
+        );
+    }
 }

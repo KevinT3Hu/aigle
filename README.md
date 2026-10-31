@@ -46,6 +46,49 @@ job queue, isolated metadata workers, and session/CSRF protection. Production
 configuration, a systemd unit, and an HTTPS proxy example are in
 [`crates/thesauros/deploy`](crates/thesauros/deploy).
 
+## Linux AppImage
+
+After preparing the native dependencies, build a release AppImage with:
+
+```sh
+cargo xtask appimage
+```
+
+The output is `target/appimage/Aigle-<version>-<arch>.AppImage` (under Cargo's
+configured target directory). Linux x86-64 and AArch64 hosts are supported;
+packaging uses the host architecture, without cross-compilation.
+
+The task builds `aigle-gui` in release mode, assembles an AppDir with the linked
+C++/OpenMP and windowing libraries, camera/lens data, native dependency licence
+notices, and a desktop entry/icon, then runs
+[appimagetool](https://github.com/AppImage/appimagetool). Install appimagetool
+separately and put its executable on `PATH`, or select it with `APPIMAGETOOL` or
+`--appimagetool`. If it is missing, xtask stops before building and prints
+installation instructions; it never downloads packaging tools. Appimagetool may
+itself need network access to obtain its AppImage runtime. Packaging does not
+need FUSE. Native dependencies must already be prepared with `cargo xtask native-deps`.
+
+Options:
+
+```sh
+cargo xtask appimage --no-build                  # Package the existing release binary
+cargo xtask appimage --output /tmp/Aigle.AppImage
+cargo xtask appimage --appimagetool /path/to/appimagetool
+```
+
+`APPIMAGETOOL` can also select a local packaging tool. The assembled AppDir is
+kept at `target/appimage/Aigle.AppDir/` for inspection.
+
+The target machine still supplies glibc, Vulkan loader/graphics drivers, fonts
+and Fontconfig configuration, its desktop session/file-picker portal, and a
+Secret Service for API-key storage. Build on the oldest glibc system you intend
+to support; packaging on a newer system does not make the binary compatible with
+older glibc versions. To launch without FUSE, use:
+
+```sh
+APPIMAGE_EXTRACT_AND_RUN=1 ./Aigle-0.1.0-x86_64.AppImage
+```
+
 ## Aigle editing agent
 
 Open **Settings** from the toolbar or press **Ctrl+,**. The dialog groups general

@@ -13,12 +13,7 @@ fn run(cmd: &mut Command) -> Result<(), String> {
     }
 }
 
-pub fn install(args: &[String]) -> Result<(), String> {
-    let server = match args {
-        [] => false,
-        [arg] if arg == "--server" => true,
-        _ => return Err("usage: cargo xtask native-deps [--server]".into()),
-    };
+pub fn install(server: bool) -> Result<(), String> {
     let root = super::root().canonicalize().map_err(|e| e.to_string())?;
     let expected_inputs = config::fingerprint(&root);
     let revision =
