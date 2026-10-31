@@ -26,7 +26,6 @@ use crate::filmstrip::Filmstrip;
 use crate::grid::Grid;
 use crate::history::HistoryPanel;
 use crate::import::{ImportDialog, ImportEvent};
-use crate::keybinding_editor::{Closed as KeybindingsClosed, KeybindingEditor};
 use crate::library::{CopyInfo, LABELS, Library, LibraryEvent};
 use crate::metadata_panel::MetadataPanel;
 use crate::panel::Panel;
@@ -34,6 +33,7 @@ use crate::photo::{Photo, PhotoEvent, Tool};
 use crate::presets::{Preset, PresetsEvent, PresetsPanel};
 use crate::rename::{RenameDialog, RenameEvent};
 use crate::resources::Resources;
+use crate::settings::{ModelSettings, Page as SettingsPage, SettingsDialog, SettingsEvent};
 
 /// Width of the library's metadata panel.
 const METADATA_W: f32 = 300.0;
@@ -48,6 +48,7 @@ struct OpenPhoto {
     photo: Entity<Photo>,
     canvas: Entity<Canvas>,
     panel: Entity<Panel>,
+    agent: Entity<crate::agent_ui::AgentPanel>,
     history: Entity<HistoryPanel>,
     /// Pending save of the history to the catalog.
     history_save: Option<Task<()>>,
@@ -97,7 +98,8 @@ pub struct Workspace {
     focus: FocusHandle,
     export_settings: Settings,
     export_dialog: Option<(Entity<ExportDialog>, Subscription)>,
-    keybinding_dialog: Option<(Entity<KeybindingEditor>, Subscription)>,
+    settings_dialog: Option<(Entity<SettingsDialog>, Subscription)>,
+    show_agent: bool,
     copy_dialog: Option<(Entity<CopyDialog>, Subscription)>,
     /// Groups chosen the last time settings were copied.
     copy_groups: BTreeSet<Group>,
@@ -120,6 +122,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Workspace {
+        if cx.try_global::<ModelSettings>().is_none() {
+            crate::settings::init(cx);
+        }
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let (catalog, catalog_error) =
@@ -192,7 +197,8 @@ impl Workspace {
             focus,
             export_settings: Settings::default(),
             export_dialog: None,
-            keybinding_dialog: None,
+            settings_dialog: None,
+            show_agent: false,
             copy_dialog: None,
             copy_groups: Group::defaults(),
             clipboard: None,
@@ -527,6 +533,7 @@ impl Workspace {
         let hist = canvas.read(cx).histogram();
         let develop_metadata = self.develop_metadata.clone();
         let panel = cx.new(|cx| Panel::new(photo.clone(), hist, develop_metadata, window, cx));
+        let agent = cx.new(|cx| crate::agent_ui::AgentPanel::new(photo.clone(), window, cx));
         let history = cx.new(|cx| HistoryPanel::new(photo.clone(), cx));
         let library = self.library.clone();
         let edits = cx.subscribe(&photo, move |w, photo, e, cx| match e {
@@ -551,6 +558,7 @@ impl Workspace {
             photo,
             canvas,
             panel,
+            agent,
             history,
             history_save: None,
             _edits: edits,
@@ -762,6 +770,7 @@ impl Workspace {
     }
 
     fn toggle_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
+        self.show_agent = false;
         self.with_photo(cx, |p, cx| p.toggle_tool(tool, cx));
         cx.notify();
     }
@@ -1405,32 +1414,44 @@ impl Workspace {
         .detach();
     }
 
-    fn open_keybindings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some((editor, _)) = &self.keybinding_dialog {
-            editor.update(cx, |editor, cx| editor.focus_search(window, cx));
+    fn open_settings(&mut self, page: SettingsPage, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((dialog, _)) = &self.settings_dialog {
+            dialog.update(cx, |s, cx| s.select(page, window, cx));
             return;
         }
         self.export_dialog = None;
         self.import_dialog = None;
-        let editor = cx.new(|cx| KeybindingEditor::new(window, cx));
+        let recursive = self.library.read(cx).recursive();
+        let editor = cx.new(|cx| SettingsDialog::new(page, recursive, window, cx));
         let subscription = cx.subscribe_in(
             &editor,
             window,
-            |w, _, _: &KeybindingsClosed, window, cx| {
+            |w, _, event: &SettingsEvent, window, cx| {
+                if let SettingsEvent::Saved {
+                    language,
+                    display,
+                    recursive,
+                } = event
+                {
+                    w.change_language(*language, window, cx);
+                    set_display(*display, window, cx);
+                    w.library
+                        .update(cx, |l, cx| l.set_recursive(*recursive, cx));
+                }
                 window.close_dialog(cx);
-                w.keybinding_dialog = None;
+                w.settings_dialog = None;
                 window.focus(&w.focus, cx);
-                cx.notify();
+                cx.refresh_windows();
             },
         );
-        self.keybinding_dialog = Some((editor.clone(), subscription));
+        self.settings_dialog = Some((editor.clone(), subscription));
         let initial_focus = std::cell::Cell::new(true);
         window.open_dialog(cx, move |dialog, window, cx| {
             if initial_focus.replace(false) {
-                editor.update(cx, |editor, cx| editor.focus_search(window, cx));
+                editor.update(cx, |s, cx| s.focus(window, cx));
             }
             dialog
-                .title(crate::i18n::t("keybindings.title"))
+                .title(crate::i18n::t("settings.title"))
                 .w(px(820.0))
                 .max_w(window.viewport_size().width - px(48.0))
                 .margin_top(px(24.0))
@@ -1659,7 +1680,6 @@ impl Workspace {
             .is_some_and(|o| o.canvas.read(cx).hdr_open());
         let show_history = self.show_history;
         let show_metadata = self.show_metadata;
-        let subfolders = self.library.read(cx).recursive();
         let can_paste = self.clipboard.is_some();
         let ws = cx.entity().downgrade();
         let preset_names: Vec<SharedString> = self
@@ -1707,8 +1727,6 @@ impl Workspace {
         let file_focus = self.focus.clone();
         let edit_focus = self.focus.clone();
         let view_focus = self.focus.clone();
-        let language = crate::i18n::language();
-        let display = cx.global::<crate::display::DisplayColor>().clone();
         let row = h_flex()
             .flex_1()
             .h_full()
@@ -2035,11 +2053,6 @@ impl Workspace {
                             Box::new(ToggleMetadata),
                             develop,
                         )
-                        .menu_with_check(
-                            crate::i18n::t("action.ToggleSubfolders"),
-                            subfolders,
-                            Box::new(ToggleSubfolders),
-                        )
                         .menu_with_check_and_disabled(
                             crate::i18n::t("action.ToggleHistory"),
                             show_history,
@@ -2065,69 +2078,23 @@ impl Workspace {
                             Box::new(ToggleHdrCanvas),
                             !develop,
                         )
-                        .submenu(crate::i18n::t("menu.display_profile"), window, cx, {
-                            let display = display.clone();
-                            move |menu, _, _| {
-                                let display = display.clone();
-                                let menu = menu
-                                    .menu_with_check(
-                                        crate::i18n::t("display.auto"),
-                                        display.mode == crate::display::Mode::Auto,
-                                        Box::new(DisplayAuto),
-                                    )
-                                    .menu_with_check(
-                                        "sRGB",
-                                        display.mode == crate::display::Mode::Srgb,
-                                        Box::new(DisplaySrgb),
-                                    )
-                                    .separator();
-                                match (&display.detected, &display.problem) {
-                                    (Some(d), _) => menu.label(
-                                        rust_i18n::t!("display.detected", name = d.name)
-                                            .into_owned(),
-                                    ),
-                                    (None, Some(_)) => menu.label(crate::i18n::t("display.none")),
-                                    (None, None) => menu.label(crate::i18n::t("display.detecting")),
-                                }
-                            }
-                        })
-                        .separator()
-                        .submenu(
-                            crate::i18n::t("menu.keybindings"),
-                            window,
-                            cx,
-                            |menu, _, _| {
-                                menu.menu_with_icon(
-                                    crate::i18n::t("action.EditKeybindings"),
-                                    crate::ui::Glyph::Keyboard.icon(),
-                                    Box::new(EditKeybindings),
-                                )
-                                .menu_with_icon(
-                                    crate::i18n::t("action.ReloadKeybindings"),
-                                    crate::ui::Glyph::Reset.icon(),
-                                    Box::new(ReloadKeybindings),
-                                )
-                            },
-                        )
-                        .separator()
-                        .submenu(
-                            crate::i18n::t("menu.language"),
-                            window,
-                            cx,
-                            move |menu, _, _| {
-                                menu.menu_with_check(
-                                    crate::i18n::t("language.name.en"),
-                                    language == crate::i18n::Language::English,
-                                    Box::new(LanguageEnglish),
-                                )
-                                .menu_with_check(
-                                    crate::i18n::t("language.name.zh_cn"),
-                                    language == crate::i18n::Language::Chinese,
-                                    Box::new(LanguageChinese),
-                                )
-                            },
+                        .menu_with_icon(
+                            crate::i18n::t("settings.title"),
+                            crate::ui::Glyph::Edit.icon(),
+                            Box::new(OpenSettings),
                         )
                 }),
+            )
+            .child(
+                crate::ui::labeled_button(
+                    "app-settings",
+                    crate::ui::Glyph::Edit,
+                    crate::i18n::t("settings.title"),
+                )
+                .small()
+                .on_click(cx.listener(|w, _, window, cx| {
+                    w.open_settings(SettingsPage::General, window, cx)
+                })),
             )
             .child(
                 ButtonGroup::new("mode")
@@ -2274,7 +2241,53 @@ impl Workspace {
                             .flex_none()
                             .border_l_1()
                             .border_color(border)
-                            .child(o.panel.clone()),
+                            .child(
+                                v_flex()
+                                    .size_full()
+                                    .min_h_0()
+                                    .child(
+                                        h_flex()
+                                            .flex_none()
+                                            .gap_2()
+                                            .p_2()
+                                            .border_b_1()
+                                            .border_color(border)
+                                            .child(
+                                                crate::ui::labeled_button(
+                                                    "right-edit",
+                                                    crate::ui::Glyph::Develop,
+                                                    crate::i18n::t("agent.edit_mode"),
+                                                )
+                                                .small()
+                                                .selected(!self.show_agent)
+                                                .on_click(cx.listener(|w, _, _, cx| {
+                                                    w.show_agent = false;
+                                                    cx.notify();
+                                                })),
+                                            )
+                                            .child(
+                                                crate::ui::labeled_button(
+                                                    "right-agent",
+                                                    crate::ui::Glyph::Auto,
+                                                    crate::i18n::t("panel.tab.agent"),
+                                                )
+                                                .small()
+                                                .selected(self.show_agent)
+                                                .on_click(cx.listener(|w, _, _, cx| {
+                                                    w.show_agent = true;
+                                                    w.with_photo(cx, |p, cx| {
+                                                        p.set_tool(Tool::None, cx)
+                                                    });
+                                                    cx.notify();
+                                                })),
+                                            ),
+                                    )
+                                    .child(div().flex_1().min_h_0().child(if self.show_agent {
+                                        o.agent.clone().into_any_element()
+                                    } else {
+                                        o.panel.clone().into_any_element()
+                                    })),
+                            ),
                     ),
             )
             .when(has_strip, |d| d.child(self.filmstrip.clone()))
@@ -2497,9 +2510,15 @@ impl Render for Workspace {
             .on_action(cx.listener(|_, _: &DisplaySrgb, window, cx| {
                 set_display(crate::display::Mode::Srgb, window, cx)
             }))
-            .on_action(
-                cx.listener(|w, _: &EditKeybindings, window, cx| w.open_keybindings(window, cx)),
-            )
+            .on_action(cx.listener(|w, _: &ConfigureModel, window, cx| {
+                w.open_settings(SettingsPage::Model, window, cx)
+            }))
+            .on_action(cx.listener(|w, _: &OpenSettings, window, cx| {
+                w.open_settings(SettingsPage::General, window, cx)
+            }))
+            .on_action(cx.listener(|w, _: &EditKeybindings, window, cx| {
+                w.open_settings(SettingsPage::Shortcuts, window, cx)
+            }))
             .on_action(cx.listener(|_, _: &ReloadKeybindings, window, cx| {
                 match crate::keymap::reload(cx) {
                     Ok(()) => window.push_notification(crate::i18n::t("keybindings.reloaded"), cx),

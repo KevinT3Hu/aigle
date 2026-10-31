@@ -219,6 +219,7 @@ mod tests {
 
     fn is_key(s: &str) -> bool {
         s.contains('.')
+            && !s.ends_with(".json") // Preference filenames are not translation keys.
             && s.split('.').all(|seg| {
                 !seg.is_empty() && seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
             })

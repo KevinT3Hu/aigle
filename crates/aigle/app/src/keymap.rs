@@ -8,6 +8,8 @@ use gpui::{App, DummyKeyboardMapper, Global, KeyBinding, KeyBindingContextPredic
 
 use crate::actions::{CONTEXT, Quit};
 
+pub const COMPOSER_CONTEXT: &str = "AgentComposer";
+
 const DEFAULTS: &str = include_str!("../keymap.json");
 pub type Bindings = BTreeMap<String, String>;
 
@@ -71,6 +73,17 @@ fn merged(overrides: Option<&str>) -> Result<Bindings> {
     Ok(result)
 }
 
+fn binding_context(action: &str) -> Result<KeyBindingContextPredicate> {
+    // Exclude the entire focused composer subtree before matching a shortcut,
+    // so app bindings cannot consume text or shadow the input's editing actions.
+    let context = if action == "aigle::Quit" {
+        format!("!{COMPOSER_CONTEXT}")
+    } else {
+        format!("{CONTEXT} && !{COMPOSER_CONTEXT}")
+    };
+    KeyBindingContextPredicate::parse(&context)
+}
+
 fn prepare(bindings: &Bindings, cx: &App) -> Result<Vec<KeyBinding>> {
     // Resolve and validate the entire map before replacing any live binding.
     let mut loaded = Vec::new();
@@ -78,11 +91,7 @@ fn prepare(bindings: &Bindings, cx: &App) -> Result<Vec<KeyBinding>> {
         let action = cx
             .build_action(name, None)
             .with_context(|| format!("Unknown action {name:?} for {key:?}"))?;
-        let context = if name == "aigle::Quit" {
-            None
-        } else {
-            Some(Rc::new(KeyBindingContextPredicate::parse(CONTEXT)?))
-        };
+        let context = Some(Rc::new(binding_context(name)?));
         loaded.push(KeyBinding::load(
             key,
             action,
@@ -233,6 +242,29 @@ fn format_hint(text: &str, bindings: &Bindings) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_shortcuts_are_disabled_only_in_the_agent_composer() {
+        use gpui::KeyContext;
+        let workspace = vec![KeyContext::parse(CONTEXT).unwrap()];
+        let composer = vec![
+            KeyContext::parse(CONTEXT).unwrap(),
+            KeyContext::parse(COMPOSER_CONTEXT).unwrap(),
+            KeyContext::parse("Input").unwrap(),
+        ];
+        // This policy applies to defaults, remapped shortcuts, chords, and Quit.
+        for action in defaults()
+            .values()
+            .map(String::as_str)
+            .chain(["aigle::CustomAction"])
+        {
+            let predicate = binding_context(action).unwrap();
+            assert!(predicate.depth_of(&workspace).is_some(), "{action}");
+            assert_eq!(predicate.depth_of(&composer), None, "{action}");
+        }
+        let input_binding = KeyBindingContextPredicate::parse("Input").unwrap();
+        assert!(input_binding.depth_of(&composer).is_some());
+    }
 
     #[test]
     fn defaults_are_valid_and_overrides_replace_or_disable_keys() {

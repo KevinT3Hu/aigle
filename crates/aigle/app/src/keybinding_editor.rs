@@ -146,6 +146,7 @@ fn matches(action: &str, draft: &Draft, query: &str) -> bool {
 }
 
 pub struct KeybindingEditor {
+    pub embedded: bool,
     draft: Draft,
     actions: Vec<String>,
     selected: String,
@@ -223,6 +224,7 @@ impl KeybindingEditor {
             }
         }));
         Self {
+            embedded: false,
             draft,
             actions,
             selected,
@@ -270,16 +272,28 @@ impl KeybindingEditor {
         cx.notify();
     }
 
-    fn save(&mut self, cx: &mut Context<Self>) {
+    pub fn save_changes(&mut self, cx: &mut Context<Self>) -> bool {
         if self.recording || !self.assign(false, cx) {
-            return;
+            return false;
+        }
+        if self.draft.bindings == self.draft.original {
+            return true;
         }
         match keymap::save(self.draft.bindings.clone(), cx) {
-            Ok(()) => cx.emit(Closed),
+            Ok(()) => {
+                self.draft.original = self.draft.bindings.clone();
+                true
+            }
             Err(error) => {
                 self.error = Some(format!("{}: {error:#}", t("keybindings.save_failed")));
                 cx.notify();
+                false
             }
+        }
+    }
+    fn save(&mut self, cx: &mut Context<Self>) {
+        if self.save_changes(cx) {
+            cx.emit(Closed);
         }
     }
 }
@@ -628,26 +642,30 @@ impl Render for KeybindingEditor {
                     } else {
                         t("keybindings.apply_note")
                     }))
-                    .child(
-                        crate::ui::labeled_button(
-                            "cancel-keybindings",
-                            crate::ui::Glyph::Close,
-                            t("common.cancel"),
+                    .when(!self.embedded, |d| {
+                        d.child(
+                            crate::ui::labeled_button(
+                                "cancel-keybindings",
+                                crate::ui::Glyph::Close,
+                                t("common.cancel"),
+                            )
+                            .small()
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(Closed))),
                         )
-                        .small()
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(Closed))),
-                    )
-                    .child(
-                        crate::ui::labeled_button(
-                            "save-keybindings",
-                            crate::ui::Glyph::Save,
-                            t("common.save"),
+                    })
+                    .when(!self.embedded, |d| {
+                        d.child(
+                            crate::ui::labeled_button(
+                                "save-keybindings",
+                                crate::ui::Glyph::Save,
+                                t("common.save"),
+                            )
+                            .small()
+                            .primary()
+                            .disabled(!dirty || invalid || has_conflicts || self.recording)
+                            .on_click(cx.listener(|editor, _, _, cx| editor.save(cx))),
                         )
-                        .small()
-                        .primary()
-                        .disabled(!dirty || invalid || has_conflicts || self.recording)
-                        .on_click(cx.listener(|editor, _, _, cx| editor.save(cx))),
-                    ),
+                    }),
             )
     }
 }

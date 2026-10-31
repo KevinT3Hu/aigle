@@ -75,6 +75,8 @@ actions!(
         SwapAspect,
         Export,
         Cancel,
+        OpenSettings,
+        ConfigureModel,
         EditKeybindings,
         ReloadKeybindings,
         Quit

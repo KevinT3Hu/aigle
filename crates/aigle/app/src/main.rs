@@ -6,6 +6,9 @@
 rust_i18n::i18n!("locales", fallback = "en");
 
 mod actions;
+mod agent;
+mod agent_preview;
+mod agent_ui;
 mod auto_tone;
 mod canvas;
 mod compare;
@@ -33,11 +36,13 @@ mod native_canvas;
 mod panel;
 mod photo;
 mod presets;
+mod providers;
 mod rename;
 mod resources;
 mod retouch_panel;
 mod saved_searches;
 mod scopes;
+mod settings;
 mod tools;
 mod ui;
 mod view;
