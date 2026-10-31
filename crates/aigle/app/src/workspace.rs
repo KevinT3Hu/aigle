@@ -2238,25 +2238,34 @@ impl Workspace {
                 h_flex()
                     .flex_1()
                     .min_h_0()
-                    .when(self.show_history, |d| {
-                        d.child(
-                            v_flex()
-                                .w(px(200.0))
-                                .h_full()
-                                .flex_none()
-                                .border_r_1()
-                                .border_color(border)
-                                .child(self.presets.clone())
-                                .child(
+                    .child(
+                        v_flex()
+                            .w(px(260.0))
+                            .h_full()
+                            .min_h_0()
+                            .flex_none()
+                            .border_r_1()
+                            .border_color(border)
+                            .child(
+                                div()
+                                    .id("develop-scopes")
+                                    .flex_none()
+                                    .max_h_full()
+                                    .overflow_y_scroll()
+                                    .p_2()
+                                    .child(o.panel.read(cx).scopes.clone()),
+                            )
+                            .when(self.show_history, |d| {
+                                d.child(self.presets.clone()).child(
                                     div()
                                         .flex_1()
                                         .min_h_0()
                                         .border_t_1()
                                         .border_color(border)
                                         .child(o.history.clone()),
-                                ),
-                        )
-                    })
+                                )
+                            }),
+                    )
                     .child(div().flex_1().h_full().min_w_0().child(o.canvas.clone()))
                     .child(
                         div()

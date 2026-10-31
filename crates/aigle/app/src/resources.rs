@@ -117,16 +117,17 @@ impl Render for Resources {
             format!("{mib:.0} MiB")
         };
         let ram = crate::i18n::t("resources.ram");
-        let label = match usage.cpu_percent {
-            Some(cpu) => format!("CPU {cpu:.0}% · {ram} {memory}"),
-            None => format!("{ram} {memory}"),
-        };
         div()
             .id("app-resources")
             .flex_none()
             .text_xs()
             .text_color(cx.theme().muted_foreground)
-            .child(label)
+            .flex()
+            .gap_3()
+            .when_some(usage.cpu_percent, |d, cpu| {
+                d.child(div().child(format!("CPU {cpu:.0}%")))
+            })
+            .child(div().child(format!("{ram} {memory}")))
             .tooltip(|window, cx| {
                 Tooltip::new(crate::i18n::t("resources.tooltip")).build(window, cx)
             })

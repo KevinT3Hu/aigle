@@ -1381,12 +1381,24 @@ impl Canvas {
         }
     }
 
-    fn status(&self, cx: &App) -> String {
+    fn status(&self, cx: &App) -> (String, String, String, String) {
         let photo = self.photo.read(cx);
         match &photo.load {
-            aigle_engine_api::LoadState::Loading => return crate::i18n::t("canvas.loading"),
+            aigle_engine_api::LoadState::Loading => {
+                return (
+                    crate::i18n::t("canvas.loading"),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                );
+            }
             aigle_engine_api::LoadState::Failed(e) => {
-                return rust_i18n::t!("canvas.open_failed", e = e).into_owned();
+                return (
+                    rust_i18n::t!("canvas.open_failed", e = e).into_owned(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                );
             }
             aigle_engine_api::LoadState::Ready(_) => {}
         }
@@ -1423,24 +1435,12 @@ impl Canvas {
                 Tool::None => None,
             }
         };
-        [
-            Some(zoom),
-            Some(q),
-            before,
-            hint,
-            self.hdr_status.clone(),
-            self.hdr_open().then(|| {
-                format!(
-                    "HDR · {} / {} nit",
-                    photo.head().hdr.diffuse_white,
-                    photo.head().hdr.peak
-                )
-            }),
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" · ")
+        (
+            hint.unwrap_or_default(),
+            zoom,
+            q,
+            before.unwrap_or_default(),
+        )
     }
 }
 
@@ -1549,7 +1549,15 @@ impl Render for Canvas {
                 self.state.scale(crop, out),
             )
         });
-        let status = self.status(cx);
+        let (instruction, zoom, quality, mode) = self.status(cx);
+        let display = self
+            .hdr_open()
+            .then(|| {
+                let hdr = &self.photo.read(cx).head().hdr;
+                format!("HDR {} / {} nit", hdr.diffuse_white, hdr.peak)
+            })
+            .unwrap_or_default();
+        let display_status = self.hdr_status.clone().unwrap_or_default();
         let photo = self.photo.read(cx);
         let overlay = if self.show_info && self.tool != Tool::Crop {
             photo
@@ -1841,14 +1849,59 @@ impl Render for Canvas {
                     .absolute()
                     .bottom_2()
                     .left_2()
-                    .px_2()
-                    .py_0p5()
-                    .rounded_sm()
-                    .bg(gpui::rgba(0x000000a0))
+                    .right_2()
+                    .flex()
+                    .items_end()
+                    .gap_2()
                     .text_xs()
                     .text_color(rgb(0xd0d0d0))
-                    .child(status),
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            div()
+                                .when(!instruction.is_empty(), |d| {
+                                    d.px_2().py_0p5().rounded_sm().bg(gpui::rgba(0x000000a0))
+                                })
+                                .child(instruction),
+                        ),
+                    )
+                    .children(
+                        [mode, quality, zoom]
+                            .into_iter()
+                            .filter(|s| !s.is_empty())
+                            .map(|text| {
+                                div()
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_sm()
+                                    .bg(gpui::rgba(0x000000a0))
+                                    .child(text)
+                            }),
+                    ),
             )
+            .when(!display.is_empty() || !display_status.is_empty(), |d| {
+                d.child(
+                    div()
+                        .id("canvas-display-status")
+                        .absolute()
+                        .top_2()
+                        .right_2()
+                        .px_2()
+                        .py_0p5()
+                        .rounded_sm()
+                        .bg(gpui::rgba(0x000000a0))
+                        .text_xs()
+                        .text_color(rgb(0xd0d0d0))
+                        .child(if display.is_empty() {
+                            display_status.clone()
+                        } else {
+                            display
+                        })
+                        .tooltip(move |window, cx| {
+                            gpui_component::tooltip::Tooltip::new(display_status.clone())
+                                .build(window, cx)
+                        }),
+                )
+            })
             .when(!overlay.is_empty(), |d| {
                 let mut lines = overlay.into_iter();
                 let head = lines.next().unwrap_or_default();

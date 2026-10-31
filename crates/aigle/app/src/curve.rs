@@ -473,6 +473,10 @@ impl Render for CurveEditor {
 
         let graph = div()
             .id("curve-graph")
+            .tooltip(|window, cx| {
+                gpui_component::tooltip::Tooltip::new(crate::i18n::t("curve_editor.help"))
+                    .build(window, cx)
+            })
             .w(px(GRAPH))
             .h(px(GRAPH))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_down))
@@ -498,12 +502,13 @@ impl Render for CurveEditor {
                 .size_full(),
             );
 
-        let hint = readout.unwrap_or_else(|| crate::i18n::t("curve_editor.help"));
         let mut body = v_flex()
             .gap_2()
             .child(channels)
             .child(graph)
-            .child(div().text_xs().text_color(muted).child(hint));
+            .when_some(readout, |d, text| {
+                d.child(div().text_xs().text_color(muted).child(text))
+            });
         if let Some(e) = &self.error {
             body = body.child(
                 div()

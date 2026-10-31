@@ -1,4 +1,4 @@
-//! Develop panel: histogram and the global adjustments, grouped into tabs.
+//! Develop panel: global adjustments, grouped into tabs.
 //!
 //! Each slider edits one parameter path through `doc`: `Continuous` while dragging, `Final`
 //! on release, all commands of one drag sharing a gesture so they form one undo step.
@@ -396,7 +396,7 @@ pub struct Panel {
     tab: usize,
     expanded: [bool; TOOL_GROUPS.len()],
     histogram: Option<Arc<Histogram>>,
-    scopes: Entity<crate::scopes::Scopes>,
+    pub(crate) scopes: Entity<crate::scopes::Scopes>,
     curve: Entity<CurveEditor>,
     masks: Entity<MaskPanel>,
     retouch: Entity<RetouchPanel>,
@@ -1445,10 +1445,7 @@ impl Panel {
 impl Render for Panel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tool = self.photo.read(cx).tool;
-        let top = v_flex()
-            .size_full()
-            .min_h_0()
-            .child(div().flex_none().p_3().child(self.scopes.clone()));
+        let top = v_flex().size_full().min_h_0();
         let tabs = TabBar::new("develop-tabs")
             .underline()
             .small()

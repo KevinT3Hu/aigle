@@ -12,7 +12,7 @@ use std::collections::HashSet;
 use aigle_library::{Field, PhotoKey, PhotoMeta, clean_keywords, normalize_tag};
 use gpui::{
     Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription, Window, div,
-    prelude::*, px,
+    prelude::*,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{ActiveTheme, Sizable, v_flex};
@@ -276,16 +276,18 @@ impl Render for MetadataPanel {
                                 .text_color(muted)
                                 .child(crate::i18n::t(&label_key(row.field))),
                         )
-                        .child(Input::new(&row.input).small())
+                        .child(
+                            div()
+                                .id(gpui::SharedString::from(label_key(row.field)))
+                                .tooltip(|window, cx| {
+                                    gpui_component::tooltip::Tooltip::new(crate::i18n::t(
+                                        "metadata.hint",
+                                    ))
+                                    .build(window, cx)
+                                })
+                                .child(Input::new(&row.input).small()),
+                        )
                 }))
-                .child(
-                    div()
-                        .pt_1()
-                        .text_xs()
-                        .text_color(muted)
-                        .max_w(px(300.0))
-                        .child(crate::i18n::t("metadata.hint")),
-                )
             })
     }
 }

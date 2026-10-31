@@ -603,14 +603,18 @@ impl Render for Scopes {
                 .tooltip(format!("{}\n{}", guide, t("sample_note"))),
         );
         let percent = |n: u64| 100.0 * n as f64 / self.data.count.max(1) as f64;
-        let stats = format!(
-            "{} {:.1}% · {} {:.1}% · {} {:.1}%",
-            t("black"),
-            percent(self.data.low),
-            t("peak"),
-            percent(self.data.high),
-            t("gamut"),
-            percent(self.data.gamut)
+        let stats = h_flex().justify_between().gap_2().children(
+            [
+                ("black", self.data.low),
+                ("peak", self.data.high),
+                ("gamut", self.data.gamut),
+            ]
+            .into_iter()
+            .map(|(label, count)| {
+                v_flex()
+                    .child(t(label))
+                    .child(format!("{:.1}%", percent(count)))
+            }),
         );
         let gamut = h_flex()
             .gap_1()
