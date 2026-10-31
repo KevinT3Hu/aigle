@@ -443,6 +443,10 @@ pub enum EncodedFormat {
     Jxl {
         quality: u8,
     },
+    /// JPEG with an SDR base and an embedded Ultra HDR gain map.
+    UltraHdr {
+        quality: u8,
+    },
     /// Floating-point HDR TIFF, with a linear sRGB ICC profile.
     HdrTiff,
     /// 16-bit full-range BT.2100 PQ PNG with cICP/HDR metadata.
@@ -455,13 +459,16 @@ pub enum EncodedFormat {
 
 impl EncodedFormat {
     pub fn is_hdr(self) -> bool {
-        matches!(self, Self::HdrTiff | Self::HdrPng | Self::OpenExr)
+        matches!(
+            self,
+            Self::HdrTiff | Self::HdrPng | Self::OpenExr | Self::UltraHdr { .. }
+        )
     }
 
     /// File extension, without the dot.
     pub fn extension(self) -> &'static str {
         match self {
-            EncodedFormat::Jpeg { .. } => "jpg",
+            EncodedFormat::Jpeg { .. } | EncodedFormat::UltraHdr { .. } => "jpg",
             EncodedFormat::Png => "png",
             EncodedFormat::Tiff { .. } => "tif",
             EncodedFormat::WebP { .. } => "webp",

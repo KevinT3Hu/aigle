@@ -1,0 +1,86 @@
+name: Thesauros
+on:
+  push:
+    paths:
+      - '.github/workflows/thesauros.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'vcpkg*.json'
+      - 'native/**'
+      - 'build-support/**'
+      - 'crates/aigle/xtask/**'
+      - 'rust-toolchain.toml'
+      - 'crates/thesauros/**'
+      - 'crates/core/**'
+      - 'crates/doc/**'
+      - 'crates/engine-api/**'
+      - 'crates/exiv2-sys/**'
+      - 'crates/isolate/**'
+      - 'crates/library/**'
+      - 'crates/libraw-sys/**'
+      - 'crates/remote/**'
+  pull_request:
+    paths:
+      - '.github/workflows/thesauros.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'vcpkg*.json'
+      - 'native/**'
+      - 'build-support/**'
+      - 'crates/aigle/xtask/**'
+      - 'rust-toolchain.toml'
+      - 'crates/thesauros/**'
+      - 'crates/core/**'
+      - 'crates/doc/**'
+      - 'crates/engine-api/**'
+      - 'crates/exiv2-sys/**'
+      - 'crates/isolate/**'
+      - 'crates/library/**'
+      - 'crates/libraw-sys/**'
+      - 'crates/remote/**'
+permissions:
+  contents: read
+concurrency:
+  group: thesauros-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: crates/thesauros/server/package-lock.json
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config cmake ninja-build curl zip unzip tar python3 autoconf automake libtool bison flex nasm
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: native-${{ runner.os }}-${{ hashFiles('vcpkg*.json', 'native/**') }}
+          restore-keys: native-${{ runner.os }}-
+      - name: Build pinned native libraries
+        run: cargo xtask native-deps --server
+      - name: Build and verify local browser assets
+        working-directory: crates/thesauros/server
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+          git diff --exit-code -- assets/app.css assets/htmx.min.js assets/htmx.LICENSE
+      - name: Format and lint
+        run: |
+          cargo fmt -p thesauros --check
+          cargo clippy --locked -p thesauros --all-targets --no-deps -- -D warnings
+      - name: Test catalog, API, and Aigle synchronization
+        run: cargo test --locked -p thesauros -p aigle-remote
+      - name: Build browser test server
+        run: cargo build --locked -p thesauros
+      - name: Test the browser frontend
+        working-directory: crates/thesauros/server
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:browser

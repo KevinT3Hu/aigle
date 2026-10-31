@@ -1,0 +1,24 @@
+[package]
+name = "aigle-remote"
+description = "Remote RAW library checkout and XMP synchronization for Aigle"
+version.workspace = true
+publish = false
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+blake3.workspace = true
+clap.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "thesauros-client"
+path = "src/main.rs"

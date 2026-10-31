@@ -1,3 +1,8 @@
 /target
 **/*.rs.bk
-/crates/kernels-build/target
+/crates/aigle/kernels-build/target
+/thesauros-data
+/checkouts
+/crates/thesauros/server/node_modules
+/crates/thesauros/server/test-results
+/crates/thesauros/server/playwright-report

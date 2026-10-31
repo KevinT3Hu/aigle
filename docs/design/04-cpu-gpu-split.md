@@ -76,7 +76,7 @@ Some kernels are much faster on the GPU with workgroup shared memory or subgroup
 
 GPU-only variants are written in **GLSL** (decided, Q29′) and compiled to SPIR-V by the same xtask as the rust-gpu kernels, using `glslc` from shaderc (Q29″). GLSL reaches every Vulkan feature Mesa RADV supports through `#extension`, which is the point of an escape hatch. WGSL is not used, because it is limited to what WebGPU and wgpu expose. The rules for GLSL variants:
 
-- They live in `crates/kernels/glsl/`, one file per variant, next to the Rust kernel they specialize.
+- They live in `crates/aigle/kernels/glsl/`, one file per variant, next to the Rust kernel they specialize.
 - The xtask compiles them, runs `spirv-val` on the output, and writes the `.spv` into the same committed directory as the rust-gpu output. CI rebuilds and diffs them (Q28).
 - They are loaded with SPIR-V passthrough, the same as rust-gpu output (§8.1).
 - `glslc` is needed only to run the xtask. Normal builds use the committed `.spv`.

@@ -1,0 +1,15 @@
+{
+  "name": "libultrahdr",
+  "version": "2.0.2",
+  "port-version": 1,
+  "description": "Phaos managed libultrahdr",
+  "license": "Apache-2.0",
+  "supports": "linux",
+  "dependencies": [
+    "libjpeg-turbo",
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    }
+  ]
+}

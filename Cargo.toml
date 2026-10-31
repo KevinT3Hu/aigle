@@ -1,24 +1,29 @@
 [workspace]
 resolver = "3"
 members = [
+    # Shared crates.
     "crates/core",
-    "crates/engine-api",
-    "crates/kernels",
-    "crates/engine",
     "crates/doc",
-    "crates/app",
-    "crates/cli",
-    "crates/libraw-sys",
-    "crates/rtprocess-sys",
-    "crates/vips-sys",
+    "crates/engine-api",
     "crates/exiv2-sys",
-    "crates/library",
-    "crates/lensfun",
     "crates/isolate",
-    "xtask",
+    "crates/library",
+    "crates/libraw-sys",
+    "crates/remote",
+    # Aigle applications, renderer, and development tools.
+    "crates/aigle/app",
+    "crates/aigle/cli",
+    "crates/aigle/engine",
+    "crates/aigle/kernels",
+    "crates/aigle/lensfun",
+    "crates/aigle/rtprocess-sys",
+    "crates/aigle/vips-sys",
+    "crates/aigle/xtask",
+    # Thesauros applications.
+    "crates/thesauros/server",
 ]
 # Nightly-only SPIR-V build (doc 04 §3); has its own workspace and toolchain.
-exclude = ["crates/kernels-build", "vendor/gpui-pre", "vendor/gpui-pre-wgpu", "vendor/gpui-pre-linux"]
+exclude = ["crates/aigle/kernels-build", "vendor/gpui-pre", "vendor/gpui-pre-wgpu", "vendor/gpui-pre-linux"]
 
 [workspace.package]
 version = "0.1.0"
@@ -28,17 +33,23 @@ repository = "https://example.invalid/aigle"
 rust-version = "1.99"
 
 [workspace.dependencies]
+anyhow = "1"
+axum = "0.8"
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+tempfile = "3"
 aigle-core = { path = "crates/core" }
 aigle-engine-api = { path = "crates/engine-api" }
-aigle-kernels = { path = "crates/kernels" }
-aigle-engine = { path = "crates/engine" }
+aigle-kernels = { path = "crates/aigle/kernels" }
+aigle-engine = { path = "crates/aigle/engine" }
 aigle-doc = { path = "crates/doc" }
 aigle-libraw-sys = { path = "crates/libraw-sys" }
-aigle-rtprocess-sys = { path = "crates/rtprocess-sys" }
-aigle-vips-sys = { path = "crates/vips-sys" }
+aigle-rtprocess-sys = { path = "crates/aigle/rtprocess-sys" }
+aigle-vips-sys = { path = "crates/aigle/vips-sys" }
 aigle-exiv2-sys = { path = "crates/exiv2-sys" }
 aigle-library = { path = "crates/library" }
-aigle-lensfun = { path = "crates/lensfun" }
+aigle-remote = { path = "crates/remote" }
+aigle-lensfun = { path = "crates/aigle/lensfun" }
 aigle-isolate = { path = "crates/isolate" }
 
 blake3 = "1.8"

@@ -57,7 +57,7 @@ Estimation:
 
 Output: temperature (K) and tint, rounded to the param steps (doc 02 §4), plus confidence. The algorithm is deterministic and runs on the CPU backend kernels (doc 04), so its results are identical on every backend.
 
-> **Implementation note.** `crates/engine/src/awb.rs`. Grey-edge uses p = 1 (p = 6 was dominated by a few strong colour edges). The near-neutral vote is the luminance-weighted mode of per-pixel chromaticities in 10 mired × 4 tint bins. Fusion is an iteratively reweighted (Cauchy) mean in mired/tint with the as-shot white as a half-weight prior; LibRaw exposes no maker-note colour temperature, so there is no second prior. Confidence = mean Cauchy agreement of the candidates × usable share (saturating at 20 %) × colour diversity (RMS log-chromaticity spread, saturating at 0.3); the diversity term is skipped for a user region, which is meant to be neutral. Threshold 0.3. The calibration is the one C1 renders with (DCP if selected).
+> **Implementation note.** `crates/aigle/engine/src/awb.rs`. Grey-edge uses p = 1 (p = 6 was dominated by a few strong colour edges). The near-neutral vote is the luminance-weighted mode of per-pixel chromaticities in 10 mired × 4 tint bins. Fusion is an iteratively reweighted (Cauchy) mean in mired/tint with the as-shot white as a half-weight prior; LibRaw exposes no maker-note colour temperature, so there is no second prior. Confidence = mean Cauchy agreement of the candidates × usable share (saturating at 20 %) × colour diversity (RMS log-chromaticity spread, saturating at 0.3); the diversity term is skipped for a user region, which is meant to be neutral. Threshold 0.3. The calibration is the one C1 renders with (DCP if selected).
 
 ### 3.2 Auto tone
 

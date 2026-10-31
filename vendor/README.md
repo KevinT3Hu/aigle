@@ -17,3 +17,5 @@ Local changes:
 The application creates an input-transparent HDR subsurface below the parent.
 GPUI still renders editor controls and handles input. No GPUI image-atlas or
 8-bit image conversion is used for HDR canvas pixels.
+
+Reviewable patch files and original crate checksums are in [`patches/`](patches/README.md).

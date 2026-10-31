@@ -1,0 +1,15 @@
+--- a/src/linux/wayland/window.rs
++++ b/src/linux/wayland/window.rs
+@@ -1711,6 +1711,12 @@
+ }
+ 
+ impl PlatformWindow for WaylandWindow {
++    fn native_surface_owner(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
++        let surface = self.0.surface();
++        let connection = wayland_client::Connection::from_backend(surface.backend().upgrade()?);
++        Some(Arc::new((connection, surface)))
++    }
++
+     fn bounds(&self) -> Bounds<Pixels> {
+         self.borrow().bounds
+     }

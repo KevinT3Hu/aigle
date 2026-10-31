@@ -1,0 +1,16 @@
+{
+  "name": "libraw",
+  "version": "0.22.2",
+  "port-version": 1,
+  "description": "Phaos managed libraw",
+  "license": "LGPL-2.1-only OR CDDL-1.0",
+  "supports": "linux",
+  "dependencies": [
+    "libjpeg-turbo",
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    "zlib"
+  ]
+}

@@ -1,14 +1,12 @@
-//! Builds the aigle Exiv2 shim against the system Exiv2 ≥ 0.27, found with pkg-config. On
-//! Debian/Ubuntu: `apt install libexiv2-dev`.
-
+//! Compile the C++ metadata shim against managed Exiv2.
+#[path = "../../build-support/native.rs"]
+mod native;
 fn main() {
-    let exiv2 = pkg_config::Config::new()
-        .atleast_version("0.27")
-        .probe("exiv2")
-        .unwrap_or_else(|e| panic!("exiv2 ≥ 0.27 not found ({e}); install libexiv2-dev"));
+    native::configure();
+    let exiv2 = native::probe("exiv2", "0.27");
     let mut b = cc::Build::new();
     b.cpp(true)
-        .std("c++14")
+        .std("c++17")
         .file("shim/aigle_exiv2.cpp")
         .opt_level(2)
         .warnings(false)

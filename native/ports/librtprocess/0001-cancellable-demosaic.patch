@@ -1,0 +1,82 @@
+--- a/src/demosaic/amaze.cc
++++ b/src/demosaic/amaze.cc
+@@ -55,6 +55,7 @@
+         return RP_WRONG_CFA;
+     }
+     rpError rc = RP_NO_ERROR;
++    bool cancelled = false; // aigle patch
+ 
+     double progress = 0.0;
+     setProgCancel(progress);
+@@ -203,6 +204,9 @@
+ 
+             for (int top = winy - 16; top < winy + height; top += ts - 32) {
+                 for (int left = winx - 16; left < winx + width; left += ts - 32) {
++                    if (cancelled) {
++                        continue; // aigle patch
++                    }
+                     memset(&nyquist[3 * tsh], 0, sizeof(unsigned char) * (ts - 6) * tsh);
+                     //location of tile bottom edge
+                     int bottom = min(top + ts, winy + height + 16);
+@@ -1598,7 +1602,9 @@
+                         {
+                             progress += 32.0 * SQR(ts - 32) / (height * width);
+                             progress = std::min(progress, 1.0);
+-                            setProgCancel(progress);
++                            if (setProgCancel(progress)) {
++                                cancelled = true; // aigle patch
++                            }
+                         }
+                     }
+                 }
+@@ -1609,6 +1615,9 @@
+             free(buffer);
+         }
+     }
++    if (cancelled) {
++        return RP_CANCELLED; // aigle patch
++    }
+     if(border < 4 && rc == RP_NO_ERROR) {
+         rc = bayerborder_demosaic(width, height, 3, rawData, red, green, blue, cfarray);
+     }
+--- a/src/demosaic/markesteijn.cc
++++ b/src/demosaic/markesteijn.cc
+@@ -140,6 +140,7 @@
+     }
+ 
+     rpError rc = RP_NO_ERROR;
++    bool cancelled = false; // aigle patch
+ 
+     constexpr int ts = 114;      /* Tile Size */
+     constexpr int tsh = ts / 2;  /* half of Tile Size */
+@@ -264,6 +265,9 @@
+ 
+             for (int top = 3; top < height - 19; top += ts - 16)
+                 for (int left = 3; left < width - 19; left += ts - 16) {
++                    if (cancelled) {
++                        continue; // aigle patch
++                    }
+                     int mrow = std::min(top + ts, height - 3);
+                     int mcol = std::min(left + ts, width - 3);
+ 
+@@ -908,7 +912,9 @@
+                         {
+                             progress += progressInc;
+                             progress = min(1.0, progress);
+-                            setProgCancel(progress);
++                            if (setProgCancel(progress)) {
++                                cancelled = true; // aigle patch
++                            }
+                         }
+                     }
+ 
+@@ -917,6 +923,9 @@
+         }
+         free(buffer);
+     }
++    if (cancelled) {
++        return RP_CANCELLED; // aigle patch
++    }
+     xtransborder_demosaic(width, height, 8, rawData, red, green, blue, xtrans);
+     return rc;
+ }

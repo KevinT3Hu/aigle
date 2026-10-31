@@ -1,0 +1,48 @@
+{
+  "name": "phaos-native",
+  "version-string": "0.1.0",
+  "builtin-baseline": "d186940b2f0c4e8e5b4ff804af57d2a26fbfa091",
+  "dependencies": [
+    {
+      "name": "exiv2",
+      "default-features": false,
+      "features": [
+        "bmff",
+        "png",
+        "xmp"
+      ]
+    },
+    "libjpeg-turbo",
+    "libraw",
+    "zlib"
+  ],
+  "default-features": [
+    "editor"
+  ],
+  "features": {
+    "editor": {
+      "description": "Aigle image processing, codecs and watermark text.",
+      "dependencies": [
+        "librtprocess",
+        {
+          "name": "libvips",
+          "default-features": false,
+          "features": [
+            "exif",
+            "heif",
+            "jpeg",
+            "jpeg-xl",
+            "lcms",
+            "pangocairo",
+            "png",
+            "rsvg",
+            "tiff",
+            "uhdr",
+            "webp",
+            "zlib"
+          ]
+        }
+      ]
+    }
+  }
+}

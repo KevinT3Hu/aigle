@@ -1,0 +1,43 @@
+[Unit]
+Description=Thesauros RAW photograph library
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=thesauros
+Group=thesauros
+StateDirectory=thesauros
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/thesauros
+LoadCredential=access-token:/etc/thesauros/token
+ExecStartPre=/usr/local/bin/thesauros --config /etc/thesauros/server.toml --token-file %d/access-token --check-config
+ExecStart=/usr/local/bin/thesauros --config /etc/thesauros/server.toml --token-file %d/access-token
+Environment=THESAUROS_LOG=info
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=350
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes
+LimitCORE=0
+LimitNOFILE=4096
+MemoryMax=6G
+TasksMax=128
+# Sidecars of imported photographs are written next to their RAWs.
+# Remove this grant for an upload-only deployment and remove import_roots above.
+ReadWritePaths=/srv/photos
+
+[Install]
+WantedBy=multi-user.target

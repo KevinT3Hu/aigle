@@ -1,8 +1,8 @@
 # Keyboard shortcuts
 
-Commands are named GPUI actions, defined in `crates/app/src/actions.rs`. Menus and
+Commands are named GPUI actions, defined in `crates/aigle/app/src/actions.rs`. Menus and
 keyboard bindings invoke the same actions; keyboard handling contains no command logic.
-The bundled defaults are in [keymap.json](../../crates/app/keymap.json).
+The bundled defaults are in [keymap.json](../../crates/aigle/app/keymap.json).
 
 Use **View → Keyboard Shortcuts → Edit Keybindings…** to open the in-app dialog.
 Search by command name, category, action ID, or shortcut (for example, `Ctrl+O`).

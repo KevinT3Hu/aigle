@@ -1,0 +1,10 @@
+prefix=${pcfiledir}/../..
+libdir=${prefix}/lib
+includedir=${prefix}/include
+Name: phaos-libraw
+Description: Phaos patched reentrant LibRaw
+Version: @PROJECT_VERSION@
+Requires.private: libjpeg zlib
+Libs: -L${libdir} -lraw_r
+Libs.private: -lstdc++ -lm
+Cflags: -I${includedir}

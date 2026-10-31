@@ -1,80 +1,24 @@
-//! Builds the vendored LibRaw (tag 0.22.2, commit 24fa7e54) and the aigle shim.
-//!
-//! Native code is always optimised, even in dev builds, because unoptimised decoders are
-//! unusably slow. Decoder files stay serial; only the normalization shim uses
-//! a bounded OpenMP team. The reentrant build is used (no `LIBRAW_NOTHREADS`): one instance per decode worker.
-//! The vendored Nikon entropy decoder has an aigle patch for buffered byte reads
-//! and register-local predictor/bit state; decoded samples remain unchanged.
-//! zlib is required (deflate DNG). The system libjpeg, found with pkg-config, decodes lossy
-//! DNG and Kodak JPEG raws (on Debian/Ubuntu: `apt install libjpeg-turbo8-dev` or
-//! `libjpeg62-turbo-dev`). LibRaw reports libjpeg errors by throwing a C++ exception through
-//! libjpeg's frames, which needs libjpeg built with unwind tables (the default on x86-64 and
-//! aarch64 Linux).
-
-use std::path::Path;
-
+//! Compile only the project C ABI shim; LibRaw and its patches are managed by vcpkg.
+#[path = "../../build-support/native.rs"]
+mod native;
 fn main() {
-    let jpeg = pkg_config::Config::new()
-        .probe("libjpeg")
-        .unwrap_or_else(|e| panic!("libjpeg not found ({e}); install libjpeg-turbo8-dev"));
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let vendor = root.join("vendor/LibRaw");
-
-    let mut sources = Vec::new();
-    collect(&vendor.join("src"), &mut sources);
-    // `*_ph.cpp` are placeholders for optional packs and must not be compiled.
-    sources.retain(|p| {
-        !p.file_name()
-            .unwrap()
-            .to_string_lossy()
-            .ends_with("_ph.cpp")
-    });
-    sources.sort();
-
-    let mut build = cc::Build::new();
-    build
-        .cpp(true)
-        .std("c++11")
-        .opt_level(3)
-        .debug(false)
-        .warnings(false)
-        .include(&vendor)
-        .define("USE_ZLIB", None)
-        .define("USE_JPEG", None)
-        .flag_if_supported("-w")
-        .files(&sources);
-    for p in &jpeg.include_paths {
-        build.include(p);
-    }
-    build.compile("aigle_libraw");
-    // Only the independent CFA normalization rows use OpenMP. Decoder internals
-    // remain serial; one bounded team is shared with the RAW-stage CPU budget.
+    native::configure();
+    let raw = native::probe("phaos-libraw", "0.22.2");
+    let jpeg = native::probe("libjpeg", "1");
     let mut shim = cc::Build::new();
     shim.cpp(true)
         .std("c++11")
         .opt_level(3)
         .debug(false)
         .warnings(false)
-        .include(&vendor)
-        .file(root.join("shim/aigle_libraw.cpp"));
+        .file("shim/aigle_libraw.cpp");
+    for p in raw.include_paths.iter().chain(&jpeg.include_paths) {
+        shim.include(p);
+    }
     if shim.get_compiler().is_like_gnu() {
         shim.flag("-fopenmp");
         println!("cargo:rustc-link-lib=gomp");
     }
     shim.compile("aigle_libraw_shim");
-
-    println!("cargo:rustc-link-lib=z");
     println!("cargo:rerun-if-changed=shim");
-    println!("cargo:rerun-if-changed=vendor");
-}
-
-fn collect(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
-    for e in std::fs::read_dir(dir).expect("read vendor dir") {
-        let p = e.expect("dir entry").path();
-        if p.is_dir() {
-            collect(&p, out);
-        } else if p.extension().is_some_and(|x| x == "cpp") {
-            out.push(p);
-        }
-    }
 }

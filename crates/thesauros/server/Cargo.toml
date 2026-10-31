@@ -1,0 +1,48 @@
+[package]
+name = "thesauros"
+description = "A treasury for RAW photographs, with a web UI and Aigle synchronization"
+version.workspace = true
+publish = false
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aigle-library.workspace = true
+aigle-engine-api.workspace = true
+aigle-isolate.workspace = true
+aigle-libraw-sys.workspace = true
+aigle-exiv2-sys.workspace = true
+axum = { workspace = true, features = ["multipart"] }
+topcoat = { version = "=0.11.0", default-features = false, features = ["router", "view", "htmx", "tower", "anyhow"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["fs"] }
+toml = "0.9"
+rand = "0.9"
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+fs2 = "0.4"
+rustix = { workspace = true, features = ["process"] }
+thiserror.workspace = true
+url = "2"
+anyhow.workspace = true
+blake3.workspace = true
+clap.workspace = true
+futures.workspace = true
+image.workspace = true
+parking_lot.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+subtle = "2"
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "fs", "io-util", "signal", "time"] }
+tokio-util = { version = "0.7", features = ["io", "rt"] }
+percent-encoding = "2"
+
+[dev-dependencies]
+aigle-remote.workspace = true
+reqwest.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,9 @@
+prefix=${pcfiledir}/../..
+libdir=${prefix}/lib
+includedir=${prefix}/include
+Name: phaos-rtprocess
+Description: Phaos patched librtprocess (cancellation and deterministic parallel tiles)
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lrtprocess
+Libs.private: @OMP_LIBS@ -lstdc++ -lm
+Cflags: -I${includedir} -DLIBRTPROCESS_STATIC

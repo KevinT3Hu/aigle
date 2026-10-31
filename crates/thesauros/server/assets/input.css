@@ -1,0 +1,145 @@
+@import "tailwindcss";
+@source "../src/web/**/*.rs";
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --color-canvas: #101216;
+  --color-surface: #171a20;
+  --color-raised: #20242c;
+  --color-line: #2c313b;
+  --color-line-strong: #414958;
+  --color-muted: #969eac;
+  --color-accent: #afbef0;
+  --color-accent-hover: #c6d1f6;
+}
+@layer base {
+  :root { color-scheme: dark; }
+  body { @apply bg-canvas font-sans text-zinc-300 antialiased; font-feature-settings: "cv11", "ss01"; }
+  input:not([type="file"]), select {
+    @apply h-10 min-w-0 rounded-md border border-line-strong bg-canvas px-3 text-sm text-zinc-100 outline-none transition-colors placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/15;
+  }
+  button, a, summary { @apply focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent; }
+  button { @apply cursor-pointer disabled:cursor-wait disabled:opacity-50; }
+  select { @apply pr-7; }
+  ::selection { @apply bg-accent/25 text-white; }
+}
+@layer components {
+  .app-header { @apply border-b border-line bg-surface; }
+  .header-inner { @apply mx-auto flex h-16 max-w-[1720px] items-center justify-between gap-4 px-5 sm:px-8; }
+  .brand { @apply flex items-center gap-2.5 text-sm font-semibold tracking-tight text-zinc-100 no-underline; }
+  .brand-mark { @apply flex size-8 items-center justify-center rounded-lg border border-line-strong bg-raised text-lg font-normal text-accent; }
+  .app-shell { @apply mx-auto max-w-[1720px] px-5 py-7 sm:px-8 sm:py-8; }
+  .page-title { @apply mb-6 text-2xl font-semibold tracking-tight text-zinc-100; }
+  .workspace { @apply grid items-start gap-6 lg:grid-cols-[248px_minmax(0,1fr)] xl:gap-8; }
+  .sidebar { @apply grid items-start gap-5 sm:grid-cols-2 lg:sticky lg:top-6 lg:grid-cols-1; }
+  .workspace-content { @apply min-w-0 space-y-5; }
+  .panel { @apply rounded-xl border border-line bg-surface; }
+  .tools-panel { @apply p-4; }
+  .field { @apply flex flex-col gap-2 text-xs font-medium text-zinc-300; }
+  .btn { @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-transparent bg-accent px-3.5 py-2 text-sm font-semibold text-zinc-950 transition-colors hover:bg-accent-hover active:bg-accent; }
+  .btn-secondary { @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-line-strong bg-raised px-3.5 py-2 text-sm font-medium text-zinc-200 transition-colors hover:border-zinc-500 hover:bg-line; }
+  .btn-ghost { @apply inline-flex min-h-9 items-center justify-center rounded-md px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:bg-raised hover:text-zinc-100; }
+  .file-input { @apply w-full min-w-0 rounded-md border border-dashed border-line-strong bg-canvas p-2 text-xs text-muted file:mr-2 file:cursor-pointer file:rounded file:border-0 file:bg-raised file:px-2.5 file:py-1.5 file:text-xs file:font-medium file:text-zinc-200 hover:border-zinc-500; }
+  .tools-divider { @apply my-5 border-t border-line; }
+  .field-note { @apply text-xs leading-relaxed text-muted; }
+  .toolbar { @apply flex flex-wrap items-center gap-2.5 rounded-lg border border-line bg-surface p-3; }
+  .search-field { @apply relative min-w-40 flex-1; }
+  .search-field input { @apply w-full pl-9; }
+  .search-icon { @apply pointer-events-none absolute top-3 left-3 size-4 text-muted; }
+  .notice { @apply text-sm text-emerald-300 [&:not(:empty)]:mb-5; }
+  .gallery-meta { @apply mb-3 flex items-center justify-between gap-3 text-xs text-muted; font-variant-numeric: tabular-nums; }
+  .photo-grid { @apply grid gap-4; grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr)); }
+  .photo-card { @apply flex min-w-0 flex-col overflow-hidden rounded-lg border border-line bg-surface transition-colors hover:border-line-strong focus-within:border-line-strong; }
+  .photo-preview { @apply flex aspect-[4/3] shrink-0 items-center justify-center overflow-hidden border-b border-line bg-[#0b0d11]; }
+  .photo-preview img { @apply h-full w-full object-contain; }
+  .preview-placeholder { @apply px-6 text-center text-xs text-muted; }
+  .photo-info { @apply flex flex-1 flex-col p-3.5; }
+  .photo-heading { @apply flex items-start justify-between gap-2; }
+  .photo-name { @apply min-w-0 truncate text-[13px] leading-5 font-semibold text-zinc-100; }
+  .camera-meta { @apply mt-2.5 truncate text-xs text-zinc-300; }
+  .lens-meta { @apply mt-1 truncate text-xs text-muted; }
+  .capture-meta { @apply mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-muted; font-variant-numeric: tabular-nums; }
+  .photo-error { @apply mt-2 text-xs leading-relaxed text-amber-300; }
+  .rating-form { @apply mt-auto flex items-center gap-2 pt-4; }
+  .rating-form select { @apply h-8 min-w-0 flex-1 text-xs; }
+  .rating-form button { @apply min-h-8 px-3 py-1 text-xs; }
+  .photo-actions { @apply mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3; }
+  .text-action { @apply inline-flex items-center gap-1.5 rounded text-xs font-medium text-zinc-300 transition-colors hover:text-white; }
+  .text-action svg { @apply size-3.5 text-muted; }
+  .photo-id { @apply mt-3 border-t border-line pt-2.5 text-[11px] text-muted; }
+  .photo-id summary { @apply w-fit cursor-pointer transition-colors hover:text-zinc-200; }
+  .photo-id code { @apply mt-2 block break-all rounded bg-canvas p-2 text-[10px] leading-relaxed select-all; }
+  .empty-state { @apply flex min-h-48 items-center justify-center rounded-lg border border-dashed border-line-strong text-sm text-muted; }
+  .jobs-panel { @apply p-4; }
+  .section-label { @apply cursor-pointer text-xs font-semibold tracking-wide text-zinc-200; }
+  .job-list { @apply max-h-96 space-y-3 overflow-auto; }
+  .job-item { @apply border-b border-line pb-3 last:border-0 last:pb-0; }
+  .job-heading { @apply flex items-center justify-between gap-2 text-xs; }
+  .state { @apply shrink-0 rounded border border-line-strong bg-raised px-1.5 py-0.5 text-[10px] font-medium text-muted; }
+  .state-running, .state-pending, .state-queued { @apply border-amber-300/15 bg-amber-300/5 text-amber-200; }
+  .state-failed { @apply border-rose-300/15 bg-rose-300/5 text-rose-300; }
+  .state-completed { @apply border-emerald-300/15 bg-emerald-300/5 text-emerald-300; }
+  .signin-panel { @apply mx-auto mt-10 max-w-sm rounded-xl border border-line bg-surface p-7 shadow-xl shadow-black/10 sm:mt-20; }
+  .upload-progress { @apply hidden h-1 w-full overflow-hidden rounded-full border-0 bg-raised; appearance: none; }
+  .upload-progress::-webkit-progress-bar { @apply bg-raised; }
+  .upload-progress::-webkit-progress-value { @apply bg-accent; }
+  .upload-progress::-moz-progress-bar { @apply bg-accent; }
+  .htmx-indicator { @apply hidden; }
+  .htmx-request .htmx-indicator, .htmx-request.htmx-indicator { @apply inline; }
+  .htmx-request .upload-progress { @apply block; }
+}
+@media (pointer: coarse) {
+  button, .text-action, select { min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0s !important; }
+}
+@layer components {
+  .notice:not(:empty) { @apply rounded-lg border border-line bg-surface px-4 py-3; }
+}
+/* The authenticated library is an application viewport, with independent panes. */
+@layer components {
+  .app-page { height: 100vh; height: 100dvh; display: grid; grid-template-rows: 56px minmax(0, 1fr); overflow: hidden; }
+  .auth-page { min-height: 100dvh; }
+  .header-inner { @apply h-14 max-w-none px-4; }
+  .auth-shell { @apply px-5 py-7; }
+  .app-shell { @apply h-full min-h-0 w-full max-w-none overflow-hidden p-0; }
+  .workspace { @apply h-full min-h-0 grid-cols-[280px_minmax(0,1fr)] items-stretch gap-0; }
+  .sidebar { @apply static flex h-full min-h-0 flex-col gap-0 overflow-y-auto overscroll-contain border-r border-line bg-surface p-4; scrollbar-width: thin; scrollbar-color: var(--color-line-strong) transparent; }
+  .sidebar-heading { @apply hidden; }
+  .sidebar-filters { @apply mb-5 grid gap-2 border-b border-line pb-5; }
+  .choice-picker { @apply mb-2 grid min-w-0 gap-2; }
+  .tools-panel { @apply p-0; }
+  .sidebar .jobs-panel { @apply mt-5 rounded-none border-0 border-t border-line bg-transparent px-0 pt-4 pb-0; }
+  .workspace-content { @apply flex h-full min-h-0 flex-col gap-0 space-y-0 overflow-hidden; }
+  .content-header { @apply flex shrink-0 items-center justify-between gap-3 border-b border-line px-5 py-4; }
+  .page-title { @apply m-0 text-lg; }
+  .toolbar { @apply shrink-0 rounded-none border-0 border-b border-line bg-canvas px-5 py-3; }
+  .workspace-content > #gallery { @apply min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pt-4 pb-6; scrollbar-width: thin; scrollbar-color: var(--color-line-strong) transparent; }
+  .workspace-content .notice:not(:empty) { @apply mx-5 mt-3 mb-0 shrink-0; }
+  .sidebar-toggle, .sidebar-backdrop { @apply hidden; }
+  .picker-trigger { @apply flex h-10 w-full min-w-0 items-center justify-between gap-2 rounded-md border border-line-strong bg-canvas px-3 text-left text-sm text-zinc-100 hover:border-zinc-500; }
+  .picker-trigger > span { @apply truncate; }
+  .picker-trigger svg { @apply size-4 shrink-0 text-muted; }
+  .picker-menu { @apply fixed z-[100] flex min-h-0 flex-col gap-2 rounded-lg border border-line-strong bg-surface p-2 shadow-2xl shadow-black/40; }
+  .picker-menu input { @apply w-full shrink-0; }
+  .picker-options { @apply min-h-0 overflow-y-auto overscroll-contain; }
+  .picker-option { @apply flex min-h-9 cursor-pointer items-center justify-between gap-3 rounded px-2.5 py-2 text-xs leading-relaxed text-zinc-300 hover:bg-raised; overflow-wrap: anywhere; }
+  .picker-option.is-active { @apply bg-raised text-zinc-100; }
+  .picker-option[aria-selected="true"] { @apply text-accent; }
+  .picker-option[aria-selected="true"]::after { content: "✓"; @apply shrink-0; }
+  .picker-empty { @apply px-2.5 py-3 text-xs text-muted; }
+  [data-picker-menu][hidden], [data-picker-trigger][hidden], .picker-option[hidden], [data-picker-empty][hidden], [data-picker-native][hidden] { display: none !important; }
+}
+@media (max-width: 767px) {
+  .workspace { grid-template-columns: minmax(0, 1fr); }
+  .sidebar { display: none; position: fixed; top: 56px; bottom: 0; left: 0; z-index: 40; height: auto; width: min(300px, calc(100vw - 32px)); }
+  .sidebar-open .sidebar { display: flex; }
+  .sidebar-toggle { display: inline-flex; }
+  .sidebar-heading { @apply mb-4 flex items-center justify-between gap-2 text-sm font-medium; }
+  .sidebar-backdrop { position: fixed; inset: 56px 0 0; z-index: 30; background: rgb(0 0 0 / 55%); }
+  .sidebar-open .sidebar-backdrop { display: block; }
+  .content-header { @apply px-4 py-3; }
+  .toolbar { @apply px-4; }
+  .workspace-content > #gallery { @apply px-4; }
+  .workspace-content .notice:not(:empty) { @apply mx-4; }
+}

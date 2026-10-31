@@ -1,10 +1,10 @@
 [package]
 name = "aigle-exiv2-sys"
-description = "Narrow C shim over the system Exiv2 for aigle's XMP sidecars"
+description = "Narrow C shim over the managed Exiv2 for aigle's XMP sidecars"
 version.workspace = true
 edition.workspace = true
-# The crate glue is AGPL like the workspace; it links the system Exiv2 (GPL-2.0-or-later)
-# dynamically.
+# The crate glue is AGPL like the workspace; it links the managed Exiv2 (GPL-2.0-or-later)
+# from the project vcpkg installation.
 license = "AGPL-3.0-only"
 rust-version.workspace = true
 links = "aigle_exiv2"

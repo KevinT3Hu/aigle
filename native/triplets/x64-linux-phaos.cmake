@@ -1,0 +1,12 @@
+set(VCPKG_TARGET_ARCHITECTURE x64)
+set(VCPKG_CMAKE_SYSTEM_NAME Linux)
+set(VCPKG_LIBRARY_LINKAGE static)
+set(VCPKG_CRT_LINKAGE dynamic)
+set(VCPKG_BUILD_TYPE release)
+set(VCPKG_C_FLAGS "-fPIC")
+set(VCPKG_CXX_FLAGS "-fPIC")
+# LibRaw can unwind C++ exceptions through libjpeg's C frames.
+if(PORT STREQUAL "libjpeg-turbo")
+    string(APPEND VCPKG_C_FLAGS " -funwind-tables")
+    string(APPEND VCPKG_CXX_FLAGS " -funwind-tables")
+endif()

@@ -1,0 +1,16 @@
+# Install as /etc/thesauros/server.toml. Paths are absolute in production.
+listen = "127.0.0.1:8787"
+data = "/var/lib/thesauros"
+import_roots = ["/srv/photos"]
+public_url = "https://photos.example.com"
+# The systemd unit supplies --token-file using LoadCredential.
+
+max_upload_bytes = 4294967296 # 4 GiB per RAW
+upload_concurrency = 4
+index_workers = 2             # Also bounds all concurrent native parser processes.
+parser_memory_bytes = 2147483648 # 2 GiB address-space limit per parser process.
+max_queued_jobs = 1000
+min_free_bytes = 536870912    # Preserve 512 MiB of free space.
+session_ttl_seconds = 43200   # 12 hours, fixed expiration.
+request_timeout_seconds = 900 # Upload/form request deadline; streaming downloads continue.
+shutdown_seconds = 330       # Allows the native parser's 300-second timeout to expire.

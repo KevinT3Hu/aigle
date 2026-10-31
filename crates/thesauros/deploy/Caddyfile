@@ -1,0 +1,8 @@
+# Replace the domain in both this file and server.toml.
+photos.example.com {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8787
+    log {
+        format json
+    }
+}

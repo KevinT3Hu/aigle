@@ -1,0 +1,93 @@
+--- a/src/demosaic/rcd.cc
++++ b/src/demosaic/rcd.cc
+@@ -17,6 +17,9 @@
+  *  along with RawTherapee.  If not, see <http://www.gnu.org/licenses/>.
+  */
+ #include <cmath>
++#include <cstring>
++#include <atomic> // aigle patch: cancellation is shared by RCD tile threads
++#include <thread> // aigle patch: cap team to available hardware
+ #include <memory>
+ 
+ #include "bayerhelper.h"
+@@ -57,9 +60,12 @@
+     }
+ 
+     rpError rc = RP_NO_ERROR;
++    std::atomic<bool> cancelled{false}; // aigle patch
+ 
+     double progress = 0.0;
+-    setProgCancel(progress);
++    if (setProgCancel(progress)) {
++        return RP_CANCELLED; // aigle patch: honour cancellation before small images too
++    }
+     
+     constexpr int tileBorder = 9; // avoid tile-overlap errors
+     constexpr int rcdBorder = 9;
+@@ -74,7 +80,7 @@
+     constexpr float scale = 65536.f;
+ 
+ #ifdef _OPENMP
+-#pragma omp parallel if(multiThread)
++#pragma omp parallel if(multiThread) num_threads(std::max(1u, std::min(8u, std::thread::hardware_concurrency()))) // aigle patch: bounded team
+ #endif
+ {
+     int progresscounter = 0;
+@@ -103,6 +109,9 @@
+ #endif
+         for(int tr = 0; tr < numTh; ++tr) {
+             for(int tc = 0; tc < numTw; ++tc) {
++                if (cancelled) {
++                    continue; // aigle patch
++                }
+                 const int rowStart = tr * tileSizeN;
+                 const int rowEnd = std::min(rowStart + tileSize, height);
+                 if(rowStart + rcdBorder == rowEnd - rcdBorder) {
+@@ -116,6 +125,17 @@
+ 
+                 const int tileRows = std::min(rowEnd - rowStart, tileSize);
+                 const int tilecols = std::min(colEnd - colStart, tileSize);
++                // aigle patch: partial edge tiles sample padding in the scratch planes.
++                // Clear it rather than inheriting a previous tile's data on this worker.
++                if (tileRows < tileSize || tilecols < tileSize) {
++                    memset(cfa, 0, tileSize * tileSize * sizeof(float));
++                    memset(rgb, 0, 3 * tileSize * tileSize * sizeof(float));
++                    memset(VH_Dir, 0, tileSize * tileSize * sizeof(float));
++                    memset(PQ_Dir, 0, tileSize * tileSize / 2 * sizeof(float));
++                    memset(P_CDiff_Hpf, 0, tileSize * tileSize / 2 * sizeof(float));
++                    memset(Q_CDiff_Hpf, 0, tileSize * tileSize / 2 * sizeof(float));
++                }
++
+ 
+                 for (int row = rowStart; row < rowEnd; row++) {
+                     const int c0 = fc(cfarray, row, colStart);
+@@ -310,14 +330,16 @@
+                 }
+ 
+                 progresscounter++;
+-                if(progresscounter % 32 == 0) {
++                if(progresscounter % 8 == 0) {
+ #ifdef _OPENMP
+                     #pragma omp critical (rcdprogress)
+ #endif
+                     {
+-                        progress += (double)32 * ((tileSizeN) * (tileSizeN)) / (height * width);
++                        progress += (double)8 * ((tileSizeN) * (tileSizeN)) / (height * width);
+                         progress = progress > 1.0 ? 1.0 : progress;
+-                        setProgCancel(progress);
++                        if (setProgCancel(progress)) {
++                            cancelled = true; // aigle patch
++                        }
+                     }
+                 }
+             }
+@@ -330,6 +352,9 @@
+     free(P_CDiff_Hpf);
+     free(Q_CDiff_Hpf);
+ }
++    if (cancelled) {
++        return RP_CANCELLED; // aigle patch
++    }
+     if (!rc) {
+         rc = bayerborder_demosaic(width, height, rcdBorder, rawData, red, green, blue, cfarray);
+     }

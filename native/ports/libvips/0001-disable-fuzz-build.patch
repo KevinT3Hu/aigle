@@ -1,0 +1,8 @@
+--- a/meson.build
++++ b/meson.build
+@@ -780,4 +780,4 @@
+ subdir('po')
+ subdir('tools')
+ subdir('test')
+-subdir('fuzz')
++

@@ -1,0 +1,14 @@
+{
+  "name": "thesauros-assets",
+  "private": true,
+  "scripts": {
+    "build": "tailwindcss -i assets/input.css -o assets/app.css --minify && node scripts/vendor-assets.mjs",
+    "test:browser": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@tailwindcss/cli": "4.3.3",
+    "htmx.org": "2.0.11",
+    "tailwindcss": "4.3.3"
+  }
+}
