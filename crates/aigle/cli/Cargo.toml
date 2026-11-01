@@ -18,9 +18,9 @@ aigle-isolate.workspace = true
 aigle-library.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-signal-hook = "0.4"
+signal-hook = "0.4.6"
 tracing.workspace = true
-tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [lints]
 workspace = true

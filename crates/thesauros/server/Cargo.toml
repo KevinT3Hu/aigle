@@ -15,16 +15,16 @@ aigle-libraw-sys.workspace = true
 aigle-exiv2-sys.workspace = true
 axum = { workspace = true, features = ["multipart"] }
 topcoat = { version = "=0.11.0", default-features = false, features = ["router", "view", "htmx", "tower", "anyhow"] }
-tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["fs"] }
-toml = "0.9"
-rand = "0.9"
+tower = { version = "0.5.3", features = ["util"] }
+tower-http = { version = "0.6.11", features = ["fs"] }
+toml = "0.9.12"
+rand = "0.9.5"
 tracing.workspace = true
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-fs2 = "0.4"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+fs2 = "0.4.3"
 rustix = { workspace = true, features = ["process"] }
 thiserror.workspace = true
-url = "2"
+url = "2.5.8"
 anyhow.workspace = true
 blake3.workspace = true
 clap.workspace = true
@@ -34,11 +34,11 @@ parking_lot.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-subtle = "2"
+subtle = "2.6.1"
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "fs", "io-util", "signal", "time"] }
-tokio-util = { version = "0.7", features = ["io", "rt"] }
-percent-encoding = "2"
+tokio-util = { version = "0.7.20", features = ["io", "rt"] }
+percent-encoding = "2.3.2"
 
 [dev-dependencies]
 aigle-remote.workspace = true

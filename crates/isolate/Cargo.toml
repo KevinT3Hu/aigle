@@ -9,7 +9,7 @@ rust-version.workspace = true
 [dependencies]
 aigle-engine-api.workspace = true
 bytemuck.workspace = true
-memmap2 = "0.9"
+memmap2 = "0.9.12"
 rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true

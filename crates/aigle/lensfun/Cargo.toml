@@ -10,7 +10,7 @@ rust-version.workspace = true
 
 [dependencies]
 aigle-core.workspace = true
-roxmltree = "0.21.1"
+roxmltree = "0.21.2"
 
 [lints]
 workspace = true

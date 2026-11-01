@@ -23,7 +23,7 @@ members = [
     "crates/thesauros/server",
 ]
 # Nightly-only SPIR-V build (doc 04 §3); has its own workspace and toolchain.
-exclude = ["crates/aigle/kernels-build", "vendor/gpui-pre", "vendor/gpui-pre-wgpu", "vendor/gpui-pre-linux"]
+exclude = ["crates/aigle/kernels-build", "vendor/gpui"]
 
 [workspace.package]
 version = "0.1.0"
@@ -33,11 +33,11 @@ repository = "https://example.invalid/aigle"
 rust-version = "1.99"
 
 [workspace.dependencies]
-anyhow = "1"
-axum = "0.8"
-clap = { version = "4", features = ["derive"] }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-tempfile = "3"
+anyhow = "1.0.104"
+axum = "0.8.9"
+clap = { version = "4.6.7", features = ["derive"] }
+reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+tempfile = "3.27.0"
 aigle-core = { path = "crates/core" }
 aigle-engine-api = { path = "crates/engine-api" }
 aigle-kernels = { path = "crates/aigle/kernels" }
@@ -52,27 +52,27 @@ aigle-remote = { path = "crates/remote" }
 aigle-lensfun = { path = "crates/aigle/lensfun" }
 aigle-isolate = { path = "crates/isolate" }
 
-blake3 = "1.8"
-bytemuck = { version = "1.23", features = ["extern_crate_alloc"] }
-futures = "0.3.31"
-half = { version = "2.6", features = ["bytemuck"] }
-image = { version = "0.25.6", default-features = false, features = ["png", "jpeg", "tiff"] }
-libm = "0.2.15"
-parking_lot = "0.12.4"
-rayon = "1.11"
+blake3 = "1.8.7"
+bytemuck = { version = "1.25.2", features = ["extern_crate_alloc"] }
+futures = "0.3.34"
+half = { version = "2.7.1", features = ["bytemuck"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "tiff"] }
+libm = "0.2.16"
+parking_lot = "0.12.5"
+rayon = "1.12.0"
 # Bundled SQLite: the catalog must not depend on the system library's version.
-rusqlite = { version = "=0.41.0", features = ["bundled", "backup"] }
+rusqlite = { version = "=0.41.1", features = ["bundled", "backup"] }
 # Safe renameat2(RENAME_NOREPLACE) for moving photos without overwriting; poll, pipe sizes
 # and stdio redirection for worker processes.
 rustix = { version = "1.1.6", features = ["fs", "event", "pipe", "stdio", "net"] }
-schemars = "1.0"
-serde = { version = "1.0.219", features = ["derive", "rc"] }
+schemars = "1.2.3"
+serde = { version = "1.0.229", features = ["derive", "rc"] }
 # float_roundtrip: decoder results cross the worker boundary as JSON and must parse back
 # to the same f64.
-serde_json = { version = "1.0.140", features = ["float_roundtrip"] }
-thiserror = "2.0.12"
-tokio = { version = "1.47", default-features = false, features = ["sync"] }
-tracing = "0.1.41"
+serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", default-features = false, features = ["sync"] }
+tracing = "0.1.44"
 trash = "5.2.9"
 
 [workspace.lints.rust]
@@ -93,6 +93,6 @@ opt-level = 2
 
 # Native HDR canvas integration; patches preserve GPUI image rendering for other UI.
 [patch.crates-io]
-gpui-pre = { path = "vendor/gpui-pre" }
-gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
-gpui-pre-linux = { path = "vendor/gpui-pre-linux" }
+gpui-pre = { path = "vendor/gpui/crates/gpui" }
+gpui-pre-wgpu = { path = "vendor/gpui/crates/gpui_wgpu" }
+gpui-pre-linux = { path = "vendor/gpui/crates/gpui_linux" }

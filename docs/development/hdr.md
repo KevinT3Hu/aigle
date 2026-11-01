@@ -115,7 +115,8 @@ while detailed tiles arrive. Both sides of split comparison use the native path.
 Canvas layout follows GPUI bounds and display scale. The worker shuts down before
 the child surface is destroyed.
 
-Three vendored GPUI 0.3.9 crates supply the small platform/renderer changes:
+Three GPUI 0.3.10 crates in the pinned `vendor/gpui` fork submodule supply the
+small platform/renderer changes:
 an owned native-surface accessor and an ordered, clipped transparent-hole draw.
 The latter replaces destination alpha rather than blending transparent black;
 subsequent tool overlays remain visible. See `../../vendor/README.md`.

@@ -19,11 +19,11 @@ aigle-vips-sys.workspace = true
 exr = "=1.74.2"
 png = "=0.18.1"
 blake3.workspace = true
-bytemuck = "1.23"
+bytemuck = "1.25.2"
 futures.workspace = true
 half.workspace = true
-memmap2 = "0.9.11"
-libc = "0.2.186"
+memmap2 = "0.9.12"
+libc = "0.2.191"
 parking_lot.workspace = true
 rayon.workspace = true
 serde.workspace = true
@@ -37,7 +37,7 @@ workspace = true
 
 [dev-dependencies]
 image.workspace = true
-tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [[test]]
 name = "isolated"

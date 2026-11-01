@@ -154,7 +154,14 @@ the rebuilt CLI to Ultra HDR JPEG with `LD_LIBRARY_PATH` unset; the managed
 libvips tool recognized its embedded gain map. GUI platform libraries remain
 host-provided as documented in the native setup guide.
 
-GPUI patches were also independently reconstructed from the original 0.3.9 crate
-archives and compared byte for byte with the current vendored files. Source
-archives and compiler caches are build artifacts; the reviewable patch files,
-archive checksums and overlay recipes are committed-source inputs.
+During the initial native-dependency migration, GPUI patches were independently
+reconstructed from the original 0.3.9 crate archives and compared byte for byte
+with the then-vendored files. Those historical patches and checksums remain in
+Git history. Source archives and compiler caches are build artifacts; current
+GPUI patch commits, snapshot checksums, and native overlay recipes are versioned
+source inputs.
+
+The current GPUI sources are pinned through the `vendor/gpui` submodule in
+[KevinT3Hu/aigle-gpui](https://github.com/KevinT3Hu/aigle-gpui), a fork of Zed.
+Published snapshot packaging and Aigle HDR changes are separate commits; see
+[the upgrade workflow](../../vendor/README.md).

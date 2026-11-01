@@ -215,7 +215,7 @@ impl KeybindingEditor {
                             cx.emit(Closed);
                         }
                     } else {
-                        let key = event.keystroke.unparse();
+                        let key = event.keystroke.unparse(cx.platform_info().os);
                         editor.recorded.push(key);
                         editor.set_input(editor.recorded.join(" "), window, cx);
                     }

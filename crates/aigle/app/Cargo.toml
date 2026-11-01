@@ -19,17 +19,17 @@ aigle-isolate.workspace = true
 aigle-library.workspace = true
 aigle-remote.workspace = true
 blake3.workspace = true
-anyhow = "1.0.98"
+anyhow = "1.0.104"
 futures.workspace = true
 rig-core = { version = "=0.43.0", default-features = false }
 rig-agent = { version = "=0.43.0", default-features = false }
 rig-reqwest = { version = "=0.43.0", default-features = false, features = ["rustls"] }
 tokio = { workspace = true, features = ["rt", "time", "net", "macros"] }
-base64 = "0.22"
-gpui = { version = "=0.3.9", package = "gpui-pre" }
-gpui_platform = { version = "=0.3.9", package = "gpui-pre-platform", features = ["wayland", "x11", "font-kit"] }
-gpui-component = "=0.8.0"
-gpui-kit-assets = "=0.8.0"
+base64 = "0.22.1"
+gpui = { version = "=0.3.10", package = "gpui-pre" }
+gpui_platform = { version = "=0.3.10", package = "gpui-pre-platform", features = ["wayland", "x11", "font-kit"] }
+gpui-component = "=0.8.1"
+gpui-kit-assets = "=0.8.1"
 image = { workspace = true }
 half.workspace = true
 rustix.workspace = true
@@ -42,12 +42,12 @@ serde.workspace = true
 serde_json.workspace = true
 sysinfo = { version = "0.31.4", default-features = false, features = ["system"] }
 tracing.workspace = true
-tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 zbus = { version = "=5.19.0", default-features = false, features = ["async-io"] }
-signal-hook = "0.4"
+signal-hook = "0.4.6"
 
 [lints]
 workspace = true
 
 [dev-dependencies]
-gpui_wgpu = { version = "=0.3.9", package = "gpui-pre-wgpu", features = ["test-support"] }
+gpui_wgpu = { version = "=0.3.10", package = "gpui-pre-wgpu", features = ["test-support"] }

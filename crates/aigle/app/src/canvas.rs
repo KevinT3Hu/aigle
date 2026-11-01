@@ -24,7 +24,7 @@ use aigle_engine_api::{
 use gpui::{
     App, Bounds, Context, Corners, CursorStyle, Entity, IntoElement, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder, Pixels, Point, Render, RenderImage,
-    ScrollWheelEvent, Styled, Task, Window, canvas, div, fill, point, prelude::*, px, rgb, size,
+    ScrollEvent, Styled, Task, Window, canvas, div, fill, point, prelude::*, px, rgb, size,
 };
 use gpui_component::v_flex;
 use image::{Frame as ImageFrame, RgbaImage};
@@ -1325,7 +1325,7 @@ impl Canvas {
         }
     }
 
-    fn on_scroll(&mut self, e: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_scroll(&mut self, e: &ScrollEvent, _: &mut Window, cx: &mut Context<Self>) {
         if self.tool == Tool::Crop {
             return;
         }
@@ -1676,7 +1676,7 @@ impl Render for Canvas {
                 MouseButton::Left,
                 cx.listener(|c, _: &MouseUpEvent, _, cx| c.end_drag(cx)),
             )
-            .on_scroll_wheel(cx.listener(Self::on_scroll))
+            .on_scroll(cx.listener(Self::on_scroll))
             .child(
                 canvas(
                     move |bounds, window, cx| {

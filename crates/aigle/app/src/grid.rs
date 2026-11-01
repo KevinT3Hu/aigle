@@ -123,7 +123,7 @@ pub fn on_pick(
         lib.update(cx, |l, cx| {
             if m.shift {
                 l.extend_select(index, cx);
-            } else if m.secondary() {
+            } else if m.secondary(cx) {
                 l.toggle_select(index, cx);
             } else {
                 l.select(index, cx);

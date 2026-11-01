@@ -1,5 +1,6 @@
 # Managed native dependencies
 
+Initialize the GPUI submodule with `git submodule update --init --recursive`.
 Run `cargo xtask native-deps` once before building Aigle, or
 `cargo xtask native-deps --server` for the smaller Thesauros-only dependency graph.
 Then use ordinary `cargo build`, `cargo test`, and `cargo run` commands.
@@ -45,8 +46,8 @@ LibRaw's decoder files remain serial. Float/optimization settings are explicit.
 Do not replace this with upstream's blanket OpenMP option.
 
 The remaining GPUI Rust patches stay under Cargo's `[patch.crates-io]` mechanism.
-Their independent patch files and pristine crate checksums are recorded in
-[`vendor/patches`](../vendor/patches/README.md).
+The published snapshot checksums and focused HDR commits are tracked in
+[the GPUI fork and baseline workflow](../vendor/README.md).
 
 ## Updating dependencies
 

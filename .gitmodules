@@ -1,0 +1,5 @@
+[submodule "gpui"]
+	path = vendor/gpui
+	url = https://github.com/KevinT3Hu/aigle-gpui.git
+	branch = aigle/gpui-0.3.10
+	shallow = true

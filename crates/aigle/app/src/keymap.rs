@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use anyhow::{Context as _, Result, bail};
-use gpui::{App, DummyKeyboardMapper, Global, KeyBinding, KeyBindingContextPredicate, Keystroke};
+use gpui::{App, Global, KeyBinding, KeyBindingContextPredicate, Keystroke, OperatingSystem};
 
 use crate::actions::{CONTEXT, Quit};
 
@@ -26,10 +26,11 @@ pub fn normalize(key: &str) -> Result<String> {
     if key.trim().is_empty() {
         bail!("A shortcut cannot be empty");
     }
+    // Keep persisted modifier names canonical across host operating systems.
     key.split_whitespace()
         .map(|key| {
-            Keystroke::parse(key)
-                .map(|key| key.unparse())
+            Keystroke::parse_with_os(key, OperatingSystem::Unknown)
+                .map(|key| key.unparse(OperatingSystem::Unknown))
                 .map_err(Into::into)
         })
         .collect::<Result<Vec<_>>>()
@@ -92,14 +93,7 @@ fn prepare(bindings: &Bindings, cx: &App) -> Result<Vec<KeyBinding>> {
             .build_action(name, None)
             .with_context(|| format!("Unknown action {name:?} for {key:?}"))?;
         let context = Some(Rc::new(binding_context(name)?));
-        loaded.push(KeyBinding::load(
-            key,
-            action,
-            context,
-            false,
-            None,
-            &DummyKeyboardMapper,
-        )?);
+        loaded.push(KeyBinding::load(key, action, context, false, None, cx)?);
     }
     Ok(loaded)
 }

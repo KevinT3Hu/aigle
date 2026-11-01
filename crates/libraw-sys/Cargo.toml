@@ -15,5 +15,5 @@ build = "build.rs"
 image.workspace = true
 
 [build-dependencies]
-cc = { version = "1.2", features = ["parallel"] }
-pkg-config = "0.3.32"
+cc = { version = "1.10.0", features = ["parallel"] }
+pkg-config = "0.3.34"

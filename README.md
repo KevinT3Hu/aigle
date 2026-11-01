@@ -27,8 +27,10 @@ Native image-processing libraries are pinned and built with vcpkg. Install the
 host build tools, then run `cargo xtask native-deps` (Aigle) or
 `cargo xtask native-deps --server` (Thesauros only). See
 [managed native dependencies](native/README.md) for prerequisites and patch ownership.
+GPUI comes from a pinned fork submodule; see [its baseline upgrade workflow](vendor/README.md).
 
 ```sh
+git submodule update --init --recursive
 cargo xtask native-deps
 cargo check -p thesauros -p aigle-remote
 cargo test -p thesauros -p aigle-remote
