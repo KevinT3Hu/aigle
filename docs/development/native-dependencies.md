@@ -54,7 +54,6 @@ later if multiple repositories need independently versioned copies of the ports.
 | RCD polling every eight rather than 32 tiles | Responsiveness policy, not image correctness. | Keep initially; tune only with cancellation latency measurements. |
 | Bounded teams and CA `multiThread` parameter | CPU-budget policy and selectable serial reference execution. A process-global `OMP_NUM_THREADS` setting does not express our per-operation control. | Keep bounded operation-level control. The specific eight-worker cap is tunable. |
 | LibRaw Nikon buffered input, local bit state and paired predictors | Optional performance optimization, not required to decode correctly. This audit measured a material improvement with identical outputs on one local NEF. | Keep as a separate performance patch, with upstream/multi-camera validation required when rebasing. |
-| GPUI native surface ownership and transparent-hole rendering | Required by the current embedded Wayland HDR canvas architecture. | Keep in Cargo's patched crates; these are not C/C++ packages to move into vcpkg. |
 
 There is no demonstrated redundant source patch to delete as part of packaging.
 Separate these concerns into named patches so upstream upgrades can retire one
@@ -136,7 +135,6 @@ the Nikon performance patch should be retained.
 * [librtprocess source baseline](https://github.com/CarVac/librtprocess/tree/9a858270acb2096e2e403d932760ee688fcac425)
 * [LibRaw source baseline](https://github.com/LibRaw/LibRaw/tree/24fa7e5463cbf8b8615dbd2b16c933a294d52400)
 * [Project RAW performance and validation history](raw-loading.md)
-* [GPUI patch description](../../vendor/README.md)
 
 ## Migration validation
 
@@ -154,14 +152,5 @@ the rebuilt CLI to Ultra HDR JPEG with `LD_LIBRARY_PATH` unset; the managed
 libvips tool recognized its embedded gain map. GUI platform libraries remain
 host-provided as documented in the native setup guide.
 
-During the initial native-dependency migration, GPUI patches were independently
-reconstructed from the original 0.3.9 crate archives and compared byte for byte
-with the then-vendored files. Those historical patches and checksums remain in
-Git history. Source archives and compiler caches are build artifacts; current
-GPUI patch commits, snapshot checksums, and native overlay recipes are versioned
-source inputs.
-
-The current GPUI sources are pinned through the `vendor/gpui` submodule in
-[KevinT3Hu/aigle-gpui](https://github.com/KevinT3Hu/aigle-gpui), a fork of Zed.
-Published snapshot packaging and Aigle HDR changes are separate commits; see
-[the upgrade workflow](../../vendor/README.md).
+The former GPUI patches and their validation records remain in Git history.
+The Qt frontend uses upstream Qt; the GPUI submodule has been removed.

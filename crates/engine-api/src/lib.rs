@@ -9,7 +9,7 @@
 //! * one-shot work returns a [`Job`], which cancels on drop.
 //!
 //! No call blocks the caller. Channels are `tokio::sync` primitives that do not need a tokio
-//! runtime, so they work with GPUI's executor.
+//! runtime, so frontends can use their own executors.
 
 mod job;
 mod types;

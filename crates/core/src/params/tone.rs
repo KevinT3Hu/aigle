@@ -132,6 +132,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn curve_gui_interpolation_reference() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/curve-interpolation.json")).unwrap();
+        for case in cases.as_array().unwrap() {
+            let points: Vec<CurvePoint> = serde_json::from_value(case["points"].clone()).unwrap();
+            let spline = Spline::new(&points).unwrap();
+            for sample in case["samples"].as_array().unwrap() {
+                assert!((spline.eval(sample[0].as_f64().unwrap()) - sample[1].as_f64().unwrap()).abs() < 1e-9);
+            }
+        }
+    }
+
+    #[test]
     fn spline_passes_through_points_and_stays_monotone() {
         let pts = [
             CurvePoint { x: 0.0, y: 0.0 },

@@ -1,0 +1,562 @@
+[
+  {
+    "title": "Light & white balance",
+    "sections": [
+      {
+        "title": "White Balance",
+        "extra": "WhiteBalance",
+        "rows": [
+          {
+            "path": "wb.temperature",
+            "label": "Temperature"
+          },
+          {
+            "path": "wb.tint",
+            "label": "Tint"
+          }
+        ]
+      },
+      {
+        "title": "Tone",
+        "extra": "None",
+        "rows": [
+          {
+            "path": "light.exposure",
+            "label": "Exposure"
+          },
+          {
+            "path": "light.contrast",
+            "label": "Contrast"
+          },
+          {
+            "path": "light.highlights",
+            "label": "Highlights"
+          },
+          {
+            "path": "light.shadows",
+            "label": "Shadows"
+          },
+          {
+            "path": "light.whites",
+            "label": "Whites"
+          },
+          {
+            "path": "light.blacks",
+            "label": "Blacks"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "title": "Curves",
+    "sections": [
+      {
+        "title": "Point Curve",
+        "extra": "PointCurve",
+        "rows": []
+      },
+      {
+        "title": "Parametric Curve",
+        "extra": "None",
+        "rows": [
+          {
+            "path": "curve.parametric.highlights",
+            "label": "Highlights"
+          },
+          {
+            "path": "curve.parametric.lights",
+            "label": "Lights"
+          },
+          {
+            "path": "curve.parametric.darks",
+            "label": "Darks"
+          },
+          {
+            "path": "curve.parametric.shadows",
+            "label": "Shadows"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "title": "Color",
+    "sections": [
+      {
+        "title": "Presence",
+        "extra": "None",
+        "rows": [
+          {
+            "path": "presence.vibrance",
+            "label": "Vibrance"
+          },
+          {
+            "path": "presence.saturation",
+            "label": "Saturation"
+          }
+        ]
+      },
+      {
+        "title": "Treatment",
+        "extra": "Treatment",
+        "rows": []
+      },
+      {
+        "title": "B&W Mix",
+        "extra": "None",
+        "rows": [
+          {
+            "path": "bw.red",
+            "label": "Red"
+          },
+          {
+            "path": "bw.orange",
+            "label": "Orange"
+          },
+          {
+            "path": "bw.yellow",
+            "label": "Yellow"
+          },
+          {
+            "path": "bw.green",
+            "label": "Green"
+          },
+          {
+            "path": "bw.aqua",
+            "label": "Aqua"
+          },
+          {
+            "path": "bw.blue",
+            "label": "Blue"
+          },
+          {
+            "path": "bw.purple",
+            "label": "Purple"
+          },
+          {
+            "path": "bw.magenta",
+            "label": "Magenta"
+          }
+        ]
+      },
+      {
+        "title": "Hue",
+        "extra": "None",
+        "rows": [
+          {
+            "path": "mixer.red.hue",
+            "label": "Red"
+          },
+          {
+            "path": "mixer.orange.hue",
+            "label": "Orange"
+          },
+          {
+            "path": "mixer.yellow.hue",
+            "label": "Yellow"
+          },
+          {
+            "path": "mixer.green.hue",
+            "label": "Green"
+          },
+          {
+            "path": "mixer.aqua.hue",
+            "label": "Aqua"
+          },
+          {
+            "path": "mixer.blue.hue",
+            "label": "Blue"
+          },
+          {
+            "path": "mixer.purple.hue",
+            "label": "Purple"
+          },
+          {
+            "path": "mixer.magenta.hue",
+            "label": "Magenta"
+          }
+        ]
+      },
+      {
+        "title": "Saturation",
+        "extra": "None",
+        "rows": [
+          {
+            "path": "mixer.red.saturation",
+            "label": "Red"
+          },
+          {
+            "path": "mixer.orange.saturation",
+            "label": "Orange"
+          },
+          {
+            "path": "mixer.yellow.saturation",
+            "label": "Yellow"
+          },
+          {
+            "path": "mixer.green.saturation",
+            "label": "Green"
+          },
+          {
+            "path": "mixer.aqua.saturation",
+            "label": "Aqua"
+          },
+          {
+            "path": "mixer.blue.saturation",
+            "label": "Blue"
+          },
+          {
+            "path": "mixer.purple.saturation",
+            "label": "Purple"
+          },
+          {
+            "path": "mixer.magenta.saturation",
+            "label": "Magenta"
+          }
+        ]
+      },
+      {
+        "title": "Luminance",
+        "extra": "None",
+        "rows": [
+          {
+            "path": "mixer.red.luminance",
+            "label": "Red"
+          },
+          {
+            "path": "mixer.orange.luminance",
+            "label": "Orange"
+          },
+          {
+            "path": "mixer.yellow.luminance",
+            "label": "Yellow"
+          },
+          {
+            "path": "mixer.green.luminance",
+            "label": "Green"
+          },
+          {
+            "path": "mixer.aqua.luminance",
+            "label": "Aqua"
+          },
+          {
+            "path": "mixer.blue.luminance",
+            "label": "Blue"
+          },
+          {
+            "path": "mixer.purple.luminance",
+            "label": "Purple"
+          },
+          {
+            "path": "mixer.magenta.luminance",
+            "label": "Magenta"
+          }
+        ]
+      },
+      {
+        "title": "Shadows",
+        "extra": "None",
+        "rows": [
+          {
+            "path": "grading.shadows.hue",
+            "label": "Hue"
+          },
+          {
+            "path": "grading.shadows.saturation",
+            "label": "Saturation"
+          },
+          {
+            "path": "grading.shadows.luminance",
+            "label": "Luminance"
+          }
+        ]
+      },
+      {
+        "title": "Midtones",
+        "extra": "None",
+        "rows": [
+          {
+            "path": "grading.midtones.hue",
+            "label": "Hue"
+          },
+          {
+            "path": "grading.midtones.saturation",
+            "label": "Saturation"
+          },
+          {
+            "path": "grading.midtones.luminance",
+            "label": "Luminance"
+          }
+        ]
+      },
+      {
+        "title": "Highlights",
+        "extra": "None",
+        "rows": [
+          {
+            "path": "grading.highlights.hue",
+            "label": "Hue"
+          },
+          {
+            "path": "grading.highlights.saturation",
+            "label": "Saturation"
+          },
+          {
+            "path": "grading.highlights.luminance",
+            "label": "Luminance"
+          }
+        ]
+      },
+      {
+        "title": "Global",
+        "extra": "None",
+        "rows": [
+          {
+            "path": "grading.global.hue",
+            "label": "Hue"
+          },
+          {
+            "path": "grading.global.saturation",
+            "label": "Saturation"
+          },
+          {
+            "path": "grading.global.luminance",
+            "label": "Luminance"
+          }
+        ]
+      },
+      {
+        "title": "Blending",
+        "extra": "None",
+        "rows": [
+          {
+            "path": "grading.blending",
+            "label": "Blending"
+          },
+          {
+            "path": "grading.balance",
+            "label": "Balance"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "title": "Detail",
+    "sections": [
+      {
+        "title": "Presence",
+        "extra": "None",
+        "rows": [
+          {
+            "path": "presence.texture",
+            "label": "Texture"
+          },
+          {
+            "path": "presence.clarity",
+            "label": "Clarity"
+          },
+          {
+            "path": "presence.dehaze",
+            "label": "Dehaze"
+          }
+        ]
+      },
+      {
+        "title": "Sharpening",
+        "extra": "None",
+        "rows": [
+          {
+            "path": "detail.sharpen.amount",
+            "label": "Amount"
+          },
+          {
+            "path": "detail.sharpen.radius",
+            "label": "Radius"
+          },
+          {
+            "path": "detail.sharpen.detail",
+            "label": "Detail"
+          },
+          {
+            "path": "detail.sharpen.masking",
+            "label": "Masking"
+          }
+        ]
+      },
+      {
+        "title": "Noise Reduction",
+        "extra": "None",
+        "rows": [
+          {
+            "path": "detail.noise.luma",
+            "label": "Luminance"
+          },
+          {
+            "path": "detail.noise.detail",
+            "label": "Luminance Detail"
+          },
+          {
+            "path": "detail.noise.contrast",
+            "label": "Luminance Contrast"
+          },
+          {
+            "path": "detail.noise.chroma",
+            "label": "Color"
+          },
+          {
+            "path": "detail.noise.chroma_detail",
+            "label": "Color Detail"
+          }
+        ]
+      },
+      {
+        "title": "Defringe",
+        "extra": "None",
+        "rows": [
+          {
+            "path": "detail.defringe.purple_amount",
+            "label": "Purple Amount"
+          },
+          {
+            "path": "detail.defringe.purple_hue",
+            "label": "Purple Hue"
+          },
+          {
+            "path": "detail.defringe.green_amount",
+            "label": "Green Amount"
+          },
+          {
+            "path": "detail.defringe.green_hue",
+            "label": "Green Hue"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "title": "Optics & geometry",
+    "sections": [
+      {
+        "title": "Lens Correction",
+        "extra": "LensProfile",
+        "rows": [
+          {
+            "path": "lens.distortion",
+            "label": "Distortion"
+          },
+          {
+            "path": "lens.tca",
+            "label": "Chromatic Aberration"
+          },
+          {
+            "path": "lens.vignetting",
+            "label": "Vignetting"
+          }
+        ]
+      },
+      {
+        "title": "Transform",
+        "extra": "None",
+        "rows": [
+          {
+            "path": "geometry.angle",
+            "label": "Angle"
+          },
+          {
+            "path": "geometry.perspective_vertical",
+            "label": "Vertical Perspective"
+          },
+          {
+            "path": "geometry.perspective_horizontal",
+            "label": "Horizontal Perspective"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "title": "Effects",
+    "sections": [
+      {
+        "title": "Vignetting",
+        "extra": "None",
+        "rows": [
+          {
+            "path": "effects.vignette.amount",
+            "label": "Amount"
+          },
+          {
+            "path": "effects.vignette.midpoint",
+            "label": "Midpoint"
+          },
+          {
+            "path": "effects.vignette.roundness",
+            "label": "Roundness"
+          },
+          {
+            "path": "effects.vignette.feather",
+            "label": "Feather"
+          }
+        ]
+      },
+      {
+        "title": "Grain",
+        "extra": "None",
+        "rows": [
+          {
+            "path": "effects.grain.amount",
+            "label": "Amount"
+          },
+          {
+            "path": "effects.grain.size",
+            "label": "Size"
+          },
+          {
+            "path": "effects.grain.roughness",
+            "label": "Roughness"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "title": "RAW & profiles",
+    "sections": [
+      {
+        "title": "Profile",
+        "extra": "CameraProfile",
+        "rows": []
+      },
+      {
+        "title": "Decoding",
+        "extra": "RawSettings",
+        "rows": []
+      }
+    ]
+  },
+  {
+    "title": "HDR mastering",
+    "sections": [
+      {
+        "title": "HDR mastering (HDR output only)",
+        "extra": "None",
+        "rows": [
+          {
+            "path": "hdr.diffuse_white",
+            "label": "Diffuse white"
+          },
+          {
+            "path": "hdr.peak",
+            "label": "Peak brightness"
+          },
+          {
+            "path": "hdr.shoulder",
+            "label": "Highlight roll-off"
+          }
+        ]
+      }
+    ]
+  }
+]

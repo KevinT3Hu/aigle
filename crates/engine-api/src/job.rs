@@ -77,7 +77,7 @@ impl<T> Job<T> {
     }
 
     /// Block the current thread until the job finishes (CLI, tests). Never call this from the
-    /// GPUI main thread.
+    /// GUI main thread.
     pub fn wait(self) -> JobResult<T> {
         futures::executor::block_on(self)
     }

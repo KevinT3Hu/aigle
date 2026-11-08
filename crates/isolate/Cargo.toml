@@ -10,11 +10,13 @@ rust-version.workspace = true
 aigle-engine-api.workspace = true
 bytemuck.workspace = true
 memmap2 = "0.9.12"
-rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
 
 [[test]]
 name = "worker"

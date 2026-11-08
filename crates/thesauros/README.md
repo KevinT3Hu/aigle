@@ -157,10 +157,10 @@ uncooperative writes at the exact instant of rename.
 ```sh
 # Set THESAUROS_TOKEN in the client environment.
 cargo run -p aigle-remote -- list https://photos.example.com
-cargo run -p aigle-app -- --remote https://photos.example.com PHOTO_ID
+target/qt/apps/aigle/aigle-gui --remote https://photos.example.com PHOTO_ID
 # Or explicitly check out and launch a desktop binary:
 cargo run -p aigle-remote -- checkout https://photos.example.com PHOTO_ID \
-  --cache ./checkouts --open ./target/debug/aigle-gui
+  --cache ./checkouts --open ./target/qt/apps/aigle/aigle-gui
 # After saving in Aigle, push the checkout's XMP:
 cargo run -p aigle-remote -- push ./checkouts/PHOTO_ID
 cargo run -p aigle-remote -- upload https://photos.example.com /photos/*.NEF

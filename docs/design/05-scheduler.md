@@ -1,5 +1,8 @@
 # aigle — Scheduler and Workers
 
+> Historical design/migration record: the GPUI frontend and vendored fork have
+> been removed. Current GUI sources and build instructions are in `apps/aigle/`.
+
 Status: agreed (Q31–Q37). Builds on docs 01–04.
 
 Scope: how engine work is represented, which threads and queues exist, how the single GPU queue is shared between priority classes, Draft/Refined/Full timing, cancellation, AI inference scheduling, and CLI batch pipelining. Memory admission is defined in doc 03 §6; the scheduler enforces it.

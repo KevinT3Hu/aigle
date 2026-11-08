@@ -10,6 +10,7 @@
 //! gives the same out-of-core behaviour. Levels are shared by every view and job of a
 //! session.
 
+use crate::platform::map_file;
 use std::path::Path;
 
 use aigle_kernels::Rgb;
@@ -65,40 +66,6 @@ impl Clone for Pixels {
     fn clone(&self) -> Pixels {
         Pixels::Heap(self.to_vec())
     }
-}
-
-/// Move `px` into an unlinked, memory-mapped file in `dir`.
-#[allow(unsafe_code)]
-fn map_file(dir: &Path, px: &[[f16; 3]]) -> std::io::Result<memmap2::MmapMut> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    std::fs::create_dir_all(dir)?;
-    let path = dir.join(format!(
-        "level-{}-{}.f16",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(&path)?;
-    let bytes: &[u8] = bytemuck::cast_slice(px);
-    let res = (|| {
-        file.set_len(bytes.len().max(1) as u64)?;
-        // SAFETY: the file was created exclusively by this process (`create_new`) and is
-        // unlinked below before anyone else can open it by name, so no other process or
-        // mapping can modify it while this mapping lives.
-        let mut m = unsafe {
-            memmap2::MmapOptions::new()
-                .len(bytes.len())
-                .map_mut(&file)?
-        };
-        m.copy_from_slice(bytes);
-        Ok(m)
-    })();
-    let _ = std::fs::remove_file(&path);
-    res
 }
 
 /// One pyramid level. Level `L` pixel `i` covers source pixels `[i·2^L, (i+1)·2^L)`.

@@ -539,6 +539,7 @@ pub struct Volume {
 
 /// The volumes mounted below `/media` or `/run/media` (where desktop environments mount
 /// removable media), cards with a `DCIM` folder first.
+#[cfg(target_os = "linux")]
 pub fn removable_volumes() -> Vec<Volume> {
     let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
     let mut out: Vec<Volume> = volumes_in(&mounts)
@@ -557,6 +558,13 @@ pub fn removable_volumes() -> Vec<Volume> {
     out
 }
 
+#[cfg(not(target_os = "linux"))]
+pub fn removable_volumes() -> Vec<Volume> {
+    // TODO(windows): enumerate removable volumes through the native volume APIs.
+    Vec::new()
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn volumes_in(mounts: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for line in mounts.lines() {
@@ -576,6 +584,7 @@ fn volumes_in(mounts: &str) -> Vec<PathBuf> {
 }
 
 /// `/proc/mounts` writes space, tab, newline and backslash as octal escapes.
+#[cfg(any(target_os = "linux", test))]
 fn unescape(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());

@@ -59,7 +59,7 @@ pub enum CatalogError {
     Newer(i64),
 }
 
-const SCHEMA: i64 = 3;
+const SCHEMA: i64 = 4;
 
 /// [`PhotoMeta`] as stored for a virtual copy.
 #[derive(Serialize, Deserialize, Default)]
@@ -154,7 +154,13 @@ impl Catalog {
             return Err(CatalogError::Newer(version));
         }
         db.execute_batch(
-            "CREATE TABLE IF NOT EXISTS copies (
+            "CREATE TABLE IF NOT EXISTS photo_identity (
+                 dir BLOB NOT NULL,
+                 file BLOB NOT NULL,
+                 identity TEXT NOT NULL DEFAULT (lower(hex(randomblob(16)))),
+                 PRIMARY KEY (dir, file)
+             );
+             CREATE TABLE IF NOT EXISTS copies (
                  id INTEGER PRIMARY KEY,
                  dir BLOB NOT NULL,
                  file BLOB NOT NULL,
@@ -211,7 +217,7 @@ impl Catalog {
     }
 
     /// Restore only a validated catalog from this schema version.
-    pub fn restore(&self, path: &Path) -> Result<(), CatalogError> {
+    pub fn validate_backup(path: &Path) -> Result<(), CatalogError> {
         let source = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let version: i64 = source.pragma_query_value(None, "user_version", |r| r.get(0))?;
         if version != SCHEMA {
@@ -225,13 +231,41 @@ impl Catalog {
         if integrity != "ok" {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, integrity).into());
         }
-        for table in ["copies", "history", "facts", "albums", "album_photos"] {
-            source.prepare(&format!("SELECT * FROM {table} LIMIT 0"))?;
+        for query in [
+            "SELECT dir,file,identity FROM photo_identity LIMIT 0",
+            "SELECT id,dir,file,name,meta FROM copies LIMIT 0",
+            "SELECT dir,file,copy,data,updated FROM history LIMIT 0",
+            "SELECT dir,file,bytes,modified,camera,lens,captured FROM facts LIMIT 0",
+            "SELECT id,name FROM albums LIMIT 0",
+            "SELECT album,path FROM album_photos LIMIT 0",
+        ] {
+            source.prepare(query)?;
         }
+        let mut foreign_keys = source.prepare("PRAGMA foreign_key_check")?;
+        if foreign_keys.query([])?.next()?.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Backup has broken catalog references",
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    pub fn restore(&self, path: &Path) -> Result<(), CatalogError> {
+        Self::validate_backup(path)?;
         self.db
             .lock()
             .restore(rusqlite::MAIN_DB, path, rusqlite::backup::NO_PROGRESS)?;
         Ok(())
+    }
+
+    /// Durable identity shared by a master's copies; moves and relinks preserve it.
+    pub fn photo_identity(&self, path: &Path) -> Result<String, CatalogError> {
+        let (dir, file) = split(path);
+        let db = self.db.lock();
+        db.execute("INSERT OR IGNORE INTO photo_identity (dir,file) VALUES (?1,?2)", params![dir,file])?;
+        Ok(db.query_row("SELECT identity FROM photo_identity WHERE dir=?1 AND file=?2", params![dir,file], |r| r.get(0))?)
     }
 
     pub fn albums(&self) -> Result<Vec<(i64, String)>, CatalogError> {
@@ -282,6 +316,7 @@ impl Catalog {
         Ok(())
     }
 
+    #[cfg(unix)]
     pub fn album_paths(&self, id: i64) -> Result<Vec<PathBuf>, CatalogError> {
         use std::os::unix::ffi::OsStringExt;
         let db = self.db.lock();
@@ -293,6 +328,35 @@ impl Catalog {
                 Ok(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
             })?
             .collect::<Result<_, _>>()?)
+    }
+
+    #[cfg(not(unix))]
+    pub fn album_paths(&self, _id: i64) -> Result<Vec<PathBuf>, CatalogError> {
+        // TODO(windows): define reversible native path encoding for catalog entries.
+        unimplemented!("Windows catalog path decoding")
+    }
+
+    pub fn rename_album(&self, id: i64, name: &str) -> Result<(), CatalogError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Album name cannot be empty",
+            )
+            .into());
+        }
+        let changed = self.db.lock().execute(
+            "UPDATE albums SET name = ?2 WHERE id = ?1",
+            params![id, name],
+        )?;
+        if changed == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Album no longer exists",
+            )
+            .into());
+        }
+        Ok(())
     }
 
     pub fn delete_album(&self, id: i64) -> Result<(), CatalogError> {
@@ -478,7 +542,7 @@ impl Catalog {
         let mut db = self.db.lock();
         let tx = db.transaction()?;
         if !replace {
-            let occupied: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM history WHERE dir = ?1 AND file = ?2 UNION ALL SELECT 1 FROM copies WHERE dir = ?1 AND file = ?2)",
+            let occupied: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM history WHERE dir = ?1 AND file = ?2 UNION ALL SELECT 1 FROM copies WHERE dir = ?1 AND file = ?2 UNION ALL SELECT 1 FROM photo_identity WHERE dir = ?1 AND file = ?2)",
                 params![td, tf], |r| r.get(0))?;
             if occupied {
                 return Err(std::io::Error::new(
@@ -496,6 +560,8 @@ impl Catalog {
             "DELETE FROM copies WHERE dir = ?1 AND file = ?2",
             params![td, tf],
         )?;
+        tx.execute("DELETE FROM photo_identity WHERE dir = ?1 AND file = ?2", params![td,tf])?;
+        tx.execute("UPDATE photo_identity SET dir = ?3, file = ?4 WHERE dir = ?1 AND file = ?2", params![fd,ff,td,tf])?;
         tx.execute(
             "UPDATE history SET dir = ?3, file = ?4 WHERE dir = ?1 AND file = ?2",
             params![fd, ff, td, tf],
@@ -540,6 +606,7 @@ impl Catalog {
             "DELETE FROM facts WHERE dir = ?1 AND file = ?2",
             params![dir, file],
         )?;
+        tx.execute("DELETE FROM photo_identity WHERE dir = ?1 AND file = ?2", params![dir,file])?;
         tx.commit()?;
         Ok(())
     }
@@ -615,6 +682,28 @@ mod tests {
     }
 
     #[test]
+    fn durable_identity_survives_moves_relinks_and_restart() {
+        let path = std::env::temp_dir().join(format!("aigle-identity-{}.sqlite3", std::process::id()));
+        let catalog = Catalog::open(&path).unwrap();
+        let a = Path::new("/photos/identity-a.nef");
+        let b = Path::new("/photos/identity-b.nef");
+        let c = Path::new("/photos/identity-c.nef");
+        let identity = catalog.photo_identity(a).unwrap();
+        assert_eq!(catalog.photo_identity(a).unwrap(), identity);
+        catalog.move_photo(a, b).unwrap();
+        assert_eq!(catalog.photo_identity(b).unwrap(), identity);
+        catalog.relink_photo(b, c).unwrap();
+        assert_eq!(catalog.photo_identity(c).unwrap(), identity);
+        assert_ne!(catalog.photo_identity(a).unwrap(), identity);
+        assert!(catalog.relink_photo(c, a).is_err());
+        drop(catalog);
+        let reopened = Catalog::open(&path).unwrap();
+        assert_eq!(reopened.photo_identity(c).unwrap(), identity);
+        drop(reopened);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn relink_refuses_to_replace_existing_virtual_copies() {
         let catalog = Catalog::in_memory();
         let from = PathBuf::from("/old/a.nef");
@@ -641,6 +730,17 @@ mod tests {
         std::fs::write(dir.join("invalid"), "not a database").unwrap();
         assert!(catalog.restore(&dir.join("invalid")).is_err());
         assert_eq!(catalog.albums().unwrap(), [(a, "Before".into())]);
+        let malformed = dir.join("malformed.sqlite3");
+        let fake = Connection::open(&malformed).unwrap();
+        fake.pragma_update(None, "user_version", SCHEMA).unwrap();
+        for table in ["copies", "history", "facts", "albums", "album_photos"] {
+            fake.execute(&format!("CREATE TABLE {table} (wrong TEXT)"), [])
+                .unwrap();
+        }
+        drop(fake);
+        assert!(Catalog::validate_backup(&malformed).is_err());
+        assert!(catalog.restore(&malformed).is_err());
+        assert_eq!(catalog.albums().unwrap(), [(a, "Before".into())]);
         drop(catalog);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -662,6 +762,16 @@ mod tests {
         let catalog = Catalog::open(&db).unwrap();
         assert_eq!(catalog.album_paths(album).unwrap(), [to.clone()]);
         assert_eq!(catalog.albums().unwrap(), [(album, "Favourites".into())]);
+        assert!(catalog.rename_album(album, "  ").is_err());
+        assert!(catalog.rename_album(-1, "Missing").is_err());
+        let other = catalog.create_album("Other", &[]).unwrap();
+        assert!(catalog.rename_album(album, "other").is_err());
+        catalog.delete_album(other).unwrap();
+        catalog.rename_album(album, "  Renamed  ").unwrap();
+        drop(catalog);
+        let catalog = Catalog::open(&db).unwrap();
+        assert_eq!(catalog.albums().unwrap(), [(album, "Renamed".into())]);
+        assert_eq!(catalog.album_paths(album).unwrap(), [to.clone()]);
         catalog.update_album(album, &[to], false).unwrap();
         assert!(catalog.album_paths(album).unwrap().is_empty());
         catalog.delete_album(album).unwrap();

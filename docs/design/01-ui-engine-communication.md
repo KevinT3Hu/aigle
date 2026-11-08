@@ -1,5 +1,8 @@
 # aigle — UI ↔ Engine Communication Design
 
+> Historical design/migration record: the GPUI frontend and vendored fork have
+> been removed. Current GUI sources and build instructions are in `apps/aigle/`.
+
 Status: draft, agreed at architecture level. Engine internals are covered in a separate document.
 
 aigle is a non-destructive RAW photo editor written in Rust. The UI uses GPUI. The image engine wraps mature native libraries (LibRaw, librtprocess, lcms2, lensfun, libvips, ONNX Runtime) and runs its interactive stages in its own wgpu shaders. It is designed to be driven by the user, by a built-in LLM agent, and by external agents.

@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 ash = { version = "0.38.0", default-features = false }
 aigle-core.workspace = true
+aigle-paths.workspace = true
 aigle-engine-api.workspace = true
 aigle-isolate.workspace = true
 aigle-kernels.workspace = true
@@ -23,13 +24,15 @@ bytemuck = "1.25.2"
 futures.workspace = true
 half.workspace = true
 memmap2 = "0.9.12"
-libc = "0.2.191"
 parking_lot.workspace = true
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "spirv"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
 
 [lints]
 workspace = true

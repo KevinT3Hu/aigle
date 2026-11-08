@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     # Shared crates.
     "crates/core",
+    "crates/paths",
     "crates/doc",
     "crates/engine-api",
     "crates/exiv2-sys",
@@ -11,7 +12,8 @@ members = [
     "crates/libraw-sys",
     "crates/remote",
     # Aigle applications, renderer, and development tools.
-    "crates/aigle/app",
+    "crates/aigle/qt-bridge",
+    "crates/aigle/agent",
     "crates/aigle/cli",
     "crates/aigle/engine",
     "crates/aigle/kernels",
@@ -23,7 +25,7 @@ members = [
     "crates/thesauros/server",
 ]
 # Nightly-only SPIR-V build (doc 04 §3); has its own workspace and toolchain.
-exclude = ["crates/aigle/kernels-build", "vendor/gpui"]
+exclude = ["crates/aigle/kernels-build"]
 
 [workspace.package]
 version = "0.1.0"
@@ -39,6 +41,8 @@ clap = { version = "4.6.7", features = ["derive"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 tempfile = "3.27.0"
 aigle-core = { path = "crates/core" }
+aigle-paths = { path = "crates/paths" }
+aigle-agent = { path = "crates/aigle/agent" }
 aigle-engine-api = { path = "crates/engine-api" }
 aigle-kernels = { path = "crates/aigle/kernels" }
 aigle-engine = { path = "crates/aigle/engine" }
@@ -90,9 +94,3 @@ opt-level = 3
 
 [profile.test]
 opt-level = 2
-
-# Native HDR canvas integration; patches preserve GPUI image rendering for other UI.
-[patch.crates-io]
-gpui-pre = { path = "vendor/gpui/crates/gpui" }
-gpui-pre-wgpu = { path = "vendor/gpui/crates/gpui_wgpu" }
-gpui-pre-linux = { path = "vendor/gpui/crates/gpui_linux" }

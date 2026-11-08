@@ -27,6 +27,7 @@
 //! | AI inference, semantic masks | TODO |
 
 pub mod analysis;
+pub mod scopes;
 pub mod arbiter;
 pub mod awb;
 pub mod backend;
@@ -48,6 +49,7 @@ pub mod masks;
 pub mod noise;
 pub mod output_space;
 pub mod pipeline;
+mod platform;
 pub mod profile;
 pub mod retouch;
 pub mod scheduler;
@@ -65,4 +67,16 @@ use aigle_engine_api::{Engine, EngineConfig};
 /// Create an engine. Works headless (no window or surface).
 pub fn create(cfg: EngineConfig) -> Engine {
     Engine::from_impl(Arc::new(engine::AigleEngine(engine::EngineInner::new(cfg))))
+}
+
+/// The same geometric mapping used by rendering, for frontend tool hit testing.
+pub fn geometry_map(
+    info: &aigle_engine_api::ImageInfo,
+    params: &aigle_core::EditParams,
+) -> aigle_core::geometry::GeometryMap {
+    use aigle_core::geometry::{GeometryMap, Orientation};
+    let size =
+        Orientation::from_delta(params.geometry.orientation_delta).apply_size(info.source_size);
+    let (optics, _) = lens::optics(info.camera.as_ref(), params, size);
+    GeometryMap::with_optics(size, &params.geometry, &optics)
 }

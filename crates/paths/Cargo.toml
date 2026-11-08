@@ -1,0 +1,10 @@
+[package]
+name = "aigle-paths"
+description = "Application filesystem locations, independent of rendering and GUI toolkits"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

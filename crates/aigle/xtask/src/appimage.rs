@@ -73,6 +73,21 @@ fn host_library(name: &str) -> bool {
     .iter()
     .any(|prefix| name.starts_with(prefix))
 }
+// Qt deployment can copy these before our own dependency filter runs.
+fn remove_host_libraries(prefix: &Path) -> Result<(), String> {
+    for directory in [prefix.join("lib"), prefix.join("lib64")] {
+        if !directory.exists() { continue; }
+        for entry in fs::read_dir(&directory).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let kind = entry.file_type().map_err(|e| e.to_string())?;
+            if (kind.is_file() || kind.is_symlink()) && host_library(&entry.file_name().to_string_lossy()) {
+                fs::remove_file(entry.path()).map_err(|e| format!("{}: {e}", entry.path().display()))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn libraries(ldd: &str) -> Result<Vec<(String, PathBuf)>, String> {
     let mut result = Vec::new();
     for line in ldd.lines() {
@@ -172,21 +187,28 @@ pub fn build(opts: Options) -> Result<(), String> {
         .as_array()
         .ok_or("Missing workspace packages")?
         .iter()
-        .find(|p| p["name"] == "aigle-app")
+        .find(|p| p["name"] == "aigle-qt-bridge")
         .and_then(|p| p["version"].as_str())
         .ok_or("Missing Aigle version")?;
-    if !opts.no_build {
-        run(Command::new("cargo").current_dir(&root).args([
-            "build",
-            "--release",
-            "--locked",
-            "-p",
-            "aigle-app",
-            "--bin",
-            "aigle-gui",
+    run(Command::new("cmake")
+        .arg("-S")
+        .arg(&root)
+        .arg("-B")
+        .arg(target.join("qt-release"))
+        .args([
+            "-G",
+            "Ninja",
+            "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+            "-DAIGLE_RUST_PROFILE=release",
+            "-DAIGLE_DEPLOY_QT=ON",
         ]))?;
+    if !opts.no_build {
+        run(Command::new("cmake")
+            .arg("--build")
+            .arg(target.join("qt-release"))
+            .args(["--target", "aigle-gui", "--parallel"]))?;
     }
-    let binary = target.join("release/aigle-gui");
+    let binary = target.join("qt-release/apps/aigle/aigle-gui");
     if !binary.is_file() {
         return Err(format!(
             "{} missing; run without --no-build",
@@ -216,13 +238,24 @@ pub fn build(opts: Options) -> Result<(), String> {
     mkdir(&bin)?;
     mkdir(&lib)?;
     mkdir(output.parent().ok_or("Output needs a parent directory")?)?;
-    copy(&binary, &bin.join("aigle-gui"))?;
+    // Qt's deployment support installs matching platform plugins and their
+    // runtime dependencies as well as the C++ executable and Rust bridge.
+    run(Command::new("cmake")
+        .arg("--install")
+        .arg(target.join("qt-release"))
+        .arg("--prefix")
+        .arg(appdir.join("usr")))?;
     executable(&bin.join("aigle-gui"))?;
     let ldd = super::run(Command::new("ldd").env("LC_ALL", "C").arg(&binary))?;
     let deps = libraries(&String::from_utf8_lossy(&ldd))?;
     for (name, source) in &deps {
-        copy(source, &lib.join(name))?;
+        // CMake installs the current Rust bridge and Qt runtime. A build-tree
+        // ldd result can resolve an older byproduct; never shadow the installed one.
+        if !lib.join(name).exists() && !appdir.join("usr/lib64").join(name).exists() {
+            copy(source, &lib.join(name))?;
+        }
     }
+    remove_host_libraries(&appdir.join("usr"))?;
     copy_tree(&root.join("data"), &appdir.join("usr/share/aigle"))?;
     let assets = root.join("crates/aigle/xtask/assets");
     for name in ["AppRun", "aigle.desktop", "aigle.svg"] {
@@ -304,6 +337,32 @@ mod tests {
         );
         assert_eq!(resolve_tool(Some(path), None).unwrap(), expected);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn removes_host_libraries_deployed_by_qt_in_both_layouts() {
+        let root = std::env::temp_dir().join(format!("aigle-host-libraries-{}", std::process::id()));
+        for directory in [root.join("lib"), root.join("lib64")] {
+            fs::create_dir_all(&directory).unwrap();
+            for name in ["libc.so.6", "libm.so.6", "libvulkan.so.1", "ld-linux-x86-64.so.2",
+                         "libQt6Core.so.6", "libaigle_qt_bridge.so", "libstdc++.so.6"] {
+                fs::write(directory.join(name), b"fixture").unwrap();
+            }
+            #[cfg(unix)]
+            std::os::unix::fs::symlink("libvulkan.so.1", directory.join("libvulkan.so.1.4")).unwrap();
+        }
+        remove_host_libraries(&root).unwrap();
+        for directory in [root.join("lib"), root.join("lib64")] {
+            assert!(!directory.join("libc.so.6").exists());
+            assert!(!directory.join("libm.so.6").exists());
+            assert!(!directory.join("libvulkan.so.1").exists());
+            assert!(fs::symlink_metadata(directory.join("libvulkan.so.1.4")).is_err());
+            assert!(!directory.join("ld-linux-x86-64.so.2").exists());
+            assert!(directory.join("libQt6Core.so.6").is_file());
+            assert!(directory.join("libaigle_qt_bridge.so").is_file());
+            assert!(directory.join("libstdc++.so.6").is_file());
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

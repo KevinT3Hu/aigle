@@ -1,0 +1,24 @@
+[package]
+name = "aigle-agent"
+description = "Frontend-independent photographic agent and auto tone"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aigle-core.workspace = true
+aigle-doc.workspace = true
+aigle-engine-api.workspace = true
+anyhow.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64 = "0.22.1"
+rig-core = { version = "=0.43.0", default-features = false }
+rig-agent = { version = "=0.43.0", default-features = false }
+rig-reqwest = { version = "=0.43.0", default-features = false, features = ["rustls"] }
+tokio = { workspace = true, features = ["rt", "time", "net", "macros"] }
+
+[lints]
+workspace = true

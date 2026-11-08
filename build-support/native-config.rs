@@ -14,6 +14,10 @@ pub fn triplet(target: &str) -> &'static str {
     match target {
         "x86_64-unknown-linux-gnu" => "x64-linux-phaos",
         "aarch64-unknown-linux-gnu" => "arm64-linux-phaos",
+        // TODO(windows): supply and validate Windows native dependency triplets.
+        _ if target.contains("windows") => {
+            unimplemented!("Windows managed native dependencies for {target}")
+        }
         _ => panic!("managed native dependencies do not yet support {target}"),
     }
 }

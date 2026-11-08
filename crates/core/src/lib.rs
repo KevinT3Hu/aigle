@@ -18,3 +18,4 @@ pub mod retouch;
 
 pub use ids::{AssetId, DataRef, MaskAssetId, MaskId, Revision};
 pub use params::{EditParams, ParamPath, ProcessVersion};
+pub mod crop;

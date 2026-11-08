@@ -1,6 +1,6 @@
 # Phaos
 
-**Pháos** (φάος), Ancient Greek for “light”, is the shared Rust workspace for
+**Pháos** (φάος), Ancient Greek for “light”, contains the shared Rust workspace and C++ Qt 6 editor for
 **Aigle**, the RAW photo editor, and **Thesauros** (θησαυρός, “treasury” or
 “storehouse”), its RAW library server.
 
@@ -8,7 +8,8 @@ Aigle brings out an image's light; Thesauros keeps the originals and their edits
 
 ## Workspace
 
-- `crates/aigle/`: crates used only by Aigle: `app`, `cli`, `engine`,
+- `apps/aigle/`: the C++23/Qt 6 desktop frontend, shaders and UI tests.
+- `crates/aigle/`: Rust crates used only by Aigle: `agent`, `qt-bridge`, `cli`, `engine`,
   `kernels`, `lensfun`, `rtprocess-sys`, `vips-sys`, and `xtask`. The separate
   nightly SPIR-V builder is in `crates/aigle/kernels-build`.
 - `crates/thesauros/server`: Thesauros RAW library server and embedded web UI.
@@ -27,16 +28,20 @@ Native image-processing libraries are pinned and built with vcpkg. Install the
 host build tools, then run `cargo xtask native-deps` (Aigle) or
 `cargo xtask native-deps --server` (Thesauros only). See
 [managed native dependencies](native/README.md) for prerequisites and patch ownership.
-GPUI comes from a pinned fork submodule; see [its baseline upgrade workflow](vendor/README.md).
+The default GUI uses C++23 and Qt 6.11+. Install Qt Widgets, GuiPrivate,
+Svg, ShaderTools and Test development packages, CMake, Ninja and Vulkan development
+files. See [Qt editor build and architecture](apps/aigle/README.md).
+Qt is the sole GUI. The legacy GPUI frontend and its vendored fork have been removed.
 
 ```sh
-git submodule update --init --recursive
 cargo xtask native-deps
 cargo check -p thesauros -p aigle-remote
 cargo test -p thesauros -p aigle-remote
-cargo run -p aigle-app -- /path/to/photo.NEF
+cmake -S . -B target/qt -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build target/qt --target aigle-gui --parallel
+target/qt/apps/aigle/aigle-gui /path/to/photo.NEF
 cargo run -p aigle-cli -- --help
-cargo run -p aigle-app -- --remote http://127.0.0.1:8787 PHOTO_ID
+target/qt/apps/aigle/aigle-gui --remote http://127.0.0.1:8787 PHOTO_ID
 ```
 
 See [Thesauros setup and API](crates/thesauros/README.md) for server usage,
@@ -60,7 +65,7 @@ The output is `target/appimage/Aigle-<version>-<arch>.AppImage` (under Cargo's
 configured target directory). Linux x86-64 and AArch64 hosts are supported;
 packaging uses the host architecture, without cross-compilation.
 
-The task builds `aigle-gui` in release mode, assembles an AppDir with the linked
+The task builds the C++ Qt `aigle-gui` and Rust bridge in release mode, assembles an AppDir with Qt libraries and platform plugins,
 C++/OpenMP and windowing libraries, camera/lens data, native dependency licence
 notices, and a desktop entry/icon, then runs
 [appimagetool](https://github.com/AppImage/appimagetool). Install appimagetool

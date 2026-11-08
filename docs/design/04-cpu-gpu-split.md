@@ -1,5 +1,8 @@
 # aigle — CPU/GPU Split and Compute Backends
 
+> Historical design/migration record: the GPUI frontend and vendored fork have
+> been removed. Current GUI sources and build instructions are in `apps/aigle/`.
+
 Status: agreed; two items wait on prototypes (§11). Builds on docs 01–03.
 
 Scope: which stages run where, how kernels are written, how one kernel source serves both the GPU and the CPU fallback, storage precision per stage, data movement, the GPU device lifecycle, AI inference, and how correctness is tested when the CPU and GPU share code.

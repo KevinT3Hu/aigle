@@ -5,6 +5,7 @@
 //! the whole image.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
@@ -167,7 +168,7 @@ pub fn init() -> Result<(), Error> {
 }
 
 fn cpath(p: &Path) -> Result<CString, Error> {
-    CString::new(p.as_os_str().as_bytes()).map_err(|_| Error::Vips("path contains NUL".into()))
+    CString::new(native_path_bytes(p)?).map_err(|_| Error::Vips("path contains NUL".into()))
 }
 
 /// An opened (not yet decoded) image.
@@ -916,4 +917,14 @@ pub fn save_ultra_hdr(image: &FloatImage<'_>, path: &Path, quality: u8) -> Resul
         return Err(last_error());
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn native_path_bytes(path: &Path) -> Result<&[u8], Error> {
+    Ok(path.as_os_str().as_bytes())
+}
+#[cfg(not(unix))]
+fn native_path_bytes(_: &Path) -> Result<&[u8], Error> {
+    // TODO(windows): select the native library's Unicode filename API.
+    Err(Error::Vips("native Windows file paths are not implemented".into()))
 }

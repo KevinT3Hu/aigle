@@ -6,6 +6,7 @@
 //! Exiv2's XMP toolkit is not re-entrant, so every call takes one process-wide lock.
 
 use std::ffi::{CStr, CString, c_char, c_int};
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::Mutex;
@@ -106,7 +107,7 @@ fn cstring(s: &str) -> Result<CString, Error> {
 /// The XMP packet of `path`: a sidecar's content or an image's embedded XMP; `None` if the
 /// file has none.
 pub fn read_file(path: &Path) -> Result<Option<String>, Error> {
-    let c = CString::new(path.as_os_str().as_bytes()).map_err(|_| Error("path has NUL".into()))?;
+    let c = CString::new(native_path_bytes(path)?).map_err(|_| Error("path has NUL".into()))?;
     locked(|| {
         let mut out = std::ptr::null_mut();
         let mut err = std::ptr::null_mut();
@@ -130,7 +131,7 @@ pub struct ExifFacts {
 
 /// Camera, lens and capture date from the EXIF of the image at `path`.
 pub fn read_facts(path: &Path) -> Result<ExifFacts, Error> {
-    let c = CString::new(path.as_os_str().as_bytes()).map_err(|_| Error("path has NUL".into()))?;
+    let c = CString::new(native_path_bytes(path)?).map_err(|_| Error("path has NUL".into()))?;
     locked(|| {
         let mut out = [std::ptr::null_mut(); 4];
         let mut err = std::ptr::null_mut();
@@ -389,4 +390,14 @@ mod tests {
         assert!(get("<not xmp", &["Xmp.xmp.Label"]).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
+}
+
+#[cfg(unix)]
+fn native_path_bytes(path: &Path) -> Result<&[u8], Error> {
+    Ok(path.as_os_str().as_bytes())
+}
+#[cfg(not(unix))]
+fn native_path_bytes(_: &Path) -> Result<&[u8], Error> {
+    // TODO(windows): select the native library's Unicode filename API.
+    Err(Error("native Windows file paths are not implemented".into()))
 }

@@ -7,12 +7,13 @@
 //! that by 10 %, the least recently used entries (file mtime, refreshed on hits) are removed
 //! (doc 03 §7.4).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::SystemTime;
 
 use parking_lot::Mutex;
 
 use crate::cache::CacheKey;
+use crate::platform::free_space;
 
 const GIB: u64 = 1 << 30;
 
@@ -47,18 +48,6 @@ impl Area {
 }
 
 const AREAS: [Area; 2] = [Area::Thumbs, Area::Previews];
-
-/// Free bytes on the filesystem of `path`.
-#[allow(unsafe_code)]
-fn free_space(path: &Path) -> Option<u64> {
-    use std::os::unix::ffi::OsStrExt;
-    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
-    // SAFETY: `statvfs` only writes the struct it is given; zeroed is a valid value for it.
-    let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
-    // SAFETY: valid NUL-terminated path and out-pointer.
-    let rc = unsafe { libc::statvfs(c.as_ptr(), &mut s) };
-    (rc == 0).then(|| s.f_bavail as u64 * s.f_frsize as u64)
-}
 
 impl DiskCache {
     pub fn new(dir: PathBuf) -> DiskCache {

@@ -63,27 +63,7 @@ pub fn reference(env: &str, rel: &str) -> Option<PathBuf> {
         .find(|p| p.exists())
 }
 
-/// Disposable cache dir (doc 03 §7): `$AIGLE_CACHE_DIR`, else `$XDG_CACHE_HOME/aigle`, else
-/// `~/.cache/aigle`.
-pub(crate) fn cache_dir() -> Option<PathBuf> {
-    if let Some(d) = std::env::var_os("AIGLE_CACHE_DIR") {
-        return Some(PathBuf::from(d));
-    }
-    let home = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
-    Some(home.join("aigle"))
-}
-
-pub(crate) fn dir() -> Option<PathBuf> {
-    if let Some(d) = std::env::var_os("AIGLE_DATA_DIR") {
-        return Some(PathBuf::from(d));
-    }
-    let home = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
-    Some(home.join("aigle/data"))
-}
+pub(crate) use aigle_paths::{cache_dir, data_dir as dir};
 
 fn lenses() -> &'static Mutex<HashMap<DataRef, Arc<LensProfileData>>> {
     static M: OnceLock<Mutex<HashMap<DataRef, Arc<LensProfileData>>>> = OnceLock::new();

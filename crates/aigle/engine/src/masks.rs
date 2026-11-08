@@ -359,3 +359,50 @@ pub fn overlay(p: &EditParams, id: aigle_core::MaskId, map: &LevelMap) -> Option
     out.extend(prog);
     Some(out)
 }
+
+/// Small coverage swatch in visible Crop coordinates, evaluated by the production
+/// mask kernel. Image-dependent range/semantic shapes require source pixels/assets
+/// and deliberately return None rather than an invented coverage preview.
+pub fn geometric_thumbnail(
+    p: &EditParams,
+    id: aigle_core::MaskId,
+    geometry: &aigle_core::geometry::GeometryMap,
+    side: u32,
+) -> Option<Vec<u8>> {
+    fn geometric(shape: &MaskShape) -> bool {
+        match shape {
+            MaskShape::Linear { .. } | MaskShape::Radial { .. } | MaskShape::Brush { .. } => true,
+            MaskShape::Combine { parts, .. } => parts.iter().all(geometric),
+            _ => false,
+        }
+    }
+    if side == 0 || side > 128 || !geometric(&p.masks.iter().find(|m| m.id == id)?.shape) {
+        return None;
+    }
+    let size = geometry.source_size();
+    let level = LevelMap::new(size, Orientation::IDENTITY, 0);
+    let program = overlay(p, id, &level)?;
+    let (w, h) = geometry.crop_extent();
+    Some(
+        (0..side * side)
+            .map(|i| {
+                let at = geometry.crop_to_source(Point::new(
+                    (f64::from(i % side) + 0.5) * w / f64::from(side),
+                    (f64::from(i / side) + 0.5) * h / f64::from(side),
+                ));
+                if !at.x.is_finite() || !at.y.is_finite() {
+                    return 0;
+                }
+                (alpha_of(
+                    &program,
+                    0,
+                    0,
+                    at.x as f32 - 0.5,
+                    at.y as f32 - 0.5,
+                    [0.; 3],
+                ) * 255.)
+                    .round() as u8
+            })
+            .collect(),
+    )
+}

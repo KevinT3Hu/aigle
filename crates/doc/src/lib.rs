@@ -1,7 +1,7 @@
 //! Per-photo document layer (doc 01 §5).
 //!
 //! A [`PhotoDoc`] owns one photo's committed edit state: the head `EditParams`, its
-//! revision and the in-memory undo history. Every writer (GPUI panels, the agent, presets)
+//! revision and the in-memory undo history. Every writer (GUI panels, the agent, presets)
 //! changes edits only through [`EditCommand`]s; the document validates them, merges them
 //! field by field, records history and pushes the new head to the engine with
 //! `Session::set_edits`.

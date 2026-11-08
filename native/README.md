@@ -1,6 +1,5 @@
 # Managed native dependencies
 
-Initialize the GPUI submodule with `git submodule update --init --recursive`.
 Run `cargo xtask native-deps` once before building Aigle, or
 `cargo xtask native-deps --server` for the smaller Thesauros-only dependency graph.
 Then use ordinary `cargo build`, `cargo test`, and `cargo run` commands.
@@ -14,7 +13,7 @@ image libraries. They never download dependencies during `cargo build`.
 Linux x86-64 and AArch64 triplets are defined; x86-64 is the validated build.
 The compiler, libc/C++/OpenMP runtime, platform graphics/windowing APIs, and build
 tools still come from the host. This is dependency management, not a hermetic
-compiler toolchain. Aigle's GPUI platform crates retain their OS prerequisites.
+compiler toolchain. Aigle's Qt frontend requires the host Qt and Vulkan development packages.
 Install Git, a C/C++ compiler, pkg-config, CMake, Ninja, Python 3, curl,
 zip/unzip, tar, Autoconf/Automake/Libtool, Bison/Flex and NASM.
 vcpkg may fetch additional pinned build tools. No root installation is performed.
@@ -44,10 +43,6 @@ AMaZE, Markesteijn, borders and highlight reconstruction remain serial. The
 separately compiled LibRaw CFA shim retains its bounded OpenMP implementation;
 LibRaw's decoder files remain serial. Float/optimization settings are explicit.
 Do not replace this with upstream's blanket OpenMP option.
-
-The remaining GPUI Rust patches stay under Cargo's `[patch.crates-io]` mechanism.
-The published snapshot checksums and focused HDR commits are tracked in
-[the GPUI fork and baseline workflow](../vendor/README.md).
 
 ## Updating dependencies
 

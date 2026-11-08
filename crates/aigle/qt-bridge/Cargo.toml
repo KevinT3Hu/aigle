@@ -1,0 +1,39 @@
+[package]
+name = "aigle-qt-bridge"
+description = "Versioned C ABI for the C++ Qt editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+aigle-core.workspace = true
+aigle-agent.workspace = true
+aigle-doc.workspace = true
+aigle-engine.workspace = true
+aigle-engine-api.workspace = true
+aigle-library.workspace = true
+aigle-isolate.workspace = true
+aigle-remote.workspace = true
+blake3.workspace = true
+base64 = "0.22.1"
+anyhow.workspace = true
+futures.workspace = true
+serde_json.workspace = true
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+zbus = { version = "=5.19.0", default-features = false, features = ["async-io"] }
+oo7 = { version = "0.6", default-features = false, features = ["async-std", "native_crypto"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+keyring = "4.2.0"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

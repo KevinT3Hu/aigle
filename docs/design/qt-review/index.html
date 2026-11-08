@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aigle · GUI design review</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="review-bar">
+    <span><strong>Aigle design review</strong><span class="review-note"> · Simulated edits. No files changed.</span></span>
+    <nav aria-label="Design states" id="review-nav"></nav>
+  </div>
+  <main id="app" class="app" aria-label="Aigle desktop design prototype">
+    <div class="titlebar"><span>Aigle</span><span id="window-title">DSC_2048.NEF</span><span class="window-marks" aria-hidden="true">—　□　×</span></div>
+    <div class="menubar"><button data-menu="File">File</button><button data-menu="Edit">Edit</button><button data-menu="View">View</button><button data-menu="Photo">Photo</button><button data-menu="Help">Help</button></div>
+    <header class="appbar">
+      <div class="mode-switch" aria-label="Workspace"><button id="library-mode" data-mode="library">Library</button><button id="develop-mode" data-mode="develop">Develop</button></div>
+      <span class="breadcrumb" id="breadcrumb">Pictures <span>/</span> Alpine light <span>/</span> DSC_2048.NEF</span>
+      <div class="app-actions"><button id="jobs-button">Jobs <span class="job-dot" hidden></span></button><button id="export-button" class="primary"><img src="assets/icons/export.svg" alt="">Export…</button></div>
+    </header>
+    <section class="workspace" id="workspace">
+      <aside class="left-rail" id="left-rail"></aside>
+      <section class="center" id="center"></section>
+      <aside class="inspector" id="inspector" aria-label="Photo inspector"></aside>
+      <section class="filmstrip" id="filmstrip" aria-label="Filmstrip"></section>
+    </section>
+    <footer class="statusbar"><span id="save-status" role="status">All changes saved</span><span class="status-center" id="selection-status">1 photo selected</span><span>Display: SDR <span class="status-divider">·</span> sRGB <span class="status-divider">·</span> <span id="zoom-status">Fit</span></span></footer>
+    <div class="toast" id="toast" role="status" hidden></div>
+    <div class="popover" id="menu" hidden></div>
+    <div class="jobs-panel" id="jobs-panel" hidden></div>
+  </main>
+  <dialog id="export-dialog" aria-labelledby="export-title"></dialog>
+  <script src="assets/histograms.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

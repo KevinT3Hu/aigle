@@ -1,11 +1,10 @@
 # Image scopes
 
-The Develop panel offers RGB and luminance histograms, separate channel histograms,
-cumulative luminance, luminance waveform, RGB parade, and a Cb/Cr vectorscope. A compact
-icon selector sits below the graph; tooltips identify each scope and its purpose. Histogram height is linear by default;
+The Qt Develop reference rail offers RGB and luminance histograms, separate channel histograms,
+cumulative luminance, luminance waveform, RGB parade, and a Cb/Cr vectorscope. The scope selector sits above the graph; help explains the measurement limits. Histogram height is linear by default;
 Log switches distribution/density scaling. Cumulative luminance always uses 0–100%.
 R/G/B buttons control the RGB histograms and parade. Scaling, region selection,
-and reset use icon buttons with tooltips. The information icon explains reference
+and Whole crop controls sit below the graph. The help button explains reference
 guides and sampled statistics. Hover shows levels, histogram
 counts, cumulative population, image-column positions, or Cb/Cr coordinates.
 
@@ -29,8 +28,16 @@ scopes, region histograms, and percentages use at most 128×128 regularly spaced
 samples; transparent pixels are excluded. The engine publishes these with the
 existing asynchronous histogram result, without an additional image render. The
 panel caches distributions and densities, so hovering and changing scope type do
-not scan pixels or invoke the engine. The thumbnail submits at most roughly 32×32
-rectangles. Region dragging re-analyzes the bounded samples.
+not scan pixels or invoke the engine. The Qt thumbnail displays the bounded sample grid. Region dragging re-analyzes
+the samples through the bridge with coalesced 60 ms requests; newer region/photo
+requests supersede old replies. Changing the sample-grid dimensions resets a
+selected region to the whole crop. Both frontends use `aigle_engine::scopes`.
+
+Keyboard: focus the graph and use arrows/Home/End for cached hover measurements.
+Focus the region thumbnail and use arrows to move, Shift+arrows to resize, Home
+for Whole crop, and Escape to cancel a drag. These controls take priority over
+image-navigation shortcuts while focused. Scope mode, channels, scaling and gamut
+target persist in Qt settings; measurement regions never modify edits.
 
 Black/Peak are approximate percentages touching output channel boundaries, with
 half-float tolerance at the HDR ceiling. They are not sensor clipping or
@@ -44,6 +51,11 @@ Checks:
 
 ```sh
 cargo test -p aigle-engine --lib analysis::tests
-cargo test -p aigle-app --bin aigle-gui scopes::tests
-cargo test --release -p aigle-app --bin aigle-gui scope_analysis_benchmark -- --ignored --nocapture
+cargo test -p aigle-engine --lib scopes::tests
+cargo test -p aigle-qt-bridge --lib scopes_measure
+ctest --test-dir target/qt -R qt-scopes --output-on-failure
+cargo test --release -p aigle-engine --lib scope_analysis_benchmark -- --ignored --nocapture
 ```
+
+Native screenshots and verification: [Qt review](../design/qt-review/native/README.md).
+The SDR captures do not certify physical HDR presentation or display transitions.

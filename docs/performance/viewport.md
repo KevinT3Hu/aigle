@@ -5,7 +5,7 @@ The benchmark uses a 6000×4000 synthetic gradient, 1920×1080 viewport, a 4 GiB
 engine budget, default worker count, and a separate 1024×683 whole-image backing
 matching the canvas. Loading and the initial backing render finish before timing.
 It measures `set_viewport` through publication of the matching non-Draft frame;
-it excludes GPUI image copying, upload, composition and display presentation.
+it excludes GUI image copying, upload, composition and display presentation.
 
 The first traversal visits ten pan positions, then ten zoom/position combinations
 at scales 0.5–2.0. The second traversal repeats them. These are mixed-cache first

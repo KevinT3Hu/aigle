@@ -3,6 +3,7 @@
 //! All `unsafe` FFI of the A1 decode lives here; the engine only sees [`Raw`].
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
@@ -239,7 +240,7 @@ impl Raw {
             });
         }
         let raw = Raw { h };
-        let c = CString::new(path.as_os_str().as_bytes()).map_err(|_| Error {
+        let c = CString::new(native_path_bytes(path)?).map_err(|_| Error {
             code: -2,
             message: "path contains NUL".into(),
         })?;
@@ -385,4 +386,14 @@ impl Drop for Raw {
         // SAFETY: handle created by aigle_raw_new, freed once.
         unsafe { aigle_raw_free(self.h) };
     }
+}
+
+#[cfg(unix)]
+fn native_path_bytes(path: &Path) -> Result<&[u8], Error> {
+    Ok(path.as_os_str().as_bytes())
+}
+#[cfg(not(unix))]
+fn native_path_bytes(_: &Path) -> Result<&[u8], Error> {
+    // TODO(windows): select the native library's Unicode filename API.
+    Err(Error { code: -2, message: "native Windows file paths are not implemented".into() })
 }

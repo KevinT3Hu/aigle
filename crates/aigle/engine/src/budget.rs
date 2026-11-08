@@ -15,6 +15,9 @@ use aigle_engine_api::{EngineEvent, ProcessKind, broadcast};
 use crate::cache::TileCache;
 use crate::ledger::MemLedger;
 
+use crate::platform::cgroup_limit;
+pub use crate::platform::physical_ram;
+
 pub const GIB: u64 = 1 << 30;
 
 /// `clamp(0.25 × RAM, 3, 24) GiB` for the GUI, `clamp(0.5 × RAM, 3, 48) GiB` for the CLI.
@@ -34,36 +37,10 @@ pub fn engine_budget(kind: ProcessKind, override_bytes: Option<u64>) -> u64 {
     }
 }
 
-/// Physical RAM from `/proc/meminfo`; 16 GiB (the minimum spec) if unavailable.
-pub fn physical_ram() -> u64 {
-    std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .and_then(|s| {
-            s.lines()
-                .find(|l| l.starts_with("MemTotal:"))
-                .and_then(|l| {
-                    l.split_whitespace()
-                        .nth(1)
-                        .and_then(|kb| kb.parse::<u64>().ok())
-                        .map(|kb| kb * 1024)
-                })
-        })
-        .unwrap_or(16 * GIB)
-}
-
-fn cgroup_limit() -> Option<u64> {
-    ["/sys/fs/cgroup/memory.high", "/sys/fs/cgroup/memory.max"]
-        .iter()
-        .filter_map(|p| std::fs::read_to_string(p).ok())
-        .filter_map(|s| s.trim().parse::<u64>().ok())
-        .min()
-}
-
 /// PSI "some avg10" share (%) that enters the pressure state.
 pub const PSI_ENTER: f64 = 10.0;
 /// Share below which the pressure state is left (hysteresis).
 pub const PSI_LEAVE: f64 = 5.0;
-const PSI_PATH: &str = "/proc/pressure/memory";
 const POLL: Duration = Duration::from_secs(1);
 
 /// `avg10` of the `some` line of a PSI file.
@@ -120,7 +97,7 @@ impl PressureMonitor {
         let _ = std::thread::Builder::new()
             .name("aigle-memory".into())
             .spawn(move || {
-                while m.tick(std::fs::read_to_string(PSI_PATH).ok().as_deref()) {
+                while m.tick(crate::platform::memory_pressure().as_deref()) {
                     std::thread::sleep(POLL);
                 }
             });
