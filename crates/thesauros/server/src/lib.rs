@@ -1,4 +1,6 @@
 mod api;
+#[cfg(windows)]
+mod windows_permissions;
 pub mod auth;
 pub mod config;
 pub mod error;

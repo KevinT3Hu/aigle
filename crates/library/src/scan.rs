@@ -130,11 +130,19 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, b"x").unwrap();
         }
+        #[cfg(unix)]
         std::os::unix::fs::symlink(&dir, dir.join("2024/loop")).unwrap();
         let rel: Vec<String> = scan_recursive(&dir)
             .unwrap()
             .into_iter()
-            .map(|e| e.path.strip_prefix(&dir).unwrap().display().to_string())
+            .map(|e| {
+                e.path
+                    .strip_prefix(&dir)
+                    .unwrap()
+                    .display()
+                    .to_string()
+                    .replace('\\', "/")
+            })
             .collect();
         assert_eq!(
             rel,

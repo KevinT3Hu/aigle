@@ -5,7 +5,7 @@
 #include "library_json.hpp"
 namespace aigle {
 inline OpenResult openResultFromJson(const QJsonObject& value) {
-    return {value["path"].toString(), value["copy"].toInteger(), value["id"].toInteger(),
+    return {pathFromJson(value["path"]), value["copy"].toInteger(), value["id"].toInteger(),
         value["develop"].toBool(true), stringsFromJson(value["warnings"].toArray())};
 }
 inline PhotoMetadata photoMetadataFromJson(const QJsonObject& value) {
@@ -14,7 +14,7 @@ inline PhotoMetadata photoMetadataFromJson(const QJsonObject& value) {
     return result;
 }
 inline CopyRecord copyRecordFromJson(const QJsonObject& value) {
-    return {value["id"].toInteger(), value["path"].toString(), value["name"].toString()};
+    return {value["id"].toInteger(), pathFromJson(value["path"]), value["name"].toString()};
 }
 inline QList<CopyRecord> copyRecordsFromJson(const QJsonArray& values) {
     QList<CopyRecord> result;
@@ -30,7 +30,7 @@ inline QList<QPair<QString, QString>> failuresFromJson(const QJsonArray& values)
     return result;
 }
 inline AlbumRecord albumFromJson(const QJsonObject& value) {
-    return {value["id"].toInteger(), value["name"].toString(), stringsFromJson(value["paths"].toArray())};
+    return {value["id"].toInteger(), value["name"].toString(), pathsFromJson(value["paths"].toArray())};
 }
 inline EngineReply replyFromJson(const QString& command, const QJsonValue& value) {
     EngineReply result{command, {}};
@@ -66,7 +66,7 @@ inline EngineReply replyFromJson(const QString& command, const QJsonValue& value
     } else if (command == "library_copies" || command == "copies") result.data = copyRecordsFromJson(value.toArray());
     else if (command == "library_metadata") result.data = photoMetadataFromJson(object);
     else if (command == "schema") result.data = SchemaDocument{object};
-    else if (command == "scan" || command == "scan_develop") result.data = stringsFromJson(value.toArray());
+    else if (command == "scan" || command == "scan_develop") result.data = pathsFromJson(value.toArray());
     else if (command == "album_paths" || command == "update_album" || command == "rename_album" || command == "delete_album") result.data = albumFromJson(object);
     else if (command == "open" || command == "synthetic" || command == "remote_open" || command == "remove_copy") result.data = openResultFromJson(object);
     else if (command == "create_copy" || command == "rename_copy") result.data = copyRecordFromJson(object);
@@ -75,7 +75,7 @@ inline EngineReply replyFromJson(const QString& command, const QJsonValue& value
     else if (command == "albums") {
         AlbumChoices choices;
         choices.action = object["action"].toString("open");
-        choices.paths = stringsFromJson(object["paths"].toArray());
+        choices.paths = pathsFromJson(object["paths"].toArray());
         for (const auto& item : object["albums"].toArray()) {
             const auto pair = item.toArray();
             choices.albums.append({pair.at(0).toInteger(), pair.at(1).toString(), {}});

@@ -2,13 +2,21 @@ use std::any::Any;
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
+#[cfg(windows)]
+#[path = "windows.rs"]
+mod windows;
+#[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
+#[cfg(windows)]
+use windows::PipeReader;
 
-#[path = "blob.rs"]
+#[cfg_attr(unix, path = "blob.rs")]
+#[cfg_attr(windows, path = "windows_blob.rs")]
 mod blob;
 pub use blob::Payload;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,6 +25,7 @@ use std::time::{Duration, Instant};
 
 use aigle_engine_api::CancelToken;
 use bytemuck::Pod;
+#[cfg(unix)]
 use rustix::event::{PollFd, PollFlags, Timespec};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -160,7 +169,10 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 struct Worker {
     child: Child,
     stdin: ChildStdin,
+    #[cfg(unix)]
     stdout: UnixStream,
+    #[cfg(windows)]
+    stdout: PipeReader,
 }
 
 struct Pool {
@@ -182,6 +194,7 @@ fn max_live() -> usize {
         + 2
 }
 
+#[cfg(unix)]
 fn spawn() -> io::Result<Worker> {
     let spawn = EXE
         .get()
@@ -201,6 +214,11 @@ fn spawn() -> io::Result<Worker> {
         stdin,
         stdout,
     })
+}
+
+#[cfg(windows)]
+fn spawn() -> io::Result<Worker> {
+    windows::spawn()
 }
 
 fn is_cancelled(c: Option<&CancelToken>) -> bool {
@@ -262,6 +280,7 @@ fn discard(w: Worker) -> io::Result<ExitStatus> {
     status
 }
 
+#[cfg(unix)]
 fn signal_name(sig: i32) -> &'static str {
     match sig {
         4 => "SIGILL",
@@ -278,6 +297,9 @@ fn signal_name(sig: i32) -> &'static str {
 
 fn describe(status: io::Result<ExitStatus>) -> String {
     match status {
+        #[cfg(windows)]
+        Ok(s) => format!("the worker process quit ({s})"),
+        #[cfg(unix)]
         Ok(s) => match s.signal() {
             Some(sig) => format!("the worker process crashed ({}, {sig})", signal_name(sig)),
             None => format!("the worker process quit ({s})"),
@@ -372,15 +394,24 @@ impl Call {
         loop {
             let ready = {
                 let w = self.worker();
-                let mut fds = [PollFd::new(&w.stdout, PollFlags::IN)];
-                let t = Timespec {
-                    tv_sec: 0,
-                    tv_nsec: TICK.as_nanos() as _,
-                };
-                match rustix::event::poll(&mut fds, Some(&t)) {
-                    Ok(n) => n > 0,
-                    Err(rustix::io::Errno::INTR) => false,
-                    Err(e) => return Err(self.crashed(Some(&format!("poll: {e}")))),
+                #[cfg(windows)]
+                {
+                    w.stdout
+                        .ready(TICK)
+                        .map_err(|e| Error::Crashed(e.to_string()))?
+                }
+                #[cfg(unix)]
+                {
+                    let mut fds = [PollFd::new(&w.stdout, PollFlags::IN)];
+                    let t = Timespec {
+                        tv_sec: 0,
+                        tv_nsec: TICK.as_nanos() as _,
+                    };
+                    match rustix::event::poll(&mut fds, Some(&t)) {
+                        Ok(n) => n > 0,
+                        Err(rustix::io::Errno::INTR) => false,
+                        Err(e) => return Err(self.crashed(Some(&format!("poll: {e}")))),
+                    }
                 }
             };
             if ready {
@@ -664,10 +695,19 @@ fn reply(out: &mut std::fs::File, r: Result<Reply, Failure>) -> io::Result<()> {
 /// Serve requests on stdin/stdout until the parent goes away. Stdout is reserved for the
 /// protocol: anything the libraries print goes to stderr.
 pub fn serve(handlers: &[(&str, Handler)]) -> ! {
+    #[cfg(windows)]
+    let proto = windows::output();
+    #[cfg(unix)]
     let proto = rustix::io::dup(io::stdout()).and_then(|fd| {
         rustix::stdio::dup2_stdout(io::stderr())?;
         Ok(fd)
     });
+    #[cfg(windows)]
+    let mut out = proto.unwrap_or_else(|e| {
+        eprintln!("worker output: {e}");
+        std::process::exit(2)
+    });
+    #[cfg(unix)]
     let mut out = match proto {
         Ok(fd) => std::fs::File::from(fd),
         Err(e) => {

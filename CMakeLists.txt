@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.25)
 project(Aigle VERSION 0.1.0 LANGUAGES CXX)
+if(MSVC AND CMAKE_GENERATOR MATCHES "Ninja")
+  include(build-support/msvc-includes.cmake)
+endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(CTest)
 add_subdirectory(apps/aigle)

@@ -66,7 +66,10 @@ fn main() {
             ("hang", hangs),
         ]);
     }
-    assert!(aigle_isolate::enable("/proc/self/exe".into(), Vec::new()));
+    assert!(aigle_isolate::enable(
+        std::env::current_exe().unwrap(),
+        Vec::new()
+    ));
     let tests: &[(&str, fn())] = &[
         ("blobs", blobs),
         ("admission", admission),
@@ -131,7 +134,12 @@ fn errors() {
 
 fn crash_then_recover() {
     match call::<()>("crash", &(), None) {
-        Err(Error::Crashed(m)) => assert!(m.contains("SIGABRT"), "{m}"),
+        Err(Error::Crashed(m)) => {
+            #[cfg(unix)]
+            assert!(m.contains("SIGABRT"), "{m}");
+            #[cfg(windows)]
+            assert!(m.contains("worker process quit"), "{m}");
+        }
         r => panic!("{r:?}"),
     }
     assert_eq!(call::<u64>("admit", &9u64, None), Ok(9));

@@ -124,6 +124,7 @@ pub fn relink_sidecars(from: &Path, to: &Path) -> Result<Vec<PathBuf>, FileError
 }
 
 /// Rename without replacing an existing file; across file systems, copy then delete.
+#[cfg(not(windows))]
 fn move_file(from: &Path, to: &Path) -> Result<(), FileError> {
     use rustix::fs::{CWD, RenameFlags, renameat_with};
     match renameat_with(CWD, from, CWD, to, RenameFlags::NOREPLACE) {
@@ -138,6 +139,18 @@ fn move_file(from: &Path, to: &Path) -> Result<(), FileError> {
             std::fs::rename(from, to).map_err(io_err(from))
         }
         Err(e) => Err(io_err(from)(e.into())),
+    }
+}
+
+#[cfg(windows)]
+fn move_file(from: &Path, to: &Path) -> Result<(), FileError> {
+    match crate::windows_move::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            Err(FileError::Exists(to.to_path_buf()))
+        }
+        Err(e) if e.raw_os_error() == Some(17) => copy_then_delete(from, to),
+        Err(e) => Err(io_err(from)(e)),
     }
 }
 
@@ -187,8 +200,16 @@ pub fn move_photo(from: &Path, to: &Path) -> Result<(), FileError> {
     }
     // Renaming only the case or the extension can map a sidecar onto itself.
     plan.retain(|(a, b)| a != b);
-    for (_, dest) in &plan {
+    for (_source, dest) in &plan {
         if std::fs::symlink_metadata(dest).is_ok() {
+            #[cfg(windows)]
+            if std::fs::canonicalize(_source)
+                .ok()
+                .zip(std::fs::canonicalize(dest).ok())
+                .is_some_and(|(a, b)| a == b)
+            {
+                continue;
+            }
             return Err(FileError::Exists(dest.clone()));
         }
     }

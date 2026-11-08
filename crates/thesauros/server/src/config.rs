@@ -141,12 +141,17 @@ impl Config {
     }
     pub fn token(&self) -> Result<String> {
         let token = if let Some(path) = &self.token_file {
-            use std::os::unix::fs::PermissionsExt;
-            let meta = std::fs::metadata(path).context("read token-file metadata")?;
-            ensure!(
-                meta.permissions().mode() & 0o077 == 0,
-                "token file must not be accessible by group or other users (use chmod 600)"
-            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let meta = std::fs::metadata(path).context("read token-file metadata")?;
+                ensure!(
+                    meta.permissions().mode() & 0o077 == 0,
+                    "token file must not be accessible by group or other users (use chmod 600)"
+                );
+            }
+            #[cfg(windows)]
+            crate::windows_permissions::make_private(path).context("secure token file")?;
             std::fs::read_to_string(path)
                 .context("read token file")?
                 .trim()

@@ -30,6 +30,10 @@ pub fn configure() {
         }
         std::env::set_var("PKG_CONFIG_LIBDIR", &paths);
         std::env::set_var("PKG_CONFIG_PATH", &paths);
+        if target.ends_with("windows-msvc") {
+            let pkgconf = prefix.join("tools/pkgconf/pkgconf.exe");
+            std::env::set_var("PKG_CONFIG", pkgconf);
+        }
     }
     println!("cargo:rerun-if-changed={}", root.join("native").display());
     println!(
@@ -55,11 +59,46 @@ pub fn configure() {
 }
 
 pub fn probe(name: &str, minimum: &str) -> pkg_config::Library {
-    pkg_config::Config::new()
+    let msvc = std::env::var("TARGET")
+        .unwrap_or_default()
+        .ends_with("-msvc");
+    let library = pkg_config::Config::new()
+        .cargo_metadata(!msvc)
         .statik(true)
         .atleast_version(minimum)
         .probe(name)
         .unwrap_or_else(|e| {
             panic!("managed {name} >= {minimum} unavailable: {e}; run `cargo xtask native-deps`")
-        })
+        });
+    if msvc {
+        for path in &library.link_paths {
+            println!("cargo:rustc-link-search=native={}", path.display());
+        }
+        for name in &library.libs {
+            // Some upstream .pc files use Unix -lfoo for an MSVC libfoo.lib
+            // archive (notably libde265). Resolve the actual installed name.
+            let installed = [name.clone(), format!("lib{name}")]
+                .into_iter()
+                .find(|candidate| {
+                    library
+                        .link_paths
+                        .iter()
+                        .any(|path| path.join(format!("{candidate}.lib")).is_file())
+                });
+            if let Some(name) = installed {
+                println!("cargo:rustc-link-lib=static={name}");
+            } else {
+                println!("cargo:rustc-link-lib={name}");
+            }
+        }
+        for path in &library.link_files {
+            println!("cargo:rustc-link-arg={}", path.display());
+        }
+        for args in &library.ld_args {
+            for arg in args {
+                println!("cargo:rustc-link-arg={arg}");
+            }
+        }
+    }
+    library
 }

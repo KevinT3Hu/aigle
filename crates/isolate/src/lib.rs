@@ -19,14 +19,12 @@
 //!   one marker byte carries a sealed memfd using SCM_RIGHTS on the output socket.
 //!   The stdin control channel remains a pipe.
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod unix;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use unix::*;
 
-// TODO(windows): implement worker IPC, cancellation, crash reporting and shared buffers.
-// Do not silently disable isolation or feed Unix descriptors to a Windows process.
-#[cfg(windows)]
-compile_error!("Windows parser isolation is not implemented");
+// Windows uses bounded anonymous pipes and owned pixel buffers; Linux can also
+// transfer sealed shared buffers over its Unix socket.
 #[cfg(not(any(unix, windows)))]
 compile_error!("Parser isolation is not implemented on this platform");

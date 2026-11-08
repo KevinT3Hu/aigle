@@ -263,7 +263,11 @@ int aigle_raw_get_meta(void *h, aigle_raw_meta *out) {
       if (!out->datetime_original[0] && d.other.timestamp > 0) {
         std::tm tm{};
         time_t ts = d.other.timestamp;
+#ifdef _WIN32
+        if (localtime_s(&tm, &ts) == 0)
+#else
         if (localtime_r(&ts, &tm))
+#endif
           std::strftime(out->datetime_original, sizeof(out->datetime_original),
                         "%Y:%m:%d %H:%M:%S", &tm);
       }

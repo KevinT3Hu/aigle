@@ -46,11 +46,11 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
     }
     Ok(())
 }
-fn executable(path: &Path) -> Result<(), String> {
+fn executable(_path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+        fs::set_permissions(_path, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
     }
     Ok(())
 }

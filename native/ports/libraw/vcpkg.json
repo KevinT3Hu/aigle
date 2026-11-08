@@ -4,7 +4,7 @@
   "port-version": 1,
   "description": "Phaos managed libraw",
   "license": "LGPL-2.1-only OR CDDL-1.0",
-  "supports": "linux",
+  "supports": "linux | (windows & x64 & !mingw)",
   "dependencies": [
     "libjpeg-turbo",
     {

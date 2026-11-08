@@ -4,7 +4,7 @@
   "port-version": 1,
   "description": "Phaos managed libultrahdr",
   "license": "Apache-2.0",
-  "supports": "linux",
+  "supports": "linux | (windows & x64 & !mingw)",
   "dependencies": [
     "libjpeg-turbo",
     {

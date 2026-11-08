@@ -5,5 +5,5 @@ Name: phaos-rtprocess
 Description: Phaos patched librtprocess (cancellation and deterministic parallel tiles)
 Version: @PROJECT_VERSION@
 Libs: -L${libdir} -lrtprocess
-Libs.private: @OMP_LIBS@ -lstdc++ -lm
+Libs.private: @OMP_LIBS@ @CXX_RUNTIME_LIBS@
 Cflags: -I${includedir} -DLIBRTPROCESS_STATIC

@@ -386,6 +386,7 @@ impl Copier<'_> {
             }
             dst.set_times(times)?;
             dst.sync_all()?;
+            #[cfg(unix)]
             let _ = rustix::fs::fadvise(&dst, 0, None, rustix::fs::Advice::DontNeed);
             drop(dst);
             if hash(&tmp)? != hasher.finalize() {
@@ -462,6 +463,12 @@ fn hash(path: &Path) -> io::Result<blake3::Hash> {
     Ok(h.finalize())
 }
 
+#[cfg(windows)]
+fn give_name(tmp: &Path, to: &Path) -> io::Result<()> {
+    crate::windows_move::rename(tmp, to)
+}
+
+#[cfg(not(windows))]
 fn give_name(tmp: &Path, to: &Path) -> io::Result<()> {
     use rustix::fs::{CWD, RenameFlags, renameat_with};
     match renameat_with(CWD, tmp, CWD, to, RenameFlags::NOREPLACE) {
@@ -661,7 +668,10 @@ mod tests {
             source(Path::new("/card/DCIM/A_1.JPG"), Some("2024-05-01 23:59:59")),
         ];
         let p = plan(&srcs, &o).unwrap();
-        let rel: Vec<_> = p.iter().map(|p| p.relative.display().to_string()).collect();
+        let rel: Vec<_> = p
+            .iter()
+            .map(|p| p.relative.display().to_string().replace('\\', "/"))
+            .collect();
         assert_eq!(
             rel,
             [
@@ -675,7 +685,10 @@ mod tests {
             &options(Path::new("/d"), "{camera}", "{month}{day}-{seq:3}"),
         )
         .unwrap();
-        let rel: Vec<_> = p.iter().map(|p| p.relative.display().to_string()).collect();
+        let rel: Vec<_> = p
+            .iter()
+            .map(|p| p.relative.display().to_string().replace('\\', "/"))
+            .collect();
         assert_eq!(
             rel,
             [

@@ -699,8 +699,11 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), Error> {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
+        drop(f);
         std::fs::rename(&tmp, path)?;
-        std::fs::File::open(dir)?.sync_all()
+        #[cfg(unix)]
+        std::fs::File::open(dir)?.sync_all()?;
+        Ok(())
     })();
     if r.is_err() {
         let _ = std::fs::remove_file(&tmp);

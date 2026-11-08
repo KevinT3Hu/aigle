@@ -14,7 +14,9 @@ fn run(cmd: &mut Command) -> Result<(), String> {
 }
 
 pub fn install(server: bool) -> Result<(), String> {
-    let root = super::root().canonicalize().map_err(|e| e.to_string())?;
+    // Avoid canonicalize's Windows verbatim (\\?\) prefix: native build tools
+    // need an ordinary absolute path.
+    let root = config::root();
     let expected_inputs = config::fingerprint(&root);
     let revision =
         fs::read_to_string(root.join("native/vcpkg-revision")).map_err(|e| e.to_string())?;
@@ -46,24 +48,48 @@ pub fn install(server: bool) -> Result<(), String> {
     // Rebootstrap when the pinned tool revision changes as well as on first use.
     let tool_stamp = vcpkg.join(".phaos-tool-revision");
     if fs::read_to_string(&tool_stamp).unwrap_or_default() != revision
-        || !vcpkg.join("vcpkg").is_file()
+        || !vcpkg
+            .join(if cfg!(windows) { "vcpkg.exe" } else { "vcpkg" })
+            .is_file()
     {
-        run(Command::new("sh")
-            .current_dir(&vcpkg)
-            .args(["bootstrap-vcpkg.sh", "-disableMetrics"]))?;
+        if cfg!(windows) {
+            run(Command::new("cmd").current_dir(&vcpkg).args([
+                "/c",
+                "bootstrap-vcpkg.bat",
+                "-disableMetrics",
+            ]))?;
+        } else {
+            run(Command::new("sh")
+                .current_dir(&vcpkg)
+                .args(["bootstrap-vcpkg.sh", "-disableMetrics"]))?;
+        }
         fs::write(&tool_stamp, &revision).map_err(|e| e.to_string())?;
     }
     let host = match (std::env::consts::ARCH, std::env::consts::OS) {
         ("x86_64", "linux") => "x64-linux-phaos",
         ("aarch64", "linux") => "arm64-linux-phaos",
-        _ => return Err("native-deps currently supports Linux x86-64 and AArch64 hosts".into()),
+        ("x86_64", "windows") => "x64-windows-phaos",
+        _ => {
+            return Err(
+                "native-deps supports Linux x86-64/AArch64 and Windows x64 MSVC hosts".into(),
+            );
+        }
     };
     let target = host;
-    let mut cmd = Command::new(vcpkg.join("vcpkg"));
+    let mut cmd = Command::new(vcpkg.join(if cfg!(windows) { "vcpkg.exe" } else { "vcpkg" }));
     cmd.env_remove("VCPKG_ROOT");
-    cmd.current_dir(&root)
-        .args(["install", "--clean-after-build"])
-        .arg(format!("--triplet={target}"))
+    cmd.current_dir(&root).arg("install");
+    if cfg!(windows) {
+        // Several ports share MSYS packages. Keep downloads so each port does
+        // not fetch the same build tools again.
+        cmd.args([
+            "--clean-buildtrees-after-build",
+            "--clean-packages-after-build",
+        ]);
+    } else {
+        cmd.arg("--clean-after-build");
+    }
+    cmd.arg(format!("--triplet={target}"))
         .arg(format!("--host-triplet={host}"))
         .arg(format!(
             "--x-install-root={}",

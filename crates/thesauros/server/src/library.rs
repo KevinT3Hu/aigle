@@ -211,9 +211,14 @@ impl Library {
     }
     pub fn with_config(mut config: Config) -> Result<Self> {
         config.validate()?;
-        use std::os::unix::fs::PermissionsExt;
         fs::create_dir_all(&config.data)?;
-        fs::set_permissions(&config.data, fs::Permissions::from_mode(0o700))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&config.data, fs::Permissions::from_mode(0o700))?;
+        }
+        #[cfg(windows)]
+        crate::windows_permissions::make_private(&config.data).context("secure data directory")?;
         let root = config.data.canonicalize()?;
         ensure!(
             root.to_str().is_some(),

@@ -2,9 +2,19 @@
 #include "photo_types.hpp"
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QDir>
+#include <QStringList>
 namespace aigle {
+inline QString pathFromJson(const QJsonValue& value) {
+    return QDir::fromNativeSeparators(value.toString());
+}
+inline QStringList pathsFromJson(const QJsonArray& values) {
+    QStringList result;
+    for (const auto& value : values) result.append(pathFromJson(value));
+    return result;
+}
 inline PhotoIdentity photoIdentityFromJson(const QJsonObject& value) {
-    return {value["path"].toString(), value["copy"].toInteger(), value["name"].toString()};
+    return {pathFromJson(value["path"]), value["copy"].toInteger(), value["name"].toString()};
 }
 inline QJsonObject toJson(const PhotoIdentity& value) {
     QJsonObject result{{"path", value.path}, {"copy", value.copy ? QJsonValue(value.copy) : QJsonValue(QJsonValue::Null)}};

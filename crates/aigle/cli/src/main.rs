@@ -348,6 +348,7 @@ fn progress(o: &Outcome, n: usize, total: usize) {
 
 /// First Ctrl-C / SIGTERM: stop taking photos and cancel the running exports (their
 /// temporary files are removed). A second one exits at once.
+#[cfg(not(windows))]
 fn watch_signals(stop: Arc<AtomicBool>, running: Arc<Mutex<Vec<(u64, CancelToken)>>>) {
     use signal_hook::consts::{SIGINT, SIGTERM};
     let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGINT, SIGTERM]) else {
@@ -362,6 +363,36 @@ fn watch_signals(stop: Arc<AtomicBool>, running: Arc<Mutex<Vec<(u64, CancelToken
             for (_, t) in running.lock().expect("running").iter() {
                 t.cancel();
             }
+        }
+    });
+}
+
+#[cfg(windows)]
+fn watch_signals(stop: Arc<AtomicBool>, running: Arc<Mutex<Vec<(u64, CancelToken)>>>) {
+    use signal_hook::{
+        consts::{SIGINT, SIGTERM},
+        flag,
+    };
+    let interrupted = Arc::new(AtomicBool::new(false));
+    for signal in [SIGINT, SIGTERM] {
+        // Register the second-interrupt exit before the handler that sets the
+        // flag, so the first interrupt only requests cancellation.
+        if flag::register_conditional_shutdown(signal, 130, interrupted.clone()).is_err()
+            || flag::register(signal, interrupted.clone()).is_err()
+        {
+            return;
+        }
+    }
+    std::thread::spawn(move || {
+        while !interrupted.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        if stop.swap(true, Ordering::SeqCst) {
+            std::process::exit(130);
+        }
+        eprintln!("aigle: interrupted; stopping (press Ctrl-C again to quit at once)");
+        for (_, token) in running.lock().expect("running").iter() {
+            token.cancel();
         }
     });
 }

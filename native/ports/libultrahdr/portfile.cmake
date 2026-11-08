@@ -3,6 +3,7 @@ vcpkg_from_github(
     REPO google/libultrahdr
     REF v${VERSION}
     SHA512 a5df720e8c9af6f2fa19a015040b3a572a764145079d3a843520407a5f5dc1dc2a80c91b6000248cc99e27f30b7d18a7d7e22bc0c3d24122eea33bcc1eb4b1b9
+    PATCHES 0001-respect-msvc-runtime.patch
 )
 vcpkg_cmake_configure(SOURCE_PATH "${SOURCE_PATH}" OPTIONS
     -DUHDR_BUILD_DEPS=OFF -DUHDR_BUILD_EXAMPLES=OFF -DUHDR_BUILD_TESTS=OFF

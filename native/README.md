@@ -10,7 +10,7 @@ Build scripts only compile our C/C++ ABI shims. They require this private prefix
 and reject missing/stale native dependencies rather than falling back to system
 image libraries. They never download dependencies during `cargo build`.
 
-Linux x86-64 and AArch64 triplets are defined; x86-64 is the validated build.
+Linux x86-64/AArch64 and Windows x64 MSVC triplets are defined.
 The compiler, libc/C++/OpenMP runtime, platform graphics/windowing APIs, and build
 tools still come from the host. This is dependency management, not a hermetic
 compiler toolchain. Aigle's Qt frontend requires the host Qt and Vulkan development packages.
@@ -37,6 +37,7 @@ source is fetched at a pinned upstream revision and verified using SHA512.
 `verify-sources.cmake` additionally checks that the patch series reconstructs the
 exact source files that were previously tested in the project. Custom
 `CMakeLists.txt` files are build recipes, separate from algorithm changes.
+Source verification normalizes CRLF to LF before hashing on all platforms.
 
 `librtprocess` enables OpenMP only for `rcd.cc` and `CA_correct.cc` on GNU.
 AMaZE, Markesteijn, borders and highlight reconstruction remain serial. The
@@ -56,9 +57,34 @@ Do not replace this with upstream's blanket OpenMP option.
 5. Run native cancellation/determinism, real RAW, metadata and HDR/codec tests.
 
 vcpkg's default binary cache is reused between runs. CI caches that directory.
-`--clean-after-build` removes intermediate native builds to keep disk use bounded.
+Intermediate native builds are cleaned to keep disk use bounded. Windows keeps
+downloaded archives so ports can reuse their shared MSYS build tools.
 Project Git pins overlays; the vcpkg registry baseline pins stock ports. Use a
 custom registry later if the ports need versioned reuse across repositories.
+
+## Windows x64
+
+Install Rust (the workspace toolchain is selected by `rust-toolchain.toml`),
+Git for Windows, and Visual Studio with Desktop development with C++ and a
+Windows SDK. Run `cargo xtask native-deps` from PowerShell at the repository
+root. The task uses the Windows vcpkg bootstrap and builds static libraries
+with the dynamic MSVC runtime. Its managed pkgconf executable is used by Cargo;
+no system pkg-config installation is required.
+
+For the desktop frontend, also install MSVC Qt 6.11+ with Widgets, GuiPrivate,
+Svg, ShaderTools, Test and LinguistTools, plus CMake and Ninja. The native
+dependency task supplies Vulkan headers and the loader on Windows.
+From a Visual Studio developer shell with Qt on PATH:
+
+```powershell
+cargo xtask native-deps
+cmake -S . -B target/windows-qt -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH=C:/Qt/6.11.3/msvc2022_64
+cmake --build target/windows-qt --target aigle-gui --parallel 4
+windeployqt --debug target/windows-qt/apps/aigle/aigle-gui.exe
+```
+
+Windows parser workers use anonymous pipes, including cancellation and crash
+recovery. Pixel replies use owned buffers rather than Linux memfd mappings.
 
 See [the patch audit](../docs/development/native-dependencies.md) for decisions,
 measurements and known regression-test limitations.

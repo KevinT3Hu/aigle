@@ -14,6 +14,9 @@ fn main() {
     for p in &exiv2.include_paths {
         b.include(p);
     }
+    for (key, value) in &exiv2.defines {
+        b.define(key, value.as_deref());
+    }
     b.compile("aigle_exiv2");
     println!("cargo:rerun-if-changed=shim");
 }

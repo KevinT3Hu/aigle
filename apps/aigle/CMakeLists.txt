@@ -1,7 +1,12 @@
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set(QT_DEPLOY_USE_PATCHELF ON CACHE BOOL "Use patchelf for relocatable Qt plugins")
-elseif(WIN32)
-  # TODO(windows): native dependencies, bridge DLL deployment and installer layout.
+endif()
+if(MSVC)
+  add_compile_options(/utf-8 /Zc:__cplusplus /bigobj)
+  add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+  list(APPEND CMAKE_PREFIX_PATH "${PROJECT_SOURCE_DIR}/target/native/installed/x64-windows-phaos")
 endif()
 find_package(Qt6 6.11 REQUIRED COMPONENTS Widgets Gui GuiPrivate ShaderTools Svg Test LinguistTools)
 find_package(Vulkan REQUIRED)
@@ -54,7 +59,11 @@ endif()
 qt_add_shaders(aigle-gui canvas-shaders PREFIX "/shaders" BASE shaders
   FILES shaders/canvas.vert shaders/canvas.frag shaders/retouch.vert shaders/retouch.frag)
 install(TARGETS aigle-gui RUNTIME DESTINATION bin)
-corrosion_install(TARGETS aigle_qt_bridge LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+if(WIN32)
+  corrosion_install(TARGETS aigle_qt_bridge LIBRARY DESTINATION bin)
+else()
+  corrosion_install(TARGETS aigle_qt_bridge LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+endif()
 install(DIRECTORY "${AIGLE_ROOT}/data/" DESTINATION share/aigle)
 install(FILES "${AIGLE_ROOT}/crates/aigle/xtask/assets/aigle.desktop" DESTINATION share/applications)
 install(FILES "${AIGLE_ROOT}/crates/aigle/xtask/assets/aigle.svg" DESTINATION share/icons/hicolor/scalable/apps)
@@ -129,4 +138,24 @@ qt_add_resources(aigle-gui editor-translations PREFIX "/i18n"
 if(TARGET aigle-value-tests)
   qt_add_resources(aigle-value-tests test-translations PREFIX "/i18n"
     BASE "${CMAKE_CURRENT_BINARY_DIR}" FILES ${aigle_qm})
+endif()
+if(WIN32)
+  set(aigle_vulkan_runtime "${PROJECT_SOURCE_DIR}/target/native/installed/x64-windows-phaos/bin/vulkan-1.dll")
+  if(EXISTS "${aigle_vulkan_runtime}")
+    install(FILES "${aigle_vulkan_runtime}" DESTINATION bin)
+  endif()
+  foreach(aigle_executable IN ITEMS aigle-gui aigle-value-tests)
+    if(TARGET ${aigle_executable})
+      add_custom_command(TARGET ${aigle_executable} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "$<TARGET_FILE:aigle_qt_bridge-shared>" "$<TARGET_FILE_DIR:${aigle_executable}>"
+        VERBATIM)
+      if(EXISTS "${aigle_vulkan_runtime}")
+        add_custom_command(TARGET ${aigle_executable} POST_BUILD
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${aigle_vulkan_runtime}" "$<TARGET_FILE_DIR:${aigle_executable}>"
+          VERBATIM)
+      endif()
+    endif()
+  endforeach()
 endif()

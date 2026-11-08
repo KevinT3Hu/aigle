@@ -20,6 +20,8 @@ mod scan;
 mod sidecar;
 mod worker;
 mod writer;
+#[cfg(windows)]
+mod windows_move;
 
 pub use catalog::{Catalog, CatalogError, CopyId, PhotoKey, VirtualCopy};
 pub use facts::{Facts, camera_name, read_facts};

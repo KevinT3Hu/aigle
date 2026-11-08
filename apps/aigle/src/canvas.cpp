@@ -4,6 +4,7 @@
 #include "gui_json.hpp"
 #include "canvas.hpp"
 #include <numeric>
+#include <numbers>
 #include "adjustments.hpp"
 #include <QFile>
 #include <QJsonArray>
@@ -1009,10 +1010,10 @@ void Canvas::mouseMoveEvent(QMouseEvent* event) {
         } else if (dragPart_ == 9) {
             double angle = std::atan2(event->position().y() - cropPivot_.y(),
                                       event->position().x() - cropPivot_.x()) - cropPointerAngle_;
-            if (angle > M_PI) angle -= 2 * M_PI;
-            if (angle < -M_PI) angle += 2 * M_PI;
+            if (angle > std::numbers::pi) angle -= 2 * std::numbers::pi;
+            if (angle < -std::numbers::pi) angle += 2 * std::numbers::pi;
             cropDraft_ = cropStart_;
-            setCropAngle(std::clamp(cropAngleStart_ + angle * 180 / M_PI, -45., 45.));
+            setCropAngle(std::clamp(cropAngleStart_ + angle * 180 / std::numbers::pi, -45., 45.));
             emit cropAngleUpdated(cropAngle_);
         } else {
             cropDraft_ = constrainedCrop(cropStart_, dragPart_, point - start);

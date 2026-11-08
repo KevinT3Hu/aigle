@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use std::{future::IntoFuture, net::SocketAddr, path::PathBuf, time::Duration};
 use thesauros::{AppState, config::Config};
+#[cfg(windows)]
+mod windows_limits;
 
 #[derive(Parser)]
 #[command(about = "Thesauros — a treasury for RAW photographs", version)]
@@ -36,15 +38,20 @@ fn main() -> Result<()> {
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(2 * 1024 * 1024 * 1024);
-        let old = rustix::process::getrlimit(rustix::process::Resource::As);
-        let memory = old.maximum.map_or(memory, |max| max.min(memory));
-        rustix::process::setrlimit(
-            rustix::process::Resource::As,
-            rustix::process::Rlimit {
-                current: Some(memory),
-                maximum: Some(memory),
-            },
-        )?;
+        #[cfg(unix)]
+        {
+            let old = rustix::process::getrlimit(rustix::process::Resource::As);
+            let memory = old.maximum.map_or(memory, |max| max.min(memory));
+            rustix::process::setrlimit(
+                rustix::process::Resource::As,
+                rustix::process::Rlimit {
+                    current: Some(memory),
+                    maximum: Some(memory),
+                },
+            )?;
+        }
+        #[cfg(windows)]
+        let _memory_limit = windows_limits::parser_memory_limit(memory)?;
         aigle_isolate::serve(&thesauros::worker_ops());
     }
     let args = Args::parse();
@@ -106,10 +113,19 @@ async fn run(state: AppState) -> Result<()> {
     println!("Thesauros: http://{address}");
     let signals = state.clone();
     let signal_task = tokio::spawn(async move {
-        let mut terminate =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("register SIGTERM handler");
-        tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{}}
+        #[cfg(unix)]
+        {
+            let mut terminate =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("register SIGTERM handler");
+            tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{}}
+        }
+        #[cfg(windows)]
+        {
+            let mut terminate =
+                tokio::signal::windows::ctrl_break().expect("register Ctrl-Break handler");
+            tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{}}
+        }
         tracing::info!("shutdown requested");
         signals.stopping.cancel();
     });

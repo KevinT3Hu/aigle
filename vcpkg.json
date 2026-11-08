@@ -3,6 +3,7 @@
   "version-string": "0.1.0",
   "builtin-baseline": "d186940b2f0c4e8e5b4ff804af57d2a26fbfa091",
   "dependencies": [
+    { "name": "pkgconf", "host": true, "platform": "windows" },
     {
       "name": "exiv2",
       "default-features": false,
@@ -23,6 +24,7 @@
     "editor": {
       "description": "Aigle image processing, codecs and watermark text.",
       "dependencies": [
+        { "name": "vulkan-loader", "platform": "windows" },
         "librtprocess",
         {
           "name": "libvips",

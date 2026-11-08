@@ -108,8 +108,24 @@ impl From<StoredMeta> for PhotoMeta {
     }
 }
 
+#[cfg(not(windows))]
 fn bytes(s: &OsStr) -> &[u8] {
     s.as_encoded_bytes()
+}
+
+#[cfg(windows)]
+fn bytes(s: &OsStr) -> Vec<u8> {
+    use std::os::windows::ffi::OsStrExt;
+    s.encode_wide()
+        .map(|c| {
+            if c == u16::from(b'\\') {
+                u16::from(b'/')
+            } else {
+                c
+            }
+        })
+        .flat_map(u16::to_le_bytes)
+        .collect()
 }
 
 /// A modification time as stored: nanoseconds since the Unix epoch.
@@ -119,10 +135,20 @@ fn nanos(t: Option<std::time::SystemTime>) -> Option<i64> {
 }
 
 /// `(folder, file name)` columns of `path`.
+#[cfg(not(windows))]
 fn split(path: &Path) -> (&[u8], &[u8]) {
     let dir = path.parent().map_or(&[][..], |d| bytes(d.as_os_str()));
     let file = path.file_name().map_or(&[][..], bytes);
     (dir, file)
+}
+
+#[cfg(windows)]
+fn split(path: &Path) -> (Vec<u8>, Vec<u8>) {
+    (
+        path.parent()
+            .map_or_else(Vec::new, |d| bytes(d.as_os_str())),
+        path.file_name().map_or_else(Vec::new, bytes),
+    )
 }
 
 pub struct Catalog {
@@ -264,8 +290,15 @@ impl Catalog {
     pub fn photo_identity(&self, path: &Path) -> Result<String, CatalogError> {
         let (dir, file) = split(path);
         let db = self.db.lock();
-        db.execute("INSERT OR IGNORE INTO photo_identity (dir,file) VALUES (?1,?2)", params![dir,file])?;
-        Ok(db.query_row("SELECT identity FROM photo_identity WHERE dir=?1 AND file=?2", params![dir,file], |r| r.get(0))?)
+        db.execute(
+            "INSERT OR IGNORE INTO photo_identity (dir,file) VALUES (?1,?2)",
+            params![dir, file],
+        )?;
+        Ok(db.query_row(
+            "SELECT identity FROM photo_identity WHERE dir=?1 AND file=?2",
+            params![dir, file],
+            |r| r.get(0),
+        )?)
     }
 
     pub fn albums(&self) -> Result<Vec<(i64, String)>, CatalogError> {
@@ -330,10 +363,32 @@ impl Catalog {
             .collect::<Result<_, _>>()?)
     }
 
-    #[cfg(not(unix))]
-    pub fn album_paths(&self, _id: i64) -> Result<Vec<PathBuf>, CatalogError> {
-        // TODO(windows): define reversible native path encoding for catalog entries.
-        unimplemented!("Windows catalog path decoding")
+    #[cfg(windows)]
+    pub fn album_paths(&self, id: i64) -> Result<Vec<PathBuf>, CatalogError> {
+        use std::os::windows::ffi::OsStringExt;
+        let db = self.db.lock();
+        let mut stmt =
+            db.prepare("SELECT path FROM album_photos WHERE album = ?1 ORDER BY path")?;
+        Ok(stmt
+            .query_map([id], |row| {
+                let encoded: Vec<u8> = row.get(0)?;
+                if !encoded.len().is_multiple_of(2) {
+                    return Err(rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Blob,
+                        Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "invalid UTF-16 catalog path",
+                        )),
+                    ));
+                }
+                let wide: Vec<_> = encoded
+                    .chunks_exact(2)
+                    .map(|b| u16::from_le_bytes([b[0], b[1]]))
+                    .collect();
+                Ok(PathBuf::from(std::ffi::OsString::from_wide(&wide)))
+            })?
+            .collect::<Result<_, _>>()?)
     }
 
     pub fn rename_album(&self, id: i64, name: &str) -> Result<(), CatalogError> {
@@ -369,7 +424,10 @@ impl Catalog {
     /// The virtual copies of `photos`, grouped by photo in `photos` order, oldest first.
     pub fn copies_of(&self, photos: &[PathBuf]) -> Result<Vec<VirtualCopy>, CatalogError> {
         let db = self.db.lock();
+        #[cfg(not(windows))]
         let mut by_dir: HashMap<&[u8], HashMap<&[u8], usize>> = HashMap::new();
+        #[cfg(windows)]
+        let mut by_dir: HashMap<Vec<u8>, HashMap<Vec<u8>, usize>> = HashMap::new();
         for (i, p) in photos.iter().enumerate() {
             let (dir, file) = split(p);
             by_dir.entry(dir).or_default().insert(file, i);
@@ -462,7 +520,10 @@ impl Catalog {
         let mut stmt = db.prepare_cached(
             "SELECT file, bytes, modified, camera, lens, captured FROM facts WHERE dir = ?1",
         )?;
+        #[cfg(not(windows))]
         let mut by_dir: HashMap<&[u8], HashMap<&[u8], &PhotoEntry>> = HashMap::new();
+        #[cfg(windows)]
+        let mut by_dir: HashMap<Vec<u8>, HashMap<Vec<u8>, &PhotoEntry>> = HashMap::new();
         for e in entries {
             let (dir, file) = split(&e.path);
             by_dir.entry(dir).or_default().insert(file, e);
@@ -560,8 +621,14 @@ impl Catalog {
             "DELETE FROM copies WHERE dir = ?1 AND file = ?2",
             params![td, tf],
         )?;
-        tx.execute("DELETE FROM photo_identity WHERE dir = ?1 AND file = ?2", params![td,tf])?;
-        tx.execute("UPDATE photo_identity SET dir = ?3, file = ?4 WHERE dir = ?1 AND file = ?2", params![fd,ff,td,tf])?;
+        tx.execute(
+            "DELETE FROM photo_identity WHERE dir = ?1 AND file = ?2",
+            params![td, tf],
+        )?;
+        tx.execute(
+            "UPDATE photo_identity SET dir = ?3, file = ?4 WHERE dir = ?1 AND file = ?2",
+            params![fd, ff, td, tf],
+        )?;
         tx.execute(
             "UPDATE history SET dir = ?3, file = ?4 WHERE dir = ?1 AND file = ?2",
             params![fd, ff, td, tf],
@@ -606,7 +673,10 @@ impl Catalog {
             "DELETE FROM facts WHERE dir = ?1 AND file = ?2",
             params![dir, file],
         )?;
-        tx.execute("DELETE FROM photo_identity WHERE dir = ?1 AND file = ?2", params![dir,file])?;
+        tx.execute(
+            "DELETE FROM photo_identity WHERE dir = ?1 AND file = ?2",
+            params![dir, file],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -668,6 +738,24 @@ impl Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn native_separators_share_catalog_identity() {
+        let catalog = Catalog::in_memory();
+        let native = PathBuf::from(r"C:\photos\original.png");
+        let qt = PathBuf::from("C:/photos/original.png");
+        let id = catalog
+            .create_copy(&native, "Copy", &PhotoMeta::default())
+            .unwrap();
+        assert_eq!(
+            catalog.copies_of(std::slice::from_ref(&qt)).unwrap()[0].id,
+            id
+        );
+        assert_eq!(
+            catalog.photo_identity(&native).unwrap(),
+            catalog.photo_identity(&qt).unwrap()
+        );
+    }
 
     fn meta(exposure: f32, rating: i8) -> PhotoMeta {
         let mut p = EditParams::default();
@@ -683,7 +771,8 @@ mod tests {
 
     #[test]
     fn durable_identity_survives_moves_relinks_and_restart() {
-        let path = std::env::temp_dir().join(format!("aigle-identity-{}.sqlite3", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("aigle-identity-{}.sqlite3", std::process::id()));
         let catalog = Catalog::open(&path).unwrap();
         let a = Path::new("/photos/identity-a.nef");
         let b = Path::new("/photos/identity-b.nef");
@@ -811,6 +900,7 @@ mod tests {
         assert_eq!(copies[0].meta, meta(0.7, 4));
         c.remove_copy(a1).unwrap();
         assert_eq!(c.copies_of(&[a.clone(), b]).unwrap().len(), 1);
+        drop(c);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -866,7 +956,7 @@ mod tests {
         assert_eq!(found[&a.path], facts);
         let grown = entry("a.cr2", 11, Some(t));
         assert!(c.facts_of(&[grown]).unwrap().is_empty());
-        let touched = entry("a.cr2", 10, Some(t + std::time::Duration::from_nanos(1)));
+        let touched = entry("a.cr2", 10, Some(t + std::time::Duration::from_micros(1)));
         assert!(c.facts_of(&[touched]).unwrap().is_empty());
 
         c.move_photo(&a.path, Path::new("/q/a.cr2")).unwrap();

@@ -21,5 +21,12 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 endif()
 install(TARGETS rtprocess ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(FILES src/include/librtprocess.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+if(MSVC)
+    set(CXX_RUNTIME_LIBS "")
+else()
+    set(CXX_RUNTIME_LIBS "-lstdc++ -lm")
+endif()
+
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/phaos-rtprocess.pc.in phaos-rtprocess.pc @ONLY)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/phaos-rtprocess.pc DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
